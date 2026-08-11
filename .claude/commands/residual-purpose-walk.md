@@ -1,11 +1,16 @@
 ---
 name: purpose-walk
-version: 0
+version: 1
 ---
 
 # Purpose Walk
 
 Socratically define the project's purposes until every purpose has feature-level precision and at least one verifiable trait.
+
+## Interaction Pattern
+This skill is Socratic.
+- **Gather freely**: read commands (`skill-data`, `list`, etc.) run without asking.
+- **Act only with approval**: any modification — `residual add purpose`, `add term`, `add attractor` — requires explicit user sign-off before executing.
 
 ## Rules
 - No probabilities. No risk framing.
@@ -17,10 +22,10 @@ Socratically define the project's purposes until every purpose has feature-level
 Run: `residual skill-data purpose-walk`
 
 ## During This Skill
-- `residual add purpose --description "..." --attractor-id A-01 --feature "..." --traits "..." --components "..."`
-- `residual add term --term "..." --definition "..."`
-- `residual add attractor --name "..." --valence positive --description "..."`
-- `residual list purposes` — review captured purposes
+- Propose before recording: show the user the full `residual add purpose ...` command and wait for approval before running it.
+- `residual add term --term "..." --definition "..."` — propose new terms as they emerge; confirm with the user before adding.
+- `residual add attractor --name "..." --valence positive --description "..."` — propose attractors; wait for confirmation.
+- `residual list purposes` — share the current list with the user periodically to check for gaps or overlaps.
 
 ## Version Check
 Run `residual skill-check purpose-walk --agent <your-agent>` before starting.

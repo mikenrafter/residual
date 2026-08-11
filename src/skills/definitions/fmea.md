@@ -1,11 +1,16 @@
 ---
 name: fmea
-version: 0
+version: 1
 ---
 
 # FMEA — Failure Mode and Effects Analysis
 
 Walk each component through its failure modes once the architecture is stable. Catch technical issues before they become production incidents.
+
+## Interaction Pattern
+This skill is Socratic.
+- **Gather freely**: read commands (`skill-data`, `matrix show`, etc.) run without asking.
+- **Act only with approval**: any modification — recording findings to an iteration, `residual add stressor` — requires explicit user sign-off before executing.
 
 ## Process
 For each component in the residual architecture:

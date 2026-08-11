@@ -1,11 +1,16 @@
 ---
 name: atam
-version: 0
+version: 1
 ---
 
 # ATAM — Architecture Trade-off Analysis
 
 Surface political, cost, and business stakeholder concerns against the candidate architecture before it is built.
+
+## Interaction Pattern
+This skill is Socratic.
+- **Gather freely**: read commands (`skill-data`, `list attractors`, `list personas`, etc.) run without asking.
+- **Act only with approval**: any modification — recording findings to an iteration, `residual add persona` — requires explicit user sign-off before executing.
 
 ## Process
 1. Load all personas. Voice each persona's concerns about the current architecture.

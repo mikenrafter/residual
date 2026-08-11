@@ -2,3 +2,4 @@ target/
 *.epub
 *.pdf
 .DS_Store
+.claude/worktrees/

@@ -148,3 +148,78 @@ pub fn build(cfg: &Config, skill_name: &str) -> Result<String> {
 
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+    use crate::config::Config;
+    use crate::storage::{stressors, terminology};
+
+    fn cfg_for(dir: &std::path::Path) -> Config {
+        Config {
+            validation: crate::config::ValidationConfig { strict: true },
+            skills: crate::config::SkillsConfig { token_warn: 1000 },
+            residual_dir: dir.to_path_buf(),
+        }
+    }
+
+    #[test]
+    fn build_naive_draft_includes_purposes_section() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_for(dir.path());
+        let out = build(&cfg, "naive-draft").unwrap();
+        assert!(out.contains("## Purposes"), "naive-draft context must include Purposes");
+    }
+
+    #[test]
+    fn build_naive_draft_excludes_stressors_section() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_for(dir.path());
+        let out = build(&cfg, "naive-draft").unwrap();
+        assert!(!out.contains("## Stressors"), "naive-draft context must not include Stressors");
+    }
+
+    #[test]
+    fn build_unknown_skill_returns_all_sections() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_for(dir.path());
+        let out = build(&cfg, "unknown-skill").unwrap();
+        assert!(out.contains("## Purposes"), "unknown skill should include Purposes");
+        assert!(out.contains("## Stressors"), "unknown skill should include Stressors");
+        assert!(out.contains("## Attractors"), "unknown skill should include Attractors");
+    }
+
+    // RED TEST: documents flaw — N in context.rs counts all entities (attractors+stressors+purposes)
+    // but NKP N should be unique components. The matrix::NkpMatrix::n() counts stressors+components.
+    // This test fails until the N computation in context.rs is corrected.
+    #[test]
+    fn nkp_summary_n_reflects_components_not_entity_count() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_for(dir.path());
+        terminology::append(dir.path(), terminology::Term {
+            term: "auth".to_string(),
+            definition: "authentication".to_string(),
+            domain: "".to_string(),
+            related_terms: "".to_string(),
+        }).unwrap();
+        stressors::append(dir.path(), stressors::Stressor {
+            id: "S-01".to_string(),
+            description: "test".to_string(),
+            attractor_id: "".to_string(),
+            naive_change: "none".to_string(),
+            traits: "system handles auth".to_string(),
+            components_affected: "auth,db".to_string(),
+        }).unwrap();
+        let out = build(&cfg, "integrate").unwrap();
+        // With 1 stressor affecting 2 components (auth, db), N should = 3
+        // (1 stressor + 2 components per matrix.rs semantics), or 2 (components only).
+        // Currently context.rs computes N = 0 attractors + 1 stressor + 0 purposes = 1.
+        // This assertion documents the expected (correct) behavior; it FAILS today.
+        assert!(
+            out.contains("N=3,") || out.contains("N=2,"),
+            "expected N to reflect component+stressor count (2 or 3), got context: {}",
+            &out[out.find("NKP").unwrap_or(0)..out.len().min(out.find("NKP").unwrap_or(0) + 80)]
+        );
+    }
+}
