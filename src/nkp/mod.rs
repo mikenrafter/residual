@@ -7,5 +7,60 @@ pub mod matrix;
 pub mod residual_index;
 
 pub fn run(cfg: &Config, op: MatrixOp) -> Result<()> {
-    todo!("dispatch matrix operations")
+    match op {
+        MatrixOp::Show => {
+            let stressors = crate::storage::stressors::load(&cfg.residual_dir)?;
+            let m = matrix::NkpMatrix::build(&stressors);
+            m.print_colored();
+        }
+        MatrixOp::Calc => {
+            let stressors = crate::storage::stressors::load(&cfg.residual_dir)?;
+            let m = matrix::NkpMatrix::build(&stressors);
+            println!("N (nodes) = {}", m.n());
+            println!("K (connections) = {}", m.k());
+            println!("K/N = {:.4}", if m.n() == 0 { 0.0 } else { m.k() as f64 / m.n() as f64 });
+        }
+        MatrixOp::Criticality => {
+            let stressors = crate::storage::stressors::load(&cfg.residual_dir)?;
+            let m = matrix::NkpMatrix::build(&stressors);
+            let report = criticality::assess(&m);
+            println!("N = {}, K = {}, K/N = {:.4}", report.n, report.k, report.k_per_n);
+            println!("Assessment: {}", report.assessment);
+        }
+        MatrixOp::Ri { stressors, naive_survived, residual_survived } => {
+            let ri = residual_index::calculate(naive_survived, residual_survived, stressors);
+            let interpretation = residual_index::interpret(ri);
+            println!("Ri = {:.4}", ri);
+            println!("{}", interpretation);
+        }
+        MatrixOp::Fusion => {
+            let stressors = crate::storage::stressors::load(&cfg.residual_dir)?;
+            let m = matrix::NkpMatrix::build(&stressors);
+            let candidates = m.fusion_candidates();
+            if candidates.is_empty() {
+                println!("No fusion candidates found.");
+            } else {
+                println!("Fusion candidates (identical stress-response patterns):");
+                for (a, b) in &candidates {
+                    println!("  {} ↔ {}", a, b);
+                }
+            }
+        }
+        MatrixOp::Fission => {
+            let stressors = crate::storage::stressors::load(&cfg.residual_dir)?;
+            let m = matrix::NkpMatrix::build(&stressors);
+            // Default threshold: components hit by more than half the stressors
+            let threshold = (m.stressor_ids.len() / 2).max(1);
+            let candidates = m.fission_candidates(threshold);
+            if candidates.is_empty() {
+                println!("No fission candidates found (threshold = {}).", threshold);
+            } else {
+                println!("Fission candidates (col total > {}):", threshold);
+                for comp in &candidates {
+                    println!("  {}", comp);
+                }
+            }
+        }
+    }
+    Ok(())
 }

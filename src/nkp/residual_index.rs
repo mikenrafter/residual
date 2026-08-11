@@ -4,11 +4,17 @@
 /// S = total test stressors
 /// Valid range: -1 < Ri < 1
 pub fn calculate(naive_survived: usize, residual_survived: usize, total: usize) -> f64 {
-    todo!("compute Ri")
+    (residual_survived as f64 - naive_survived as f64) / total as f64
 }
 
 pub fn interpret(ri: f64) -> &'static str {
-    todo!("textual interpretation of Ri value")
+    if ri > 0.0 {
+        "Positive improvement: the residual architecture survived more stressors than the naïve baseline."
+    } else if ri == 0.0 {
+        "No improvement (zero): the residual architecture performed identically to the naïve baseline."
+    } else {
+        "Negative regression: the residual architecture survived fewer stressors than the naïve baseline."
+    }
 }
 
 #[cfg(test)]

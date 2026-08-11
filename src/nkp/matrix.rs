@@ -10,39 +10,122 @@ pub struct NkpMatrix {
 
 impl NkpMatrix {
     pub fn build(stressors: &[Stressor]) -> Self {
-        todo!("build matrix from stressors")
+        // Collect all unique components in stable order (first-seen)
+        let mut components: Vec<String> = Vec::new();
+        for s in stressors {
+            for comp in s.components_affected.split(',') {
+                let comp = comp.trim().to_string();
+                if !comp.is_empty() && !components.contains(&comp) {
+                    components.push(comp);
+                }
+            }
+        }
+
+        let stressor_ids: Vec<String> = stressors.iter().map(|s| s.id.clone()).collect();
+
+        let cells: Vec<Vec<u8>> = stressors.iter().map(|s| {
+            let affected: Vec<&str> = s.components_affected.split(',').map(|c| c.trim()).collect();
+            components.iter().map(|comp| {
+                if affected.contains(&comp.as_str()) { 1 } else { 0 }
+            }).collect()
+        }).collect();
+
+        NkpMatrix { stressor_ids, components, cells }
     }
 
     pub fn n(&self) -> usize {
-        todo!("total nodes = stressors + components")
+        self.stressor_ids.len() + self.components.len()
     }
 
     pub fn k(&self) -> usize {
-        todo!("total 1s in matrix")
+        self.cells.iter().flat_map(|row| row.iter()).map(|&v| v as usize).sum()
     }
 
     pub fn row_totals(&self) -> Vec<usize> {
-        todo!("sum each row")
+        self.cells.iter().map(|row| row.iter().map(|&v| v as usize).sum()).collect()
     }
 
     pub fn col_totals(&self) -> Vec<usize> {
-        todo!("sum each column")
+        if self.components.is_empty() {
+            return vec![];
+        }
+        let num_cols = self.components.len();
+        let mut totals = vec![0usize; num_cols];
+        for row in &self.cells {
+            for (j, &v) in row.iter().enumerate() {
+                totals[j] += v as usize;
+            }
+        }
+        totals
     }
 
     pub fn hyperliminal_pairs(&self) -> Vec<(String, String)> {
-        todo!("find component pairs sharing ≥2 stressor rows")
+        let num_cols = self.components.len();
+        let mut pairs = Vec::new();
+        for i in 0..num_cols {
+            for j in (i + 1)..num_cols {
+                // Count shared rows where both cells = 1
+                let shared = self.cells.iter().filter(|row| row[i] == 1 && row[j] == 1).count();
+                if shared >= 2 {
+                    pairs.push((self.components[i].clone(), self.components[j].clone()));
+                }
+            }
+        }
+        pairs
     }
 
     pub fn print_colored(&self) {
-        todo!("render with comfy-table + owo-colors")
+        use comfy_table::{Table, Cell, Color};
+        use owo_colors::OwoColorize;
+
+        let mut table = Table::new();
+
+        // Header row: empty cell + component names
+        let mut header = vec![Cell::new("")];
+        for comp in &self.components {
+            header.push(Cell::new(comp));
+        }
+        table.set_header(header);
+
+        // Data rows
+        for (row_idx, row) in self.cells.iter().enumerate() {
+            let stressor_id = &self.stressor_ids[row_idx];
+            let mut cells = vec![Cell::new(stressor_id)];
+            for &val in row {
+                let cell = if val == 1 {
+                    Cell::new("1").fg(Color::Green)
+                } else {
+                    Cell::new("0")
+                };
+                cells.push(cell);
+            }
+            table.add_row(cells);
+        }
+
+        println!("{table}");
     }
 
     pub fn fusion_candidates(&self) -> Vec<(String, String)> {
-        todo!("components with identical stress-response patterns")
+        let num_cols = self.components.len();
+        let mut pairs = Vec::new();
+        for i in 0..num_cols {
+            for j in (i + 1)..num_cols {
+                // Check if column vectors are identical
+                let identical = self.cells.iter().all(|row| row[i] == row[j]);
+                if identical {
+                    pairs.push((self.components[i].clone(), self.components[j].clone()));
+                }
+            }
+        }
+        pairs
     }
 
     pub fn fission_candidates(&self, threshold: usize) -> Vec<String> {
-        todo!("components with col total > threshold")
+        let col_totals = self.col_totals();
+        self.components.iter().zip(col_totals.iter())
+            .filter(|(_, &total)| total > threshold)
+            .map(|(comp, _)| comp.clone())
+            .collect()
     }
 }
 
