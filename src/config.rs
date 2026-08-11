@@ -85,3 +85,53 @@ fn find_residual_dir() -> Result<PathBuf> {
 pub fn residual_dir(cfg: &Config) -> &Path {
     &cfg.residual_dir
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// Helper: parse a config.toml string with a given residual_dir.
+    fn parse_with_dir(toml_str: &str, dir: &Path) -> Config {
+        let mut cfg: Config = toml::from_str(toml_str).expect("failed to parse config toml");
+        cfg.residual_dir = dir.to_path_buf();
+        cfg
+    }
+
+    #[test]
+    fn defaults_strict_true() {
+        let cfg = Config::default();
+        assert!(cfg.validation.strict, "default strict should be true");
+    }
+
+    #[test]
+    fn defaults_token_warn_1000() {
+        let cfg = Config::default();
+        assert_eq!(cfg.skills.token_warn, 1000);
+    }
+
+    #[test]
+    fn load_no_config_file_returns_defaults() {
+        let dir = tempdir().unwrap();
+        // No config.toml in dir — simulate by parsing empty toml
+        let cfg = parse_with_dir("", dir.path());
+        assert!(cfg.validation.strict, "expected strict=true when no config");
+        assert_eq!(cfg.skills.token_warn, 1000);
+    }
+
+    #[test]
+    fn load_config_with_strict_false() {
+        let dir = tempdir().unwrap();
+        let toml_str = "[validation]\nstrict = false\n";
+        let cfg = parse_with_dir(toml_str, dir.path());
+        assert!(!cfg.validation.strict, "expected strict=false when set in config");
+    }
+
+    #[test]
+    fn load_config_with_custom_token_warn() {
+        let dir = tempdir().unwrap();
+        let toml_str = "[skills]\ntoken_warn = 500\n";
+        let cfg = parse_with_dir(toml_str, dir.path());
+        assert_eq!(cfg.skills.token_warn, 500);
+    }
+}
