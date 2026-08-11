@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 pub enum Agent {
@@ -22,15 +22,65 @@ impl std::str::FromStr for Agent {
 }
 
 pub fn install_path(name: &str, agent: &Agent, global: bool) -> Result<PathBuf> {
-    todo!("resolve installation path for agent + scope")
+    let base = if global {
+        let home = std::env::var("HOME").context("HOME env var not set")?;
+        PathBuf::from(home)
+    } else {
+        std::env::current_dir().context("failed to get current directory")?
+    };
+
+    let path = match agent {
+        Agent::Claude => base.join(".claude/commands").join(format!("residual-{}.md", name)),
+        Agent::Cursor => base.join(".cursor/rules").join(format!("residual-{}.mdc", name)),
+        Agent::Copilot => base.join(".github/copilot").join(format!("residual-{}.md", name)),
+        Agent::Agnostic => base.join(".residual/skills").join(format!("{}.md", name)),
+    };
+
+    Ok(path)
 }
 
 pub fn installed_version(name: &str, agent: &Agent, global: bool) -> Result<Option<u32>> {
-    todo!("read version from installed skill front-matter")
+    let path = install_path(name, agent, global)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(parse_version_from_front_matter(&content))
+}
+
+fn parse_version_from_front_matter(content: &str) -> Option<u32> {
+    // Front-matter is between the first and second `---` markers
+    let mut lines = content.lines();
+
+    // First line must be `---`
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+
+    // Read until closing `---`
+    for line in lines {
+        if line.trim() == "---" {
+            break;
+        }
+        // Look for `version: N`
+        if let Some(rest) = line.strip_prefix("version:") {
+            if let Ok(v) = rest.trim().parse::<u32>() {
+                return Some(v);
+            }
+        }
+    }
+    None
 }
 
 pub fn write_skill(path: &PathBuf, content: &str) -> Result<()> {
-    todo!("create parent dirs + write skill file")
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create dirs for {}", path.display()))?;
+    }
+    std::fs::write(path, content)
+        .with_context(|| format!("failed to write skill to {}", path.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]

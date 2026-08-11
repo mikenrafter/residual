@@ -3,15 +3,174 @@ use crate::config::Config;
 use crate::cli::VerifyCheck;
 
 pub fn run(cfg: &Config, check: VerifyCheck) -> Result<()> {
-    todo!("dispatch verify checks")
+    match check {
+        VerifyCheck::Traits => {
+            let violations = check_traits(cfg)?;
+            if violations.is_empty() {
+                println!("OK: all traits reference at least one terminology term.");
+            } else {
+                for v in &violations {
+                    println!("VIOLATION [{}] {}: {} — {}", v.source, v.id, v.trait_str, v.reason);
+                }
+                println!("{} trait violation(s) found.", violations.len());
+            }
+        }
+        VerifyCheck::Links => {
+            let violations = check_links(cfg)?;
+            if violations.is_empty() {
+                println!("OK: all attractor links are valid.");
+            } else {
+                for v in &violations {
+                    println!("VIOLATION [{}] {}: missing attractor '{}'", v.source, v.id, v.missing_attractor_id);
+                }
+                println!("{} link violation(s) found.", violations.len());
+            }
+        }
+        VerifyCheck::All => {
+            let trait_violations = check_traits(cfg)?;
+            let link_violations = check_links(cfg)?;
+            let total = trait_violations.len() + link_violations.len();
+            for v in &trait_violations {
+                println!("TRAIT VIOLATION [{}] {}: {} — {}", v.source, v.id, v.trait_str, v.reason);
+            }
+            for v in &link_violations {
+                println!("LINK VIOLATION [{}] {}: missing attractor '{}'", v.source, v.id, v.missing_attractor_id);
+            }
+            if total == 0 {
+                println!("OK: all checks passed.");
+            } else {
+                println!("{} total violation(s) found.", total);
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn check_traits(cfg: &Config) -> Result<Vec<TraitViolation>> {
-    todo!("validate all traits reference ≥1 terminology term")
+    let stressors = crate::storage::stressors::load(&cfg.residual_dir)?;
+    let purposes = crate::storage::purposes::load(&cfg.residual_dir)?;
+    let terms = crate::storage::terminology::load(&cfg.residual_dir)?;
+    let term_set = crate::storage::terminology::term_set(&terms);
+
+    let mut violations = Vec::new();
+
+    // Check stressor traits
+    for stressor in &stressors {
+        for raw_trait in stressor.traits.split('|') {
+            let raw_trait = raw_trait.trim();
+            if raw_trait.is_empty() {
+                continue;
+            }
+            match parse_trait(raw_trait) {
+                None => {
+                    violations.push(TraitViolation {
+                        source: "stressor".to_string(),
+                        id: stressor.id.clone(),
+                        trait_str: raw_trait.to_string(),
+                        reason: "trait must have at least subject verb predicate (3 words)".to_string(),
+                    });
+                }
+                Some(parts) => {
+                    if !trait_uses_terminology(&parts, &term_set) {
+                        violations.push(TraitViolation {
+                            source: "stressor".to_string(),
+                            id: stressor.id.clone(),
+                            trait_str: raw_trait.to_string(),
+                            reason: "no word in this trait matches the project terminology".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Check purpose traits
+    for purpose in &purposes {
+        for raw_trait in purpose.traits.split('|') {
+            let raw_trait = raw_trait.trim();
+            if raw_trait.is_empty() {
+                continue;
+            }
+            match parse_trait(raw_trait) {
+                None => {
+                    violations.push(TraitViolation {
+                        source: "purpose".to_string(),
+                        id: purpose.id.clone(),
+                        trait_str: raw_trait.to_string(),
+                        reason: "trait must have at least subject verb predicate (3 words)".to_string(),
+                    });
+                }
+                Some(parts) => {
+                    if !trait_uses_terminology(&parts, &term_set) {
+                        violations.push(TraitViolation {
+                            source: "purpose".to_string(),
+                            id: purpose.id.clone(),
+                            trait_str: raw_trait.to_string(),
+                            reason: "no word in this trait matches the project terminology".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(violations)
 }
 
 pub fn check_links(cfg: &Config) -> Result<Vec<LinkViolation>> {
-    todo!("validate all attractor_ids exist in attractors.csv")
+    let stressors = crate::storage::stressors::load(&cfg.residual_dir)?;
+    let purposes = crate::storage::purposes::load(&cfg.residual_dir)?;
+    let attractors = crate::storage::attractors::load(&cfg.residual_dir)?;
+    let attractor_ids: std::collections::HashSet<String> =
+        attractors.iter().map(|a| a.id.clone()).collect();
+
+    let mut violations = Vec::new();
+
+    for stressor in &stressors {
+        if !stressor.attractor_id.is_empty() && !attractor_ids.contains(&stressor.attractor_id) {
+            violations.push(LinkViolation {
+                source: "stressor".to_string(),
+                id: stressor.id.clone(),
+                missing_attractor_id: stressor.attractor_id.clone(),
+            });
+        }
+    }
+
+    for purpose in &purposes {
+        if !purpose.attractor_id.is_empty() && !attractor_ids.contains(&purpose.attractor_id) {
+            violations.push(LinkViolation {
+                source: "purpose".to_string(),
+                id: purpose.id.clone(),
+                missing_attractor_id: purpose.attractor_id.clone(),
+            });
+        }
+    }
+
+    Ok(violations)
+}
+
+/// Parse a trait string into (subject, verb, predicates).
+/// Format: "<subject> <verb> <pred1> [<pred2>...]"
+/// Returns None if fewer than 3 words.
+pub fn parse_trait(trait_str: &str) -> Option<TraitParts> {
+    let words: Vec<&str> = trait_str.split_whitespace().collect();
+    if words.len() < 3 {
+        return None;
+    }
+    let subject = words[0].to_string();
+    let verb = words[1].to_string();
+    let predicate = words[2..].join(" ");
+    Some(TraitParts {
+        subject,
+        verb,
+        predicates: vec![predicate],
+    })
+}
+
+pub struct TraitParts {
+    pub subject: String,
+    pub verb: String,
+    pub predicates: Vec<String>,
 }
 
 pub struct TraitViolation {
@@ -27,24 +186,28 @@ pub struct LinkViolation {
     pub missing_attractor_id: String,
 }
 
-/// Parse a trait string into (subject, verb, predicates).
-/// Format: "<subject> <verb> <pred1>[; <pred2>...]"
-pub fn parse_trait(trait_str: &str) -> Option<TraitParts> {
-    todo!("parse trait string into parts")
-}
-
-pub struct TraitParts {
-    pub subject: String,
-    pub verb: String,
-    pub predicates: Vec<String>,
-}
-
 /// Check if any word in the trait touches the terminology set.
 pub fn trait_uses_terminology(
     parts: &TraitParts,
     term_set: &std::collections::HashSet<String>,
 ) -> bool {
-    todo!("check trait words against term set")
+    // Check subject
+    if term_set.contains(&parts.subject.to_lowercase()) {
+        return true;
+    }
+    // Check verb
+    if term_set.contains(&parts.verb.to_lowercase()) {
+        return true;
+    }
+    // Check all words in all predicates
+    for predicate in &parts.predicates {
+        for word in predicate.split_whitespace() {
+            if term_set.contains(&word.to_lowercase()) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
