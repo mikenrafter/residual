@@ -3,3 +3,4 @@ target/
 *.pdf
 .DS_Store
 .claude/worktrees/
+.niri-workspace.yaml
