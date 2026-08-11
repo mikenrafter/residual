@@ -39,19 +39,65 @@ impl std::fmt::Display for Valence {
 }
 
 pub fn load(residual_dir: &Path) -> Result<Vec<Attractor>> {
-    todo!("load attractors.csv")
+    let path = residual_dir.join("attractors.csv");
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_path(&path)?;
+    let mut result = Vec::new();
+    for record in rdr.deserialize() {
+        let a: Attractor = record?;
+        result.push(a);
+    }
+    Ok(result)
 }
 
 pub fn append(residual_dir: &Path, attractor: Attractor) -> Result<()> {
-    todo!("append attractor to csv")
+    let path = residual_dir.join("attractors.csv");
+    let file_exists = path.exists() && std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    if !file_exists {
+        writeln!(file, "id,name,valence,description,phase_state")?;
+    }
+    let valence_str = attractor.valence.to_string();
+    let mut buf = Vec::new();
+    {
+        let mut wtr = csv::WriterBuilder::new()
+            .has_headers(false)
+            .from_writer(&mut buf);
+        wtr.write_record(&[
+            &attractor.id,
+            &attractor.name,
+            &valence_str,
+            &attractor.description,
+            &attractor.phase_state,
+        ])?;
+        wtr.flush()?;
+    }
+    file.write_all(&buf)?;
+    Ok(())
 }
 
 pub fn next_id(attractors: &[Attractor]) -> String {
-    todo!("generate next attractor id")
+    let max = attractors
+        .iter()
+        .filter_map(|a| {
+            a.id.strip_prefix("A-").and_then(|n| n.parse::<u32>().ok())
+        })
+        .max()
+        .unwrap_or(0);
+    format!("A-{:02}", max + 1)
 }
 
 pub fn exists(residual_dir: &Path, id: &str) -> Result<bool> {
-    todo!("check if attractor id exists")
+    let attractors = load(residual_dir)?;
+    Ok(attractors.iter().any(|a| a.id == id))
 }
 
 #[cfg(test)]

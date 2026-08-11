@@ -13,15 +13,60 @@ pub struct Purpose {
 }
 
 pub fn load(residual_dir: &Path) -> Result<Vec<Purpose>> {
-    todo!("load purposes.csv")
+    let path = residual_dir.join("purposes.csv");
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_path(&path)?;
+    let mut result = Vec::new();
+    for record in rdr.deserialize() {
+        let p: Purpose = record?;
+        result.push(p);
+    }
+    Ok(result)
 }
 
 pub fn append(residual_dir: &Path, purpose: Purpose) -> Result<()> {
-    todo!("append purpose to csv")
+    let path = residual_dir.join("purposes.csv");
+    let file_exists = path.exists() && std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    if !file_exists {
+        writeln!(file, "id,description,feature,traits,components_enabled,attractor_id")?;
+    }
+    let mut buf = Vec::new();
+    {
+        let mut wtr = csv::WriterBuilder::new()
+            .has_headers(false)
+            .from_writer(&mut buf);
+        wtr.write_record(&[
+            &purpose.id,
+            &purpose.description,
+            &purpose.feature,
+            &purpose.traits,
+            &purpose.components_enabled,
+            &purpose.attractor_id,
+        ])?;
+        wtr.flush()?;
+    }
+    file.write_all(&buf)?;
+    Ok(())
 }
 
 pub fn next_id(purposes: &[Purpose]) -> String {
-    todo!("generate next purpose id")
+    let max = purposes
+        .iter()
+        .filter_map(|p| {
+            p.id.strip_prefix("P-").and_then(|n| n.parse::<u32>().ok())
+        })
+        .max()
+        .unwrap_or(0);
+    format!("P-{:02}", max + 1)
 }
 
 #[cfg(test)]

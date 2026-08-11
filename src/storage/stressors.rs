@@ -13,15 +13,61 @@ pub struct Stressor {
 }
 
 pub fn load(residual_dir: &Path) -> Result<Vec<Stressor>> {
-    todo!("load stressors.csv")
+    let path = residual_dir.join("stressors.csv");
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_path(&path)?;
+    let mut result = Vec::new();
+    for record in rdr.deserialize() {
+        let s: Stressor = record?;
+        result.push(s);
+    }
+    Ok(result)
 }
 
 pub fn append(residual_dir: &Path, stressor: Stressor) -> Result<()> {
-    todo!("append stressor to csv")
+    let path = residual_dir.join("stressors.csv");
+    let file_exists = path.exists() && std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    if !file_exists {
+        writeln!(file, "id,description,naive_change,traits,components_affected,attractor_id")?;
+    }
+    // Write the data row using csv writer to handle quoting
+    let mut buf = Vec::new();
+    {
+        let mut wtr = csv::WriterBuilder::new()
+            .has_headers(false)
+            .from_writer(&mut buf);
+        wtr.write_record(&[
+            &stressor.id,
+            &stressor.description,
+            &stressor.naive_change,
+            &stressor.traits,
+            &stressor.components_affected,
+            &stressor.attractor_id,
+        ])?;
+        wtr.flush()?;
+    }
+    file.write_all(&buf)?;
+    Ok(())
 }
 
 pub fn next_id(stressors: &[Stressor]) -> String {
-    todo!("generate next stressor id")
+    let max = stressors
+        .iter()
+        .filter_map(|s| {
+            s.id.strip_prefix("S-").and_then(|n| n.parse::<u32>().ok())
+        })
+        .max()
+        .unwrap_or(0);
+    format!("S-{:02}", max + 1)
 }
 
 #[cfg(test)]

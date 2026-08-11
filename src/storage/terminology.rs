@@ -11,15 +11,51 @@ pub struct Term {
 }
 
 pub fn load(residual_dir: &Path) -> Result<Vec<Term>> {
-    todo!("load terminology.csv")
+    let path = residual_dir.join("terminology.csv");
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_path(&path)?;
+    let mut result = Vec::new();
+    for record in rdr.deserialize() {
+        let t: Term = record?;
+        result.push(t);
+    }
+    Ok(result)
 }
 
 pub fn append(residual_dir: &Path, term: Term) -> Result<()> {
-    todo!("append term to csv")
+    let path = residual_dir.join("terminology.csv");
+    let file_exists = path.exists() && std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    if !file_exists {
+        writeln!(file, "term,definition,domain,related_terms")?;
+    }
+    let mut buf = Vec::new();
+    {
+        let mut wtr = csv::WriterBuilder::new()
+            .has_headers(false)
+            .from_writer(&mut buf);
+        wtr.write_record(&[
+            &term.term,
+            &term.definition,
+            &term.domain,
+            &term.related_terms,
+        ])?;
+        wtr.flush()?;
+    }
+    file.write_all(&buf)?;
+    Ok(())
 }
 
 pub fn term_set(terms: &[Term]) -> std::collections::HashSet<String> {
-    todo!("return lowercase set of all term strings")
+    terms.iter().map(|t| t.term.to_lowercase()).collect()
 }
 
 #[cfg(test)]
