@@ -1,0 +1,7 @@
+id,description,feature,traits,components_enabled,attractor_id
+P-01,Architects can define and iterate on project purposes without writing code,`residual add purpose` CLI command,architects add purposes without friction,storage-purposes cli-add,A-01
+P-02,Agents can retrieve all current project context before starting a skill session,`residual skill-data <name>` prints formatted markdown context,agents begin skill sessions with accurate current context,skill-data context-builder,A-01
+P-03,Skills can be installed into any supported agent's config directory without manual file management,`residual skill-install --agent <name>` command,skills reach agents without manual file copying,skill-install install-paths,A-01
+P-04,Data integrity is enforced before any commit touches residual/ files,pre-commit git hook runs `residual verify all`,commits cannot contain invalid traits or broken attractor links,verify-traits verify-links git-hook,A-01
+P-05,The NKP matrix provides visual evidence of hyperliminal coupling and fusion/fission candidates,`residual matrix show` with colored table output,architects see coupling patterns without manual matrix calculation,nkp-matrix matrix-show,A-01
+P-06,Skills self-report their version so agents can detect and respond to staleness,Version field in skill front-matter; `residual skill-check` command,agents know when their cached skill is outdated,skill-check skill-show,A-03

@@ -1,0 +1,6 @@
+# residual configuration — self-application (dogfood)
+[validation]
+strict = true
+
+[skills]
+token_warn = 1000

@@ -1,0 +1,13 @@
+term,definition,domain,related_terms
+stressor,a narrative describing how the business system moves to a different attractor without requiring probability or consensus,nkp,attractor residue walk
+attractor,a recurring state that a complex system arrives in again and again,nkp,stressor phase-state hyperliminal
+residue,what is left over of a system after it is exposed to some form of stress; the unit of architectural change,nkp,stressor naive-architecture residual-architecture
+walk,iterative traversal of a domain with multiple stakeholders to build rich layered understanding,methodology,deleuzian-walk persona stressor-walk
+criticality,the point at which a system has the right balance of N (nodes) and K (links) to be resilient to unknown stressors without being chaotic,nkp,n k p kauffman
+hyperliminal,describing coupling that is invisible until a stressor activates it — shared stress response across components,nkp,coupling matrix stressor
+fusion,combining two components that share identical stress-response patterns into one to safely reduce N,nkp,fission matrix criticality
+fission,splitting a component with excessive stress surface (high K) into smaller parts to reduce coupling,nkp,fusion matrix criticality
+trait,a verifiable statement of desirable system behavior using the form: subject + verb + predicate; must use defined terminology,verification,terminology purpose stressor
+persona,a stakeholder voice used during stressor-walk to surface concerns and desires from a specific role's perspective,methodology,stressor-walk attractor purpose-walk
+naive-architecture,the first-pass architecture produced before stressor analysis; the starting point for residual analysis,architecture,residue stressor-walk integrate
+skill,a versioned agent-agnostic prompt document encoding a specific methodology step in the residuality workflow,tool,purpose-walk naive-draft stressor-walk integrate fmea atam

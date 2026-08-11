@@ -1,0 +1,5 @@
+id,name,valence,description,phase_state
+A-01,Architecture Clarity,positive,The tool's NKP data accurately reflects the system's stress surface and residual architecture,Stressors are well-defined; terminology is complete; iteration captures current architecture with Ri > 0
+A-02,Terminology Drift,negative,Domain terms accumulate without definitions or become inconsistent across files,Traits fail validation; terminology.csv grows stale; agent sessions produce contradictory terms
+A-03,Skill Staleness,negative,Installed skill files diverge from embedded skill definitions in the binary,Agents work from outdated methodology; skill-check reports version mismatch
+A-04,Data Fragmentation,negative,residual/ files become inconsistent — stressors reference nonexistent attractors; traits have no terminology basis,verify all returns violations; git hook blocks commits; no way to run FMEA
