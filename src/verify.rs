@@ -1,11 +1,34 @@
 use anyhow::{bail, Result};
+use std::time::{Duration, Instant};
 use crate::config::Config;
 use crate::cli::VerifyCheck;
+
+pub const OUTCOME_VERIFY_SLOW_SECS: u64 = 2;
+
+pub fn slow_outcome_verify_warning(elapsed: Duration) -> Option<String> {
+    if elapsed.as_secs() >= OUTCOME_VERIFY_SLOW_SECS {
+        Some(format!(
+            "WARN: outcome validation took {:.2}s (≥{}s) — slow verify may drive hook bypass (S-06)",
+            elapsed.as_secs_f64(),
+            OUTCOME_VERIFY_SLOW_SECS
+        ))
+    } else {
+        None
+    }
+}
+
+fn print_slow_outcome_warning(elapsed: Duration) {
+    if let Some(warn) = slow_outcome_verify_warning(elapsed) {
+        println!("{warn}");
+    }
+}
 
 pub fn run(cfg: &Config, check: VerifyCheck) -> Result<()> {
     match check {
         VerifyCheck::Outcomes => {
+            let started = Instant::now();
             let violations = check_outcomes(cfg)?;
+            print_slow_outcome_warning(started.elapsed());
             if violations.is_empty() {
                 println!("OK: all outcomes reference at least one terminology term.");
             } else {
@@ -27,7 +50,9 @@ pub fn run(cfg: &Config, check: VerifyCheck) -> Result<()> {
             }
         }
         VerifyCheck::All => {
+            let started = Instant::now();
             let outcome_violations = check_outcomes(cfg)?;
+            print_slow_outcome_warning(started.elapsed());
             let link_violations = check_links(cfg)?;
             let total = outcome_violations.len() + link_violations.len();
             for v in &outcome_violations {
@@ -52,8 +77,7 @@ pub fn run(cfg: &Config, check: VerifyCheck) -> Result<()> {
 pub fn check_outcomes(cfg: &Config) -> Result<Vec<OutcomeViolation>> {
     let stressors = crate::storage::stressors::load(&cfg.residual_dir)?;
     let purposes = crate::storage::purposes::load(&cfg.residual_dir)?;
-    let terms = crate::storage::terminology::load(&cfg.residual_dir)?;
-    let term_set = crate::storage::terminology::term_set(&terms);
+    let term_index = crate::storage::terminology::term_index(&cfg.residual_dir)?;
 
     let mut violations = Vec::new();
 
@@ -73,7 +97,7 @@ pub fn check_outcomes(cfg: &Config) -> Result<Vec<OutcomeViolation>> {
                     });
                 }
                 Some(parts) => {
-                    if !outcome_uses_terminology(&parts, &term_set) {
+                    if !outcome_uses_terminology(raw_outcome, &parts, &term_index) {
                         violations.push(OutcomeViolation {
                             source: "stressor".to_string(),
                             id: stressor.id.clone(),
@@ -102,7 +126,7 @@ pub fn check_outcomes(cfg: &Config) -> Result<Vec<OutcomeViolation>> {
                     });
                 }
                 Some(parts) => {
-                    if !outcome_uses_terminology(&parts, &term_set) {
+                    if !outcome_uses_terminology(raw_outcome, &parts, &term_index) {
                         violations.push(OutcomeViolation {
                             source: "purpose".to_string(),
                             id: purpose.id.clone(),
@@ -150,9 +174,6 @@ pub fn check_links(cfg: &Config) -> Result<Vec<LinkViolation>> {
     Ok(violations)
 }
 
-/// Parse an outcome string into (subject, verb, predicates).
-/// Format: "<subject> <verb> <pred1> [<pred2>...]"
-/// Returns None if fewer than 3 words.
 pub fn parse_outcome(outcome_str: &str) -> Option<OutcomeParts> {
     let words: Vec<&str> = outcome_str.split_whitespace().collect();
     if words.len() < 3 {
@@ -187,22 +208,28 @@ pub struct LinkViolation {
     pub missing_attractor_id: String,
 }
 
-/// Check if any word in the outcome touches the terminology set.
 pub fn outcome_uses_terminology(
+    outcome_str: &str,
     parts: &OutcomeParts,
-    term_set: &std::collections::HashSet<String>,
+    index: &crate::storage::terminology::TermIndex,
 ) -> bool {
-    if term_set.contains(&parts.subject.to_lowercase()) {
+    if index.words.contains(&parts.subject.to_lowercase()) {
         return true;
     }
-    if term_set.contains(&parts.verb.to_lowercase()) {
+    if index.words.contains(&parts.verb.to_lowercase()) {
         return true;
     }
     for predicate in &parts.predicates {
         for word in predicate.split_whitespace() {
-            if term_set.contains(&word.to_lowercase()) {
+            if index.words.contains(&word.to_lowercase()) {
                 return true;
             }
+        }
+    }
+    let lower = outcome_str.to_lowercase();
+    for phrase in &index.phrases {
+        if phrase.len() >= 3 && lower.contains(phrase.as_str()) {
+            return true;
         }
     }
     false
@@ -250,9 +277,11 @@ mod tests {
             verb: "handles".to_string(),
             predicates: vec!["auth".to_string()],
         };
-        let mut terms = HashSet::new();
-        terms.insert("auth".to_string());
-        assert!(outcome_uses_terminology(&parts, &terms));
+        let index = crate::storage::terminology::TermIndex {
+            words: HashSet::from(["auth".to_string()]),
+            phrases: vec!["auth".to_string()],
+        };
+        assert!(outcome_uses_terminology("system handles auth", &parts, &index));
     }
 
     #[test]
@@ -262,9 +291,41 @@ mod tests {
             verb: "does".to_string(),
             predicates: vec!["something".to_string()],
         };
-        let mut terms = HashSet::new();
-        terms.insert("auth".to_string());
-        assert!(!outcome_uses_terminology(&parts, &terms));
+        let index = crate::storage::terminology::TermIndex {
+            words: HashSet::from(["auth".to_string()]),
+            phrases: vec!["auth".to_string()],
+        };
+        assert!(!outcome_uses_terminology("system does something", &parts, &index));
+    }
+
+    #[test]
+    fn outcome_uses_terminology_phrase_alias_match() {
+        let parts = OutcomeParts {
+            subject: "operator".to_string(),
+            verb: "cites".to_string(),
+            predicates: vec!["this example has a dash in it here".to_string()],
+        };
+        let index = crate::storage::terminology::TermIndex {
+            words: HashSet::new(),
+            phrases: vec!["this example has a dash in it".to_string()],
+        };
+        assert!(outcome_uses_terminology(
+            "operator cites this example has a dash in it here",
+            &parts,
+            &index
+        ));
+    }
+
+    #[test]
+    fn slow_outcome_verify_warning_emits_at_threshold() {
+        let msg = slow_outcome_verify_warning(Duration::from_secs(2)).unwrap();
+        assert!(msg.contains("WARN"));
+        assert!(msg.contains("S-06"));
+    }
+
+    #[test]
+    fn slow_outcome_verify_warning_silent_below_threshold() {
+        assert!(slow_outcome_verify_warning(Duration::from_millis(500)).is_none());
     }
 
     #[test]
