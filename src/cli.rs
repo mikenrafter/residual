@@ -159,6 +159,19 @@ pub enum AddTarget {
         #[arg(long, default_value = "", visible_alias = "traits")]
         outcomes: String,
         #[arg(long, default_value = "")] components: String,
+        #[arg(long)]
+        whole_system: bool,
+        #[arg(long, default_value = "")]
+        notes: String,
+    },
+    /// Add a residue mapping. Process: whole-system-residue first for non-software zig.
+    Residue {
+        #[arg(long)] force_id: String,
+        #[arg(long, default_value = "")] component_id: String,
+        #[arg(long, default_value = "proposed")] status: String,
+        #[arg(long, default_value = "")] notes: String,
+        #[arg(long)]
+        whole_system: bool,
     },
     /// Add a purpose force. Process: whole-system-residue first — record outcomes.
     Purpose {

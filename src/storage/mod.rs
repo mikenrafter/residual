@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::fs;
 use crate::config::Config;
 use crate::cli::{AddTarget, ListTarget};
+use crate::structure::analysis::residues::{tag_naive_change_whole_system, Residue};
 
 pub mod attractors;
 pub mod config;
@@ -10,9 +11,12 @@ pub mod integrity;
 pub mod iterations;
 pub mod personas;
 pub mod purposes;
+pub mod residues;
 pub mod research;
 pub mod stressors;
 pub mod terminology;
+
+const WHOLE_SYSTEM_REMINDER: &str = "reminder: examine whole-system-residue (hardware, process, organization, policy) before defaulting to a software-only patch; use --whole-system --notes when the zig survives outside software";
 
 pub fn init(cfg: &Config, force: bool) -> Result<()> {
     let session = integrity::sessions::begin_mutation(&cfg.residual_dir, force)?;
@@ -65,7 +69,24 @@ pub fn add(cfg: &Config, target: AddTarget, force: bool) -> Result<()> {
 fn add_entry(cfg: &Config, target: AddTarget) -> Result<()> {
     let dir = &cfg.residual_dir;
     match target {
-        AddTarget::Stressor { description, attractor_id, naive_change, outcomes, components } => {
+        AddTarget::Stressor {
+            description,
+            attractor_id,
+            naive_change,
+            outcomes,
+            components,
+            whole_system,
+            notes,
+        } => {
+            let naive_change = if whole_system {
+                if notes.is_empty() {
+                    anyhow::bail!("--whole-system requires --notes describing the hardware, process, organization, or policy zig");
+                }
+                tag_naive_change_whole_system(&naive_change)
+            } else {
+                eprintln!("{WHOLE_SYSTEM_REMINDER}");
+                naive_change
+            };
             let existing = stressors::load(dir)?;
             let id = stressors::next_id(&existing);
             stressors::append(dir, stressors::Stressor {
@@ -76,7 +97,43 @@ fn add_entry(cfg: &Config, target: AddTarget) -> Result<()> {
                 outcomes,
                 components_affected: components,
             })?;
+            if whole_system {
+                let residue_id = residues::append_whole_system(dir, &id, &notes)?;
+                println!("Added whole-system-residue {}", residue_id);
+            }
             println!("Added stressor {}", id);
+        }
+        AddTarget::Residue {
+            force_id,
+            component_id,
+            status,
+            notes,
+            whole_system,
+        } => {
+            if whole_system {
+                let id = residues::append_whole_system(dir, &force_id, &notes)?;
+                println!("Added whole-system-residue {}", id);
+            } else {
+                if component_id.is_empty() {
+                    anyhow::bail!("provide --component-id or --whole-system");
+                }
+                if !residues::force_exists(dir, &force_id)? {
+                    anyhow::bail!("force id '{}' not found in stressors, purposes, or forces", force_id);
+                }
+                let existing = residues::load(dir)?;
+                let id = residues::next_id(&existing);
+                residues::append(
+                    dir,
+                    Residue {
+                        id: id.clone(),
+                        force_id,
+                        component_id,
+                        status,
+                        notes,
+                    },
+                )?;
+                println!("Added residue {}", id);
+            }
         }
         AddTarget::Purpose { description, attractor_id, feature, outcomes, components } => {
             let existing = purposes::load(dir)?;

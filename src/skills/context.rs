@@ -107,6 +107,14 @@ pub fn build(cfg: &Config, skill_name: &str) -> Result<String> {
          at **any phase**, without invoking a skill. Skills are **selectable analytical lenses** — \
          not mandatory gates. `verify all` enforces structure, not ceremony order.\n\n",
     );
+    if matches!(skill_name, "stressor-walk" | "fmea" | "integrate") {
+        out.push_str("## Whole-system-residue\n");
+        out.push_str(
+            "Examine **whole-system-residue** (hardware, process, organization, policy zig) \
+             before defaulting to a software-only patch. Use `--whole-system --notes` when the \
+             surviving change leaves the software boundary.\n\n",
+        );
+    }
     if want_personas {
         let persona_names: Vec<&str> = personas.iter().map(|p| p.name.as_str()).collect();
         if matches!(skill_name, "stressor-walk" | "fmea" | "atam") {
