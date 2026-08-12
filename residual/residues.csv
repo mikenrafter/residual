@@ -1,81 +1,111 @@
 id,force_id,component_id,status,notes
-R-01,S-01,skills-installer,proposed,migrated from naive token 'skill-install'
-R-02,S-01,skills-installer,proposed,migrated from naive token 'skill-check'
-R-03,S-02,verification,proposed,migrated from naive token 'verify-traits'
-R-04,S-02,structure-definition-lexicon,proposed,migrated from naive token 'terminology'
-R-05,S-03,storage,proposed,migrated from naive token 'storage-append'
-R-06,S-03,storage-sessions,proposed,migrated from naive token 'file-locking'
-R-07,S-04,storage,proposed,migrated from naive token 'storage-init'
-R-08,S-05,skills-phases,proposed,migrated from naive token 'skill-list'
-R-09,S-05,skills-phases,proposed,migrated from naive token 'skill-show'
-R-10,S-06,verification,proposed,migrated from naive token 'verify-traits'
-R-11,S-06,structure-definition-lexicon,proposed,migrated from naive token 'terminology'
-R-12,S-07,skills-installer,proposed,migrated from naive token 'skill-install'
-R-13,S-07,skills-installer,proposed,migrated from naive token 'skill-check'
-R-14,S-08,skills-phases,proposed,migrated from naive token 'skill-data'
-R-15,S-08,storage,proposed,migrated from naive token 'storage-init'
-R-16,S-09,verification-git-hook,proposed,migrated from naive token 'git-hook'
-R-17,S-09,verification,proposed,migrated from naive token 'verify-all'
-R-18,S-10,structure-analysis-tag-scan,proposed,migrated from naive token 'tag-scan'
-R-19,S-11,verification,proposed,migrated from naive token 'verify-links'
-R-20,S-11,verification,proposed,migrated from naive token 'verify-traits'
-R-21,S-12,verification,proposed,migrated from naive token 'verify-traits'
-R-22,S-12,structure-definition-lexicon,proposed,migrated from naive token 'terminology'
-R-23,S-13,storage,proposed,migrated from naive token 'storage-io'
-R-24,S-14,structure-analysis-stressors,proposed,migrated from naive token 'stressor-schema'
-R-25,S-15,structure-definition-components,proposed,migrated from naive token 'components-registry'
-R-26,S-15,verification,proposed,migrated from naive token 'verify-links'
-R-27,S-16,structure-definition-components,proposed,migrated from naive token 'components-registry'
-R-28,S-17,structure-analysis-residues,proposed,migrated from naive token 'residues-csv'
-R-29,S-17,structure-analysis-stressors,proposed,migrated from naive token 'stressor-schema'
-R-30,S-18,structure-analysis,proposed,migrated from naive token 'matrix-show'
-R-31,S-18,structure-analysis,proposed,migrated from naive token 'group-filter'
-R-32,S-19,structure-analysis-residues,proposed,migrated from naive token 'residues-csv'
-R-33,S-20,storage,proposed,migrated from naive token 'storage-io'
-R-34,S-20,storage-sessions,proposed,migrated from naive token 'change-detection'
-R-35,S-21,skills-phases,proposed,migrated from naive token 'skill-interface'
-R-36,S-22,research-study,proposed,migrated from naive token 'research-study'
-R-37,S-22,skills-personas,proposed,migrated from naive token 'personas'
-R-38,S-23,skills-phases,proposed,migrated from naive token 'skill-interface'
-R-39,S-23,cli,proposed,migrated from naive token 'cli-add'
-R-40,S-24,skills-phases,proposed,migrated from naive token 'skill-interface'
-R-41,S-24,verification,proposed,migrated from naive token 'verify-all'
-R-42,S-25,structure-analysis-attractors,proposed,migrated from naive token 'storage-attractors'
-R-43,S-25,verification,proposed,migrated from naive token 'verify-links'
-R-44,P-01,structure-analysis-purposes,proposed,migrated from naive token 'storage-purposes'
-R-45,P-01,cli,proposed,migrated from naive token 'cli-add'
-R-46,P-02,skills-phases,proposed,migrated from naive token 'skill-data'
-R-47,P-02,skills-phases,proposed,migrated from naive token 'context-builder'
-R-48,P-03,skills-installer,proposed,migrated from naive token 'skill-install'
-R-49,P-03,skills-installer,proposed,migrated from naive token 'install-paths'
-R-50,P-04,verification,proposed,migrated from naive token 'verify-traits'
-R-51,P-04,verification,proposed,migrated from naive token 'verify-links'
-R-52,P-04,verification-git-hook,proposed,migrated from naive token 'git-hook'
-R-53,P-05,structure-analysis,proposed,migrated from naive token 'nkp-matrix'
-R-54,P-05,structure-analysis,proposed,migrated from naive token 'matrix-show'
-R-55,P-06,skills-installer,proposed,migrated from naive token 'skill-check'
-R-56,P-06,skills-phases,proposed,migrated from naive token 'skill-show'
-R-57,P-07,skills-phases,proposed,migrated from naive token 'skill-data'
-R-58,P-07,skills-phases,proposed,migrated from naive token 'context-builder'
-R-59,P-07,skills-phases,proposed,migrated from naive token 'skill-interface'
-R-60,P-08,cli,proposed,migrated from naive token 'cli-init'
-R-61,P-08,skills-phases,proposed,migrated from naive token 'skill-data'
-R-62,P-08,verification,proposed,migrated from naive token 'verify-all'
-R-63,P-09,skills-phases,proposed,migrated from naive token 'skill-interface'
-R-64,P-09,verification,proposed,migrated from naive token 'verify-all'
-R-65,P-10,skills-personas,proposed,migrated from naive token 'personas'
-R-66,P-10,skills-phases,proposed,migrated from naive token 'stressor-walk'
-R-67,P-11,structure-analysis-stressors,proposed,migrated from naive token 'storage-stressors'
-R-68,P-11,structure-analysis-attractors,proposed,migrated from naive token 'storage-attractors'
-R-69,P-12,structure-analysis-stressors,proposed,migrated from naive token 'storage-stressors'
-R-70,P-12,skills-phases,proposed,migrated from naive token 'skill-interface'
-R-71,P-13,structure-analysis,proposed,migrated from naive token 'nkp-matrix'
-R-72,P-13,structure-analysis,proposed,migrated from naive token 'matrix-criticality'
-R-73,P-13,structure-analysis,proposed,migrated from naive token 'matrix-ri'
-R-74,P-14,research-study,proposed,migrated from naive token 'research-study'
-R-75,P-15,research-study,proposed,migrated from naive token 'research-study'
-R-76,P-15,skills-personas,proposed,migrated from naive token 'personas'
-R-77,P-16,structure-analysis-attractors,proposed,migrated from naive token 'storage-attractors'
-R-78,P-16,skills-phases,proposed,migrated from naive token 'skill-interface'
-R-79,P-17,structure-analysis-purposes,proposed,migrated from naive token 'storage-purposes'
-R-80,P-17,cli,proposed,migrated from naive token 'cli-add'
+R-01,S-01,skills-installer,proposed,version field + skill-check/install surface live here
+R-02,S-01,skills-phases,proposed,embedded skill prose is the content source of truth
+R-03,S-02,verification,proposed,outcome/trait validation path
+R-04,S-02,structure-definition-lexicon,proposed,term set / aliases under lexicon continuity
+R-05,S-03,storage-sessions,proposed,session lock for concurrent writers
+R-06,S-03,storage-format,proposed,CSV append/mutate of purposes/forces
+R-07,S-03,structure-analysis-purposes,proposed,purpose force rows under concurrent walk
+R-08,S-04,storage,proposed,init must be idempotent over partial residual/
+R-09,S-04,storage-migration,proposed,naive→v3 transfer when partial trees upgrade
+R-10,S-05,skills-phases,proposed,skill-list/show token estimation
+R-11,S-05,storage-config,proposed,token_warn lives in v3 verification policy keys
+R-12,S-06,verification,proposed,verify traits/outcomes path
+R-13,S-06,verification-git-hook,proposed,pre-commit is where slow verify drives --no-verify
+R-14,S-06,structure-definition-lexicon,proposed,HashSet build over lexicon
+R-15,S-07,skills-installer,proposed,passthrough stubs vs versioned install burden
+R-16,S-08,skills-phases,proposed,skill-data must detect absent metadata
+R-17,S-08,storage,proposed,init / empty residual tree detection
+R-18,S-09,verification-git-hook,proposed,hook bypass is the entry stressor
+R-19,S-09,verification,proposed,verify-all is the trust baseline
+R-20,S-09,skills-phases,proposed,sessions should surface unverified windows
+R-21,S-10,structure-analysis-tag-scan,proposed,suggestions not coverage enforcement
+R-22,S-10,verification,proposed,enforcement stays one-way tags + links
+R-23,S-11,verification,proposed,cross-store link + continuity checks
+R-24,S-11,structure-definition-components,proposed,registry is required for component resolve
+R-25,S-11,structure-definition-lexicon,proposed,outcome words must hit lexicon
+R-26,S-12,structure-definition-lexicon,proposed,aliases for plural/hyphen/phrase forms
+R-27,S-12,verification,proposed,matching expands aliases
+R-28,S-13,storage-format,proposed,CSV is the current serialization
+R-29,S-13,storage-migration,proposed,format_version keyed transfer
+R-30,S-13,storage,proposed,I/O façade over format backends
+R-31,S-14,structure-analysis-stressors,proposed,detection signals belong on stressor forces
+R-32,S-14,structure-analysis-force,proposed,shared force schema for observable fire
+R-33,S-15,structure-definition-components,proposed,FQ names must exist before matrix columns
+R-34,S-15,verification,proposed,link check residue/component ids
+R-35,S-15,structure-analysis-residues,proposed,component coupling lives in residues not free text
+R-36,S-16,structure-definition-components,proposed,status + architecture_set on registry rows
+R-37,S-16,structure,proposed,filter/group across architecture sets
+R-38,S-17,structure-analysis-residues,proposed,force×component is the residue home
+R-39,S-17,structure-analysis-force,proposed,purpose XOR stressor half of residue
+R-40,S-17,storage-format,proposed,residues.csv round-trip
+R-41,S-18,structure,proposed,filter/sort/group + subset selectors for matrix/list
+R-42,S-18,structure-analysis,proposed,matrix show renders filtered sets with section separators
+R-43,S-19,structure-analysis-residues,proposed,purpose-sourced residue rows
+R-44,S-19,structure-analysis-purposes,proposed,positive residual half
+R-45,S-19,structure-analysis-force,proposed,unified force id for both kinds
+R-46,S-20,storage-sessions,proposed,change-detection hash + --force
+R-47,S-20,storage-format,proposed,managed CSV writes that must not clobber
+R-48,S-21,skills-phases,proposed,skill-data/preambles teach fluency
+R-49,S-21,cli,proposed,process text beside clap actions; --help fluency
+R-50,S-21,cli-help,proposed,completions/man carry fluent entry model
+R-51,S-22,research-study,proposed,longitudinal study is registry-only until runtime lands
+R-52,S-22,skills-personas,proposed,persona walks feed alpha/beta evidence
+R-53,S-23,skills-phases,proposed,skills prompt whole-system zig first
+R-54,S-23,cli,proposed,add-force process text reminds non-software zig
+R-55,S-23,structure-analysis-residues,proposed,whole-system-residue is a residue outcome
+R-56,S-24,skills-phases,proposed,skills are selectable lenses
+R-57,S-24,verification,proposed,structure enforced without ceremony order
+R-58,S-25,structure-analysis-attractors,proposed,+/- state pressure replaces valence
+R-59,S-25,verification,proposed,links require coherent attractor landing
+R-60,S-25,storage-format,proposed,attractor CSV shape for +/- columns
+R-61,P-01,structure-analysis-purposes,proposed,purpose force records
+R-62,P-01,structure-analysis-force,proposed,purpose as Force specialization
+R-63,P-01,cli,proposed,residual add purpose
+R-64,P-02,skills-phases,proposed,skill-data context markdown
+R-65,P-03,skills-installer,proposed,skill-install into agent dirs
+R-66,P-04,verification,proposed,verify all before commit
+R-67,P-04,verification-git-hook,proposed,pre-commit install
+R-68,P-05,structure-analysis,proposed,NKP matrix show/fusion/fission
+R-69,P-06,skills-installer,proposed,skill-check version compare
+R-70,P-06,skills-phases,proposed,front-matter version in skill prose
+R-71,P-07,skills-phases,proposed,skills do not gate mid-session adds
+R-72,P-07,cli,proposed,add surfaces available any phase
+R-73,P-08,cli,proposed,residual init entry
+R-74,P-08,skills-phases,proposed,skill-data / sessions
+R-75,P-08,verification,proposed,verify all closes the solo loop
+R-76,P-08,storage,proposed,core residual/ tree required
+R-77,P-09,skills-phases,proposed,a-la-carte skill steps
+R-78,P-09,verification,proposed,structure not ceremony
+R-79,P-10,skills-personas,proposed,persona files for walks
+R-80,P-10,skills-phases,proposed,stressor-walk consumes personas
+R-81,P-10,skills-research,proposed,walk+persona research notes (not research-study)
+R-82,P-11,structure-analysis-stressors,proposed,exploration ledger stressor half
+R-83,P-11,structure-analysis-attractors,proposed,exploration ledger attractor half
+R-84,P-11,structure-analysis-force,proposed,probability-free force schema
+R-85,P-12,structure-analysis-residues,proposed,whole-system-residue home
+R-86,P-12,skills-phases,proposed,skills prompt non-software zig
+R-87,P-12,cli,proposed,add-force reminder beside action
+R-88,P-13,structure-analysis,proposed,criticality + Ri computations
+R-89,P-13,structure-definition-iterations,proposed,iteration notes capture Ri progress
+R-90,P-14,research-study,proposed,longitudinal study protocol — registry only for now
+R-91,P-15,research-study,proposed,publishable robustness evidence
+R-92,P-15,skills-personas,proposed,alpha/beta path tied to persona walks
+R-93,P-16,structure-analysis-attractors,proposed,+/- states on attractor records
+R-94,P-16,skills-phases,proposed,skills require both sides before defined
+R-95,P-16,verification,proposed,links/continuity expect paired states
+R-96,P-17,structure-analysis-purposes,proposed,outcome semantics on purposes
+R-97,P-17,structure-analysis-stressors,proposed,outcome semantics on stressors
+R-98,P-17,structure-analysis-force,proposed,shared outcomes field (not traits)
+R-99,P-17,cli,proposed,CLI language aligned to outcome
+R-100,S-26,structure-analysis,proposed,heatmap + totals + matrix viewport chrome
+R-101,S-26,cli,proposed,--csv / show flags; sticky-limits docs beside action
+R-102,S-27,structure-analysis-residues,proposed,matrix-shaped residue store
+R-103,S-27,storage-format,proposed,CSV round-trip for matrix residue artifact
+R-104,S-27,structure-analysis,proposed,matrix show parity with residue view
+R-105,P-18,verification-git-hook,proposed,commit-msg hook install warn-by-default
+R-106,P-18,structure-definition-lexicon,proposed,alias-aware vocabulary check
+R-107,P-18,structure-definition-components,proposed,component prefix validation
+R-108,P-18,verification,proposed,verify commit-msg and commit check/suggest/template
+R-109,S-28,verification-git-hook,proposed,conventional commit blocklist
+R-110,S-28,verification,proposed,commit-msg enforce opt-in via storage-config

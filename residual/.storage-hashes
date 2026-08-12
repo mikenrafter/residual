@@ -1,15 +1,15 @@
 # storage integrity change-detection snapshot
-attractors.csv=caf00301f1166554
+attractors.csv=8ccc7617547bfaec
 components.csv=ef59bf0199342485
 config.toml=0632385099905b5e
-forces.csv=5f78c0b870522d01
+forces.csv=060e8240bd962804
 iterations/1.md=dcf32757637f4854
 iterations/2.md=df62931d5da549bc
 iterations/4.md=b31cd139afbfabf0
 lexicon.csv=9e83abcf5a537942
 personas/agent.md=8b0135fe35258d31
 personas/architect.md=c43ffc1c5fda1a2a
-purposes.csv=5d49fd8bf0c736a7
-residues.csv=658c3ce732e89400
-stressors.csv=d672a8e453824ac0
+purposes.csv=813a45c2fd8e8b7a
+residues.csv=28f9264faf8ec12f
+stressors.csv=e12dac47a166f5d6
 terminology.csv=c117a2370121c217

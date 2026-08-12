@@ -42,6 +42,9 @@ pub fn run(cfg: &Config, check: VerifyCheck) -> Result<()> {
                 println!("{} total violation(s) found.", total);
             }
         }
+        VerifyCheck::CommitMsg { .. } => {
+            anyhow::bail!("verify commit-msg is handled by the CLI dispatcher; call residual verify commit-msg directly");
+        }
     }
     Ok(())
 }

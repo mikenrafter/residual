@@ -18,6 +18,9 @@ fn default_super_strict() -> bool {
 fn default_token_warn() -> usize {
     1000
 }
+fn default_commit_msg_enforce() -> bool {
+    false
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageConfig {
@@ -29,6 +32,9 @@ pub struct StorageConfig {
     pub super_strict: bool,
     #[serde(default = "default_token_warn")]
     pub token_warn: usize,
+    /// When false, commit-msg hook prints violations but exits 0 (warn-only).
+    #[serde(default = "default_commit_msg_enforce")]
+    pub commit_msg_enforce: bool,
 }
 
 impl Default for StorageConfig {
@@ -38,6 +44,7 @@ impl Default for StorageConfig {
             change_detection: default_change_detection(),
             super_strict: default_super_strict(),
             token_warn: default_token_warn(),
+            commit_msg_enforce: default_commit_msg_enforce(),
         }
     }
 }
@@ -64,6 +71,8 @@ struct VerificationSection {
     super_strict: bool,
     #[serde(default = "default_token_warn")]
     token_warn: usize,
+    #[serde(default = "default_commit_msg_enforce")]
+    commit_msg_enforce: bool,
 }
 
 impl Default for VerificationSection {
@@ -71,6 +80,7 @@ impl Default for VerificationSection {
         Self {
             super_strict: default_super_strict(),
             token_warn: default_token_warn(),
+            commit_msg_enforce: default_commit_msg_enforce(),
         }
     }
 }
@@ -83,14 +93,15 @@ pub fn parse_v3(toml_str: &str) -> Result<StorageConfig> {
         change_detection: doc.storage.change_detection,
         super_strict: doc.verification.super_strict,
         token_warn: doc.verification.token_warn,
+        commit_msg_enforce: doc.verification.commit_msg_enforce,
     })
 }
 
 /// Render the full v3 document (storage + verify policy sections).
 pub fn render_v3(cfg: &StorageConfig) -> String {
     format!(
-        "# residual v3 configuration\nformat_version = \"{}\"\n\n[storage]\nchange_detection = {}\n\n[verification]\nsuper_strict = {}\ntoken_warn = {}\n",
-        cfg.format_version, cfg.change_detection, cfg.super_strict, cfg.token_warn
+        "# residual v3 configuration\nformat_version = \"{}\"\n\n[storage]\nchange_detection = {}\n\n[verification]\nsuper_strict = {}\ntoken_warn = {}\ncommit_msg_enforce = {}\n",
+        cfg.format_version, cfg.change_detection, cfg.super_strict, cfg.token_warn, cfg.commit_msg_enforce
     )
 }
 

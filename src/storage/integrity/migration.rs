@@ -75,6 +75,7 @@ pub fn migrate_naive_to_v3(naive_toml: &str) -> Result<MigratedV3> {
         change_detection: true,
         super_strict: naive.validation.strict,
         token_warn: naive.skills.token_warn,
+        commit_msg_enforce: false,
     };
     let toml_out = crate::storage::config::render_v3(&storage);
     Ok(MigratedV3 {

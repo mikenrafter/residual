@@ -42,10 +42,18 @@ pub enum Command {
     ///
     /// Process: one-way tags (code tags must exist in metadata; metadata-only is
     /// OK). Walks require at least two personas until alpha/beta exist.
-    /// Policy (super_strict, token_warn) is read from storage-config.
+    /// Policy (super_strict, token_warn, commit_msg_enforce) is read from storage-config.
     Verify {
         #[command(subcommand)]
         check: VerifyCheck,
+    },
+    /// Compose or check commit messages using project vocabulary.
+    ///
+    /// Process: subjects must use lexicon terms, component names, force prefixes,
+    /// or start with `general - `. Body is always free-form.
+    Commit {
+        #[command(subcommand)]
+        op: CommitOp,
     },
     /// NKP matrix operations (structure-analysis).
     ///
@@ -198,11 +206,83 @@ pub enum VerifyCheck {
     Traits,
     Links,
     All,
+    /// Validate a git commit message subject against lexicon/components.
+    CommitMsg {
+        /// Path to the commit message file (first line = subject).
+        #[arg(value_name = "FILE")]
+        file: Option<String>,
+        /// Message text instead of a file.
+        #[arg(short, long)]
+        message: Option<String>,
+        /// Block on violations (overrides storage-config commit_msg_enforce).
+        #[arg(long)]
+        enforce: bool,
+        /// Warn only, never block (overrides storage-config).
+        #[arg(long)]
+        warn: bool,
+        /// Read staged paths for component hints.
+        #[arg(long)]
+        staged: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum CommitOp {
+    /// Dry-run commit-msg validation.
+    Check {
+        #[arg(short, long)]
+        message: String,
+        #[arg(long)]
+        enforce: bool,
+        #[arg(long)]
+        warn: bool,
+        #[arg(long)]
+        staged: bool,
+    },
+    /// Suggest subjects from staged diff and open residues.
+    Suggest {
+        #[arg(long)]
+        staged: bool,
+    },
+    /// Print a scaffold for a force id (S-nn or P-nn).
+    Template {
+        force_id: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum MatrixSortBy {
+    /// Group force rows by attractor (default).
+    #[default]
+    Attractor,
+    /// Reorder component columns around fusion pairs / fission pressure.
+    #[value(name = "fusion-fission")]
+    FusionFission,
+    /// Order force rows by id.
+    Id,
+    /// Order force rows by shortname.
+    Alphabetical,
 }
 
 #[derive(Subcommand)]
 pub enum MatrixOp {
-    Show,
+    /// Print the NKP coupling table (force shortnames × components).
+    ///
+    /// Process: rows are force shortnames from forces.csv; cells come from
+    /// stressor↔component coupling. Forces are grouped by attractor with
+    /// separator rows. Pass `--csv` for machine-readable stdout.
+    Show {
+        /// Emit CSV on stdout instead of a colored table.
+        #[arg(long)]
+        csv: bool,
+        /// Keep only forces matching these attractor ids, force ids, or shortnames
+        /// (comma-separated; repeatable).
+        #[arg(long, value_delimiter = ',')]
+        filter: Vec<String>,
+        /// Row/column organization.
+        #[arg(long, value_enum, default_value_t = MatrixSortBy::Attractor)]
+        sort_by: MatrixSortBy,
+    },
     Calc,
     Criticality,
     Ri {
@@ -239,7 +319,31 @@ pub fn run() -> Result<()> {
         Command::Init { force } => crate::storage::init(&cfg, force),
         Command::Add { force, target } => crate::storage::add(&cfg, target, force),
         Command::List { target } => crate::storage::list(&cfg, target),
-        Command::Verify { check } => crate::verification::run(&cfg, check),
+        Command::Verify { check } => match check {
+            VerifyCheck::Traits => crate::verification::run(&cfg, VerifyCheck::Traits),
+            VerifyCheck::Links => crate::verification::run(&cfg, VerifyCheck::Links),
+            VerifyCheck::All => crate::verification::run(&cfg, VerifyCheck::All),
+            VerifyCheck::CommitMsg {
+                file,
+                message,
+                enforce,
+                warn,
+                staged,
+            } => run_verify_commit_msg(&cfg, file, message, enforce, warn, staged),
+        },
+        Command::Commit { op } => match op {
+            CommitOp::Check {
+                message,
+                enforce,
+                warn,
+                staged,
+            } => run_verify_commit_msg(&cfg, None, Some(message), enforce, warn, staged),
+            CommitOp::Suggest { staged } => run_commit_suggest(&cfg, staged),
+            CommitOp::Template { force_id } => {
+                print!("{}", crate::verification::commit_msg::template_for_force(&cfg, &force_id)?);
+                Ok(())
+            }
+        },
         Command::Matrix { op } => crate::structure::analysis::nkp::run(&cfg, op),
         Command::SkillShow { name, version } => crate::skills::phases::show(&name, version),
         Command::SkillInstall { name, agent, global } => {
@@ -268,4 +372,61 @@ pub fn run() -> Result<()> {
         Command::Migrate { force } => crate::storage::migrate(&cfg, force),
         Command::Config => crate::config::print(&cfg),
     }
+}
+
+fn run_verify_commit_msg(
+    cfg: &crate::config::Config,
+    file: Option<String>,
+    message: Option<String>,
+    enforce: bool,
+    warn: bool,
+    staged: bool,
+) -> Result<()> {
+    use anyhow::{bail, Context};
+    use std::fs;
+
+    let text = match (file, message) {
+        (Some(path), None) => fs::read_to_string(&path)
+            .with_context(|| format!("read commit message file {}", path))?,
+        (None, Some(msg)) => msg,
+        (None, None) => bail!("provide a commit message FILE or --message"),
+        (Some(_), Some(_)) => bail!("provide either a FILE or --message, not both"),
+    };
+
+    let staged_paths = if staged {
+        crate::verification::commit_msg::git_staged_paths()?
+    } else {
+        vec![]
+    };
+
+    let enforce_override = if enforce {
+        Some(true)
+    } else if warn {
+        Some(false)
+    } else {
+        None
+    };
+
+    crate::verification::commit_msg::run_verify(cfg, &text, &staged_paths, enforce_override)
+}
+
+fn run_commit_suggest(cfg: &crate::config::Config, staged: bool) -> Result<()> {
+    let staged_paths = if staged {
+        crate::verification::commit_msg::git_staged_paths()?
+    } else {
+        vec![]
+    };
+
+    let suggestions = crate::verification::commit_msg::suggest_subjects(cfg, &staged_paths)?;
+    println!("Suggested subjects:");
+    for s in suggestions {
+        println!("  {s}");
+    }
+    if !staged_paths.is_empty() {
+        println!("\nStaged paths:");
+        for p in &staged_paths {
+            println!("  {p}");
+        }
+    }
+    Ok(())
 }

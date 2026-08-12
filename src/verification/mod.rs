@@ -12,6 +12,7 @@ use crate::cli::VerifyCheck;
 use crate::config::Config;
 use crate::storage::config::{self as storage_config, StorageConfig};
 
+pub mod commit_msg;
 pub mod git_hook;
 
 #[allow(unused_imports)]

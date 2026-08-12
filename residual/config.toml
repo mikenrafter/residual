@@ -7,3 +7,4 @@ change_detection = true
 [verification]
 super_strict = true
 token_warn = 1000
+commit_msg_enforce = false

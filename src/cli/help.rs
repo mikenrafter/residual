@@ -25,7 +25,9 @@ complete -c residual -n '__fish_seen_subcommand_from skill-install' -l agent -a 
 complete -c residual -n '__fish_seen_subcommand_from skill-install' -l global -d 'Install user-wide'
 complete -c residual -n '__fish_seen_subcommand_from add' -a 'stressor purpose attractor term persona iteration'
 complete -c residual -n '__fish_seen_subcommand_from list' -a 'stressors purposes attractors terminology personas iterations'
-complete -c residual -n '__fish_seen_subcommand_from verify' -a 'traits links all'
+complete -c residual -n '__fish_seen_subcommand_from verify' -a 'traits links all commit-msg'
+complete -c residual -n '__fish_use_subcommand' -a 'commit' -d 'Check/suggest commit messages'
+complete -c residual -n '__fish_seen_subcommand_from commit' -a 'check suggest template'
 complete -c residual -n '__fish_seen_subcommand_from matrix' -a 'show calc criticality ri fusion fission'
 complete -c residual -n '__fish_seen_subcommand_from tag' -a 'scan report'
 complete -c residual -n '__fish_seen_subcommand_from generate' -a 'completions man hook'
@@ -56,7 +58,7 @@ Add a new entry. Targets: stressor, purpose, attractor, term, persona, iteration
 List entries. Targets: stressors, purposes, attractors, terminology, personas, iterations.
 .TP
 .B verify \fICHECK\fR
-Verify data integrity. Checks: traits, links, all. Policy from storage-config.
+Verify data integrity. Checks: traits, links, all, commit-msg. Policy from storage-config.
 .TP
 .B matrix \fIOP\fR
 NKP matrix operations: show, calc, criticality, ri, fusion, fission.
@@ -74,7 +76,10 @@ Scan source files for @residue: and @stressor: tags (suggestions).
 Owned by cli-help.
 .TP
 .B generate hook
-Write the pre-commit hook (verification-git-hook).
+Write pre-commit and commit-msg hooks (verification-git-hook).
+.TP
+.B commit check / suggest / template
+Validate or compose commit subjects using project vocabulary.
 .TP
 .B config
 Show the current configuration.
