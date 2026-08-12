@@ -181,6 +181,7 @@ fn verify_links_catches_dangling_attractor() {
         "--naive-change", "none",
     ]);
     let out = run(&dir, &["verify", "links"]);
+    assert!(!out.status.success(), "verify links should fail on dangling attractor");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("VIOLATION"), "expected 'VIOLATION' for missing attractor, got: {}", stdout);
 }

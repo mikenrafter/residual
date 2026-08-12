@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use crate::config::Config;
 use crate::cli::VerifyCheck;
 
@@ -12,7 +12,7 @@ pub fn run(cfg: &Config, check: VerifyCheck) -> Result<()> {
                 for v in &violations {
                     println!("VIOLATION [{}] {}: {} — {}", v.source, v.id, v.trait_str, v.reason);
                 }
-                println!("{} trait violation(s) found.", violations.len());
+                bail!("{} trait violation(s) found.", violations.len());
             }
         }
         VerifyCheck::Links => {
@@ -23,7 +23,7 @@ pub fn run(cfg: &Config, check: VerifyCheck) -> Result<()> {
                 for v in &violations {
                     println!("VIOLATION [{}] {}: missing attractor '{}'", v.source, v.id, v.missing_attractor_id);
                 }
-                println!("{} link violation(s) found.", violations.len());
+                bail!("{} link violation(s) found.", violations.len());
             }
         }
         VerifyCheck::All => {
@@ -39,7 +39,7 @@ pub fn run(cfg: &Config, check: VerifyCheck) -> Result<()> {
             if total == 0 {
                 println!("OK: all checks passed.");
             } else {
-                println!("{} total violation(s) found.", total);
+                bail!("{} total violation(s) found.", total);
             }
         }
         VerifyCheck::CommitMsg { .. } => {
@@ -409,5 +409,38 @@ mod tests {
         ).unwrap();
         let violations = check_links(&cfg).unwrap();
         assert!(violations.is_empty(), "expected no violations when attractor exists");
+    }
+
+    #[test]
+    fn verify_all_fails_when_traits_invalid() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_for(dir.path());
+        terminology::append(
+            dir.path(),
+            terminology::Term {
+                term: "operator".to_string(),
+                definition: "human or agent".to_string(),
+                domain: "tool".to_string(),
+                related_terms: "".to_string(),
+            },
+        )
+        .unwrap();
+        stressors::append(
+            dir.path(),
+            stressors::Stressor {
+                id: "S-01".to_string(),
+                description: "test".to_string(),
+                attractor_id: "A-01".to_string(),
+                naive_change: "none".to_string(),
+                traits: "widget frobs blorple".to_string(),
+                components_affected: "x".to_string(),
+            },
+        )
+        .unwrap();
+        let err = run(&cfg, VerifyCheck::All).unwrap_err();
+        assert!(
+            err.to_string().contains("violation"),
+            "expected verify all to fail, got {err}"
+        );
     }
 }
