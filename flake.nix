@@ -18,6 +18,7 @@
           inherit system;
           overlays = [ rust-overlay.overlays.default ];
         };
+        lib = pkgs.lib;
 
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" ];
@@ -25,7 +26,8 @@
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
-        src = craneLib.cleanCargoSource ./.;
+        # Full tree: include_str! embeds skill markdown under src/skills/definitions/.
+        src = lib.cleanSource ./.;
 
         commonArgs = {
           inherit src;
@@ -70,22 +72,34 @@
             inherit cargoArtifacts;
           });
         };
+
+        apps = {
+          default = {
+            type = "app";
+            program = "${residual}/bin/residual";
+          };
+          residual = {
+            type = "app";
+            program = "${residual}/bin/residual";
+          };
+        };
       in {
         packages.default = residual;
         packages.residual = residual;
 
-        inherit checks;
+        inherit checks apps;
 
         devShells.default = craneLib.devShell {
           inputsFrom = [ residual ];
           packages = with pkgs; [
-            cargo-watch    # cargo watch -x check
-            cargo-audit    # cargo audit
-            cargo-edit     # cargo add / upgrade
+            residual
+            cargo-watch
+            cargo-audit
+            cargo-edit
           ];
 
           shellHook = ''
-            echo "residual dev — cargo check, cargo test, cargo watch -x check"
+            echo "residual dev — \$(command -v residual) on PATH (flake package); use cargo for local rebuilds"
           '';
         };
       })
@@ -93,5 +107,10 @@
       overlays.default = final: prev: {
         residual = self.packages.${prev.stdenv.hostPlatform.system}.default;
       };
+
+      # Convenience for system/home configs:
+      #   inputs.residual.packages.${pkgs.system}.default
+      #   inputs.residual.overlays.default
+      #   environment.systemPackages = [ inputs.residual.packages.${pkgs.system}.default ];
     };
 }
