@@ -4,15 +4,15 @@ use crate::cli::VerifyCheck;
 
 pub fn run(cfg: &Config, check: VerifyCheck) -> Result<()> {
     match check {
-        VerifyCheck::Traits => {
-            let violations = check_traits(cfg)?;
+        VerifyCheck::Outcomes => {
+            let violations = check_outcomes(cfg)?;
             if violations.is_empty() {
-                println!("OK: all traits reference at least one terminology term.");
+                println!("OK: all outcomes reference at least one terminology term.");
             } else {
                 for v in &violations {
-                    println!("VIOLATION [{}] {}: {} — {}", v.source, v.id, v.trait_str, v.reason);
+                    println!("VIOLATION [{}] {}: {} — {}", v.source, v.id, v.outcome_str, v.reason);
                 }
-                bail!("{} trait violation(s) found.", violations.len());
+                bail!("{} outcome violation(s) found.", violations.len());
             }
         }
         VerifyCheck::Links => {
@@ -27,11 +27,11 @@ pub fn run(cfg: &Config, check: VerifyCheck) -> Result<()> {
             }
         }
         VerifyCheck::All => {
-            let trait_violations = check_traits(cfg)?;
+            let outcome_violations = check_outcomes(cfg)?;
             let link_violations = check_links(cfg)?;
-            let total = trait_violations.len() + link_violations.len();
-            for v in &trait_violations {
-                println!("TRAIT VIOLATION [{}] {}: {} — {}", v.source, v.id, v.trait_str, v.reason);
+            let total = outcome_violations.len() + link_violations.len();
+            for v in &outcome_violations {
+                println!("OUTCOME VIOLATION [{}] {}: {} — {}", v.source, v.id, v.outcome_str, v.reason);
             }
             for v in &link_violations {
                 println!("LINK VIOLATION [{}] {}: missing attractor '{}'", v.source, v.id, v.missing_attractor_id);
@@ -49,7 +49,7 @@ pub fn run(cfg: &Config, check: VerifyCheck) -> Result<()> {
     Ok(())
 }
 
-pub fn check_traits(cfg: &Config) -> Result<Vec<TraitViolation>> {
+pub fn check_outcomes(cfg: &Config) -> Result<Vec<OutcomeViolation>> {
     let stressors = crate::storage::stressors::load(&cfg.residual_dir)?;
     let purposes = crate::storage::purposes::load(&cfg.residual_dir)?;
     let terms = crate::storage::terminology::load(&cfg.residual_dir)?;
@@ -57,29 +57,28 @@ pub fn check_traits(cfg: &Config) -> Result<Vec<TraitViolation>> {
 
     let mut violations = Vec::new();
 
-    // Check stressor traits
     for stressor in &stressors {
-        for raw_trait in stressor.traits.split('|') {
-            let raw_trait = raw_trait.trim();
-            if raw_trait.is_empty() {
+        for raw_outcome in stressor.outcomes.split('|') {
+            let raw_outcome = raw_outcome.trim();
+            if raw_outcome.is_empty() {
                 continue;
             }
-            match parse_trait(raw_trait) {
+            match parse_outcome(raw_outcome) {
                 None => {
-                    violations.push(TraitViolation {
+                    violations.push(OutcomeViolation {
                         source: "stressor".to_string(),
                         id: stressor.id.clone(),
-                        trait_str: raw_trait.to_string(),
-                        reason: "trait must have at least subject verb predicate (3 words)".to_string(),
+                        outcome_str: raw_outcome.to_string(),
+                        reason: "outcome must have at least subject verb predicate (3 words)".to_string(),
                     });
                 }
                 Some(parts) => {
-                    if !trait_uses_terminology(&parts, &term_set) {
-                        violations.push(TraitViolation {
+                    if !outcome_uses_terminology(&parts, &term_set) {
+                        violations.push(OutcomeViolation {
                             source: "stressor".to_string(),
                             id: stressor.id.clone(),
-                            trait_str: raw_trait.to_string(),
-                            reason: "no word in this trait matches the project terminology".to_string(),
+                            outcome_str: raw_outcome.to_string(),
+                            reason: "no word in this outcome matches the project terminology".to_string(),
                         });
                     }
                 }
@@ -87,29 +86,28 @@ pub fn check_traits(cfg: &Config) -> Result<Vec<TraitViolation>> {
         }
     }
 
-    // Check purpose traits
     for purpose in &purposes {
-        for raw_trait in purpose.traits.split('|') {
-            let raw_trait = raw_trait.trim();
-            if raw_trait.is_empty() {
+        for raw_outcome in purpose.outcomes.split('|') {
+            let raw_outcome = raw_outcome.trim();
+            if raw_outcome.is_empty() {
                 continue;
             }
-            match parse_trait(raw_trait) {
+            match parse_outcome(raw_outcome) {
                 None => {
-                    violations.push(TraitViolation {
+                    violations.push(OutcomeViolation {
                         source: "purpose".to_string(),
                         id: purpose.id.clone(),
-                        trait_str: raw_trait.to_string(),
-                        reason: "trait must have at least subject verb predicate (3 words)".to_string(),
+                        outcome_str: raw_outcome.to_string(),
+                        reason: "outcome must have at least subject verb predicate (3 words)".to_string(),
                     });
                 }
                 Some(parts) => {
-                    if !trait_uses_terminology(&parts, &term_set) {
-                        violations.push(TraitViolation {
+                    if !outcome_uses_terminology(&parts, &term_set) {
+                        violations.push(OutcomeViolation {
                             source: "purpose".to_string(),
                             id: purpose.id.clone(),
-                            trait_str: raw_trait.to_string(),
-                            reason: "no word in this trait matches the project terminology".to_string(),
+                            outcome_str: raw_outcome.to_string(),
+                            reason: "no word in this outcome matches the project terminology".to_string(),
                         });
                     }
                 }
@@ -152,34 +150,34 @@ pub fn check_links(cfg: &Config) -> Result<Vec<LinkViolation>> {
     Ok(violations)
 }
 
-/// Parse a trait string into (subject, verb, predicates).
+/// Parse an outcome string into (subject, verb, predicates).
 /// Format: "<subject> <verb> <pred1> [<pred2>...]"
 /// Returns None if fewer than 3 words.
-pub fn parse_trait(trait_str: &str) -> Option<TraitParts> {
-    let words: Vec<&str> = trait_str.split_whitespace().collect();
+pub fn parse_outcome(outcome_str: &str) -> Option<OutcomeParts> {
+    let words: Vec<&str> = outcome_str.split_whitespace().collect();
     if words.len() < 3 {
         return None;
     }
     let subject = words[0].to_string();
     let verb = words[1].to_string();
     let predicate = words[2..].join(" ");
-    Some(TraitParts {
+    Some(OutcomeParts {
         subject,
         verb,
         predicates: vec![predicate],
     })
 }
 
-pub struct TraitParts {
+pub struct OutcomeParts {
     pub subject: String,
     pub verb: String,
     pub predicates: Vec<String>,
 }
 
-pub struct TraitViolation {
+pub struct OutcomeViolation {
     pub source: String,
     pub id: String,
-    pub trait_str: String,
+    pub outcome_str: String,
     pub reason: String,
 }
 
@@ -189,20 +187,17 @@ pub struct LinkViolation {
     pub missing_attractor_id: String,
 }
 
-/// Check if any word in the trait touches the terminology set.
-pub fn trait_uses_terminology(
-    parts: &TraitParts,
+/// Check if any word in the outcome touches the terminology set.
+pub fn outcome_uses_terminology(
+    parts: &OutcomeParts,
     term_set: &std::collections::HashSet<String>,
 ) -> bool {
-    // Check subject
     if term_set.contains(&parts.subject.to_lowercase()) {
         return true;
     }
-    // Check verb
     if term_set.contains(&parts.verb.to_lowercase()) {
         return true;
     }
-    // Check all words in all predicates
     for predicate in &parts.predicates {
         for word in predicate.split_whitespace() {
             if term_set.contains(&word.to_lowercase()) {
@@ -231,11 +226,9 @@ mod tests {
         }
     }
 
-    // --- parse_trait ---
-
     #[test]
-    fn parse_trait_basic() {
-        let parts = parse_trait("system handles auth via tokens").unwrap();
+    fn parse_outcome_basic() {
+        let parts = parse_outcome("system handles auth via tokens").unwrap();
         assert_eq!(parts.subject, "system");
         assert_eq!(parts.verb, "handles");
         assert!(
@@ -246,43 +239,38 @@ mod tests {
     }
 
     #[test]
-    fn parse_trait_empty_returns_none() {
-        assert!(parse_trait("").is_none());
+    fn parse_outcome_empty_returns_none() {
+        assert!(parse_outcome("").is_none());
     }
 
-    // --- trait_uses_terminology ---
-
     #[test]
-    fn trait_uses_terminology_match() {
-        let parts = TraitParts {
+    fn outcome_uses_terminology_match() {
+        let parts = OutcomeParts {
             subject: "system".to_string(),
             verb: "handles".to_string(),
             predicates: vec!["auth".to_string()],
         };
         let mut terms = HashSet::new();
         terms.insert("auth".to_string());
-        assert!(trait_uses_terminology(&parts, &terms));
+        assert!(outcome_uses_terminology(&parts, &terms));
     }
 
     #[test]
-    fn trait_uses_terminology_no_match() {
-        let parts = TraitParts {
+    fn outcome_uses_terminology_no_match() {
+        let parts = OutcomeParts {
             subject: "system".to_string(),
             verb: "does".to_string(),
             predicates: vec!["something".to_string()],
         };
         let mut terms = HashSet::new();
         terms.insert("auth".to_string());
-        assert!(!trait_uses_terminology(&parts, &terms));
+        assert!(!outcome_uses_terminology(&parts, &terms));
     }
 
-    // --- check_traits ---
-
     #[test]
-    fn check_traits_empty_terminology_warns_not_errors() {
+    fn check_outcomes_empty_terminology_does_not_error() {
         let dir = tempdir().unwrap();
         let cfg = cfg_for(dir.path());
-        // A stressor with a trait, but no terminology loaded
         stressors::append(
             dir.path(),
             stressors::Stressor {
@@ -290,21 +278,17 @@ mod tests {
                 description: "test stressor".to_string(),
                 attractor_id: "A-01".to_string(),
                 naive_change: "none".to_string(),
-                traits: "system handles auth".to_string(),
+                outcomes: "system handles auth".to_string(),
                 components_affected: "auth".to_string(),
             },
-        ).unwrap();
-        // With empty terminology, check_traits should not return an Err,
-        // but violations list may or may not be empty — the key check is it
-        // doesn't panic/error (warn behaviour). When strict=false it returns empty.
-        // When strict=true with empty terminology, each trait is a violation.
-        // Either way it must not Err.
-        let result = check_traits(&cfg);
-        assert!(result.is_ok(), "check_traits should not error on empty terminology");
+        )
+        .unwrap();
+        let result = check_outcomes(&cfg);
+        assert!(result.is_ok(), "check_outcomes should not error on empty terminology");
     }
 
     #[test]
-    fn check_traits_valid_trait_no_violations() {
+    fn check_outcomes_valid_outcome_no_violations() {
         let dir = tempdir().unwrap();
         let cfg = cfg_for(dir.path());
         terminology::append(
@@ -315,7 +299,8 @@ mod tests {
                 domain: "core".to_string(),
                 related_terms: "".to_string(),
             },
-        ).unwrap();
+        )
+        .unwrap();
         stressors::append(
             dir.path(),
             stressors::Stressor {
@@ -323,16 +308,17 @@ mod tests {
                 description: "test stressor".to_string(),
                 attractor_id: "A-01".to_string(),
                 naive_change: "none".to_string(),
-                traits: "system handles auth".to_string(),
+                outcomes: "system handles auth".to_string(),
                 components_affected: "auth".to_string(),
             },
-        ).unwrap();
-        let violations = check_traits(&cfg).unwrap();
-        assert!(violations.is_empty(), "expected no violations for valid trait");
+        )
+        .unwrap();
+        let violations = check_outcomes(&cfg).unwrap();
+        assert!(violations.is_empty(), "expected no violations for valid outcome");
     }
 
     #[test]
-    fn check_traits_no_matching_term_is_violation() {
+    fn check_outcomes_no_matching_term_is_violation() {
         let dir = tempdir().unwrap();
         let cfg = cfg_for(dir.path());
         terminology::append(
@@ -343,7 +329,8 @@ mod tests {
                 domain: "core".to_string(),
                 related_terms: "".to_string(),
             },
-        ).unwrap();
+        )
+        .unwrap();
         stressors::append(
             dir.path(),
             stressors::Stressor {
@@ -351,16 +338,17 @@ mod tests {
                 description: "test stressor".to_string(),
                 attractor_id: "A-01".to_string(),
                 naive_change: "none".to_string(),
-                // none of these words appear in terminology
-                traits: "widget frobs blorple".to_string(),
+                outcomes: "widget frobs blorple".to_string(),
                 components_affected: "widget".to_string(),
             },
-        ).unwrap();
-        let violations = check_traits(&cfg).unwrap();
-        assert!(!violations.is_empty(), "expected violation for trait with no terminology match");
+        )
+        .unwrap();
+        let violations = check_outcomes(&cfg).unwrap();
+        assert!(
+            !violations.is_empty(),
+            "expected violation for outcome with no terminology match"
+        );
     }
-
-    // --- check_links ---
 
     #[test]
     fn check_links_missing_attractor_is_violation() {
@@ -371,12 +359,13 @@ mod tests {
             stressors::Stressor {
                 id: "S-01".to_string(),
                 description: "test".to_string(),
-                attractor_id: "A-99".to_string(), // does not exist
+                attractor_id: "A-99".to_string(),
                 naive_change: "none".to_string(),
-                traits: "system does x".to_string(),
+                outcomes: "system does x".to_string(),
                 components_affected: "x".to_string(),
             },
-        ).unwrap();
+        )
+        .unwrap();
         let violations = check_links(&cfg).unwrap();
         assert!(!violations.is_empty(), "expected violation for nonexistent attractor");
         assert_eq!(violations[0].missing_attractor_id, "A-99");
@@ -395,7 +384,8 @@ mod tests {
                 positive_state: "active".to_string(),
                 negative_state: "unstable".to_string(),
             },
-        ).unwrap();
+        )
+        .unwrap();
         stressors::append(
             dir.path(),
             stressors::Stressor {
@@ -403,16 +393,17 @@ mod tests {
                 description: "test".to_string(),
                 attractor_id: "A-01".to_string(),
                 naive_change: "none".to_string(),
-                traits: "system does x".to_string(),
+                outcomes: "system does x".to_string(),
                 components_affected: "x".to_string(),
             },
-        ).unwrap();
+        )
+        .unwrap();
         let violations = check_links(&cfg).unwrap();
         assert!(violations.is_empty(), "expected no violations when attractor exists");
     }
 
     #[test]
-    fn verify_all_fails_when_traits_invalid() {
+    fn verify_all_fails_when_outcomes_invalid() {
         let dir = tempdir().unwrap();
         let cfg = cfg_for(dir.path());
         terminology::append(
@@ -432,7 +423,7 @@ mod tests {
                 description: "test".to_string(),
                 attractor_id: "A-01".to_string(),
                 naive_change: "none".to_string(),
-                traits: "widget frobs blorple".to_string(),
+                outcomes: "widget frobs blorple".to_string(),
                 components_affected: "x".to_string(),
             },
         )

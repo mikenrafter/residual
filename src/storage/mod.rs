@@ -37,8 +37,8 @@ fn init_dirs_and_files(cfg: &Config) -> Result<()> {
 
     // Write empty CSVs with headers if not present
     let csvs: &[(&str, &str)] = &[
-        ("stressors.csv", "id,description,naive_change,traits,components_affected,attractor_id"),
-        ("purposes.csv", "id,description,feature,traits,components_enabled,attractor_id"),
+        ("stressors.csv", "id,description,naive_change,outcomes,components_affected,attractor_id"),
+        ("purposes.csv", "id,description,feature,outcomes,components_enabled,attractor_id"),
         ("attractors.csv", "id,name,description,positive_state,negative_state"),
         ("terminology.csv", "term,definition,domain,related_terms"),
         ("forces.csv", "id,kind,shortname,naive_change,outcomes,description,attractor_id"),
@@ -65,7 +65,7 @@ pub fn add(cfg: &Config, target: AddTarget, force: bool) -> Result<()> {
 fn add_entry(cfg: &Config, target: AddTarget) -> Result<()> {
     let dir = &cfg.residual_dir;
     match target {
-        AddTarget::Stressor { description, attractor_id, naive_change, traits, components } => {
+        AddTarget::Stressor { description, attractor_id, naive_change, outcomes, components } => {
             let existing = stressors::load(dir)?;
             let id = stressors::next_id(&existing);
             stressors::append(dir, stressors::Stressor {
@@ -73,12 +73,12 @@ fn add_entry(cfg: &Config, target: AddTarget) -> Result<()> {
                 description,
                 attractor_id,
                 naive_change,
-                traits,
+                outcomes,
                 components_affected: components,
             })?;
             println!("Added stressor {}", id);
         }
-        AddTarget::Purpose { description, attractor_id, feature, traits, components } => {
+        AddTarget::Purpose { description, attractor_id, feature, outcomes, components } => {
             let existing = purposes::load(dir)?;
             let id = purposes::next_id(&existing);
             purposes::append(dir, purposes::Purpose {
@@ -86,7 +86,7 @@ fn add_entry(cfg: &Config, target: AddTarget) -> Result<()> {
                 description,
                 attractor_id,
                 feature,
-                traits,
+                outcomes,
                 components_enabled: components,
             })?;
             println!("Added purpose {}", id);

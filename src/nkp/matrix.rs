@@ -502,7 +502,7 @@ mod tests {
             description: "desc".to_string(),
             attractor_id: attractor.to_string(),
             naive_change: "change".to_string(),
-            traits: "system handles auth".to_string(),
+            outcomes: "system handles auth".to_string(),
             components_affected: components.to_string(),
         }
     }

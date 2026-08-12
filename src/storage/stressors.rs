@@ -8,7 +8,8 @@ pub struct Stressor {
     pub description: String,
     pub attractor_id: String,
     pub naive_change: String,
-    pub traits: String,
+    #[serde(rename = "outcomes", alias = "traits")]
+    pub outcomes: String,
     pub components_affected: String,
 }
 
@@ -37,7 +38,7 @@ pub fn append(residual_dir: &Path, stressor: Stressor) -> Result<()> {
         .append(true)
         .open(&path)?;
     if !file_exists {
-        writeln!(file, "id,description,naive_change,traits,components_affected,attractor_id")?;
+        writeln!(file, "id,description,naive_change,outcomes,components_affected,attractor_id")?;
     }
     // Write the data row using csv writer to handle quoting
     let mut buf = Vec::new();
@@ -49,7 +50,7 @@ pub fn append(residual_dir: &Path, stressor: Stressor) -> Result<()> {
             &stressor.id,
             &stressor.description,
             &stressor.naive_change,
-            &stressor.traits,
+            &stressor.outcomes,
             &stressor.components_affected,
             &stressor.attractor_id,
         ])?;
@@ -81,7 +82,7 @@ mod tests {
             description: "desc".to_string(),
             attractor_id: "A-01".to_string(),
             naive_change: "change".to_string(),
-            traits: "system handles auth".to_string(),
+            outcomes: "system handles auth".to_string(),
             components_affected: "auth,db".to_string(),
         }
     }

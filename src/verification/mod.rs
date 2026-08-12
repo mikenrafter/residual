@@ -17,8 +17,8 @@ pub mod git_hook;
 
 #[allow(unused_imports)]
 pub use crate::verify::{
-    check_links, check_traits, parse_trait, trait_uses_terminology, LinkViolation, TraitParts,
-    TraitViolation,
+    check_links, check_outcomes, parse_outcome, outcome_uses_terminology, LinkViolation,
+    OutcomeParts, OutcomeViolation,
 };
 
 pub fn run(cfg: &Config, check: VerifyCheck) -> Result<()> {

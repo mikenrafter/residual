@@ -25,7 +25,7 @@ complete -c residual -n '__fish_seen_subcommand_from skill-install' -l agent -a 
 complete -c residual -n '__fish_seen_subcommand_from skill-install' -l global -d 'Install user-wide'
 complete -c residual -n '__fish_seen_subcommand_from add' -a 'stressor purpose attractor term persona iteration'
 complete -c residual -n '__fish_seen_subcommand_from list' -a 'stressors purposes attractors terminology personas iterations'
-complete -c residual -n '__fish_seen_subcommand_from verify' -a 'traits links all commit-msg'
+complete -c residual -n '__fish_seen_subcommand_from verify' -a 'outcomes links all commit-msg'
 complete -c residual -n '__fish_use_subcommand' -a 'commit' -d 'Check/suggest commit messages'
 complete -c residual -n '__fish_seen_subcommand_from commit' -a 'check suggest template'
 complete -c residual -n '__fish_seen_subcommand_from matrix' -a 'show calc criticality ri fusion fission'
@@ -58,7 +58,7 @@ Add a new entry. Targets: stressor, purpose, attractor, term, persona, iteration
 List entries. Targets: stressors, purposes, attractors, terminology, personas, iterations.
 .TP
 .B verify \fICHECK\fR
-Verify data integrity. Checks: traits, links, all, commit-msg. Policy from storage-config.
+Verify data integrity. Checks: outcomes, links, all, commit-msg. Policy from storage-config.
 .TP
 .B matrix \fIOP\fR
 NKP matrix operations: show, calc, criticality, ri, fusion, fission.

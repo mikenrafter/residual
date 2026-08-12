@@ -10,7 +10,7 @@ R-08,S-04,storage,proposed,init must be idempotent over partial residual/
 R-09,S-04,storage-migration,proposed,naive→v3 transfer when partial trees upgrade
 R-10,S-05,skills-phases,proposed,skill-list/show token estimation
 R-11,S-05,storage-config,proposed,token_warn lives in v3 verification policy keys
-R-12,S-06,verification,proposed,verify traits/outcomes path
+R-12,S-06,verification,proposed,verify outcomes path
 R-13,S-06,verification-git-hook,proposed,pre-commit is where slow verify drives --no-verify
 R-14,S-06,structure-definition-lexicon,proposed,HashSet build over lexicon
 R-15,S-07,skills-installer,proposed,passthrough stubs vs versioned install burden

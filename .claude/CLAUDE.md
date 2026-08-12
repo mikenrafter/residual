@@ -24,7 +24,7 @@ residual matrix fusion     # components safe to merge
 residual matrix fission    # components under excessive stress
 residual matrix ri --stressors N --naive-survived X --residual-survived Y
 
-residual verify all        # validate traits + links (run before committing)
+residual verify all        # validate outcomes + links (run before committing)
 
 residual tag scan          # find @residue:/@stressor: annotations; report dangling
 ```

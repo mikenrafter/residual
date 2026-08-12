@@ -102,7 +102,7 @@ fn map_component_token(token: &str) -> Option<String> {
         "stressor-walk" | "context-builder" | "skill-interface" | "skill-data" | "skill-list"
         | "skill-show" => "skills-phases",
         "skill-install" | "skill-check" | "install-paths" => "skills-installer",
-        "verify-traits" | "verify-links" | "verify-all" => "verification",
+        "verify-outcomes" | "verify-traits" | "verify-links" | "verify-all" => "verification",
         "git-hook" => "verification-git-hook",
         "tag-scan" => "structure-analysis-tag-scan",
         "stressor-schema" | "storage-stressors" => "structure-analysis-stressors",
@@ -139,8 +139,8 @@ fn split_component_field(raw: &str) -> Vec<String> {
         .collect()
 }
 
-fn split_outcomes(traits: &str, fallback: &str) -> Vec<String> {
-    let mut out: Vec<String> = traits
+fn split_outcomes(outcomes: &str, fallback: &str) -> Vec<String> {
+    let mut out: Vec<String> = outcomes
         .split('|')
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -314,10 +314,10 @@ pub fn migrate_residual_dir(residual_dir: &Path, force: bool) -> Result<MigrateR
     };
 
     for s in &stressors {
-        let outcomes = split_outcomes(&s.traits, &s.description);
+        let outcomes = split_outcomes(&s.outcomes, &s.description);
         let shortname = shortname_for(
             &s.id,
-            &[&s.traits, &s.description, &s.naive_change],
+            &[&s.outcomes, &s.description, &s.naive_change],
             &term_names,
         );
         forces.push(Force {
@@ -333,10 +333,10 @@ pub fn migrate_residual_dir(residual_dir: &Path, force: bool) -> Result<MigrateR
     }
 
     for p in &purposes {
-        let outcomes = split_outcomes(&p.traits, &p.description);
+        let outcomes = split_outcomes(&p.outcomes, &p.description);
         let shortname = shortname_for(
             &p.id,
-            &[&p.traits, &p.description, &p.feature],
+            &[&p.outcomes, &p.description, &p.feature],
             &term_names,
         );
         forces.push(Force {

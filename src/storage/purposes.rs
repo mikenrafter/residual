@@ -8,7 +8,8 @@ pub struct Purpose {
     pub description: String,
     pub attractor_id: String,
     pub feature: String,
-    pub traits: String,
+    #[serde(rename = "outcomes", alias = "traits")]
+    pub outcomes: String,
     pub components_enabled: String,
 }
 
@@ -37,7 +38,7 @@ pub fn append(residual_dir: &Path, purpose: Purpose) -> Result<()> {
         .append(true)
         .open(&path)?;
     if !file_exists {
-        writeln!(file, "id,description,feature,traits,components_enabled,attractor_id")?;
+        writeln!(file, "id,description,feature,outcomes,components_enabled,attractor_id")?;
     }
     let mut buf = Vec::new();
     {
@@ -48,7 +49,7 @@ pub fn append(residual_dir: &Path, purpose: Purpose) -> Result<()> {
             &purpose.id,
             &purpose.description,
             &purpose.feature,
-            &purpose.traits,
+            &purpose.outcomes,
             &purpose.components_enabled,
             &purpose.attractor_id,
         ])?;
@@ -80,7 +81,7 @@ mod tests {
             description: "desc".to_string(),
             attractor_id: "A-01".to_string(),
             feature: "feat".to_string(),
-            traits: "system enables login".to_string(),
+            outcomes: "system enables login".to_string(),
             components_enabled: "auth,ui".to_string(),
         }
     }

@@ -231,7 +231,7 @@ mod tests {
             description: "test".to_string(),
             attractor_id: "".to_string(),
             naive_change: "none".to_string(),
-            traits: "system handles auth".to_string(),
+            outcomes: "system handles auth".to_string(),
             components_affected: "auth,db".to_string(),
         }).unwrap();
         let out = build(&cfg, "integrate").unwrap();

@@ -35,7 +35,7 @@ mod tests {
             description: "d".to_string(),
             attractor_id: "A-01".to_string(),
             naive_change: "c".to_string(),
-            traits: "system handles auth".to_string(),
+            outcomes: "system handles auth".to_string(),
             components_affected: components.to_string(),
         }
     }

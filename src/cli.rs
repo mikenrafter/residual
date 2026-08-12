@@ -151,20 +151,22 @@ pub enum SkillCommand {
 
 #[derive(Subcommand)]
 pub enum AddTarget {
-    /// Add a stressor force. Process: whole-system-residue first — outcomes not traits.
+    /// Add a stressor force. Process: whole-system-residue first — record outcomes.
     Stressor {
         #[arg(long)] description: String,
         #[arg(long)] attractor_id: String,
         #[arg(long)] naive_change: String,
-        #[arg(long, default_value = "")] traits: String,
+        #[arg(long, default_value = "", visible_alias = "traits")]
+        outcomes: String,
         #[arg(long, default_value = "")] components: String,
     },
-    /// Add a purpose force. Process: whole-system-residue first — outcomes not traits.
+    /// Add a purpose force. Process: whole-system-residue first — record outcomes.
     Purpose {
         #[arg(long)] description: String,
         #[arg(long)] attractor_id: String,
         #[arg(long)] feature: String,
-        #[arg(long, default_value = "")] traits: String,
+        #[arg(long, default_value = "", visible_alias = "traits")]
+        outcomes: String,
         #[arg(long, default_value = "")] components: String,
     },
     Attractor {
@@ -203,7 +205,9 @@ pub enum ListTarget {
 
 #[derive(Subcommand)]
 pub enum VerifyCheck {
-    Traits,
+    /// Verify purpose/stressor outcome statements reference terminology.
+    #[command(name = "outcomes", visible_aliases = ["traits"])]
+    Outcomes,
     Links,
     All,
     /// Validate a git commit message subject against lexicon/components.
@@ -320,7 +324,7 @@ pub fn run() -> Result<()> {
         Command::Add { force, target } => crate::storage::add(&cfg, target, force),
         Command::List { target } => crate::storage::list(&cfg, target),
         Command::Verify { check } => match check {
-            VerifyCheck::Traits => crate::verification::run(&cfg, VerifyCheck::Traits),
+            VerifyCheck::Outcomes => crate::verification::run(&cfg, VerifyCheck::Outcomes),
             VerifyCheck::Links => crate::verification::run(&cfg, VerifyCheck::Links),
             VerifyCheck::All => crate::verification::run(&cfg, VerifyCheck::All),
             VerifyCheck::CommitMsg {

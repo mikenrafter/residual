@@ -258,7 +258,7 @@ fn matrix_show_csv_emits_header_and_cells() {
         "--attractor-id", "A-01",
         "--naive-change", "pin skill versions",
         "--components", "auth,db",
-        "--traits", "skill residue stays current",
+        "--outcomes", "skill residue stays current",
     ]);
     // Seed a shortname via forces.csv (add stressor may not write forces yet).
     let forces = dir.path().join("residual/forces.csv");
@@ -289,14 +289,14 @@ fn matrix_show_filter_keeps_matching_attractor() {
         "--attractor-id", "A-01",
         "--naive-change", "none",
         "--components", "auth",
-        "--traits", "operator records a stressor against attractor one",
+        "--outcomes", "operator records a stressor against attractor one",
     ]);
     run(&dir, &["add", "stressor",
         "--description", "second force hits db",
         "--attractor-id", "A-02",
         "--naive-change", "none",
         "--components", "db",
-        "--traits", "operator records a stressor against attractor two",
+        "--outcomes", "operator records a stressor against attractor two",
     ]);
     let forces = dir.path().join("residual/forces.csv");
     std::fs::write(
@@ -324,14 +324,14 @@ fn matrix_show_sort_by_alphabetical() {
         "--attractor-id", "A-01",
         "--naive-change", "none",
         "--components", "auth",
-        "--traits", "operator records residue zeta",
+        "--outcomes", "operator records residue zeta",
     ]);
     run(&dir, &["add", "stressor",
         "--description", "alpha force",
         "--attractor-id", "A-01",
         "--naive-change", "none",
         "--components", "db",
-        "--traits", "operator records residue alpha",
+        "--outcomes", "operator records residue alpha",
     ]);
     let forces = dir.path().join("residual/forces.csv");
     std::fs::write(
