@@ -478,7 +478,11 @@ mod tests {
         seed_vocab(dir.path());
         format::write_residues(
             dir.path(),
-            &[Residue::new("R-1", "S-28", "verification-git-hook")],
+            &[{
+                let mut r = Residue::new("R-1", "S-28", "verification-git-hook");
+                r.status = "active".to_string();
+                r
+            }],
         )
         .unwrap();
         let cfg = cfg_for(dir.path());

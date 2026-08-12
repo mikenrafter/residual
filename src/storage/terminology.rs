@@ -58,6 +58,54 @@ pub fn term_set(terms: &[Term]) -> std::collections::HashSet<String> {
     terms.iter().map(|t| t.term.to_lowercase()).collect()
 }
 
+#[derive(Debug, Clone)]
+pub struct TermIndex {
+    pub words: std::collections::HashSet<String>,
+    pub phrases: Vec<String>,
+}
+
+fn add_index_tokens(
+    words: &mut std::collections::HashSet<String>,
+    phrases: &mut Vec<String>,
+    raw: &str,
+) {
+    let trimmed = raw.trim().to_lowercase();
+    if trimmed.is_empty() {
+        return;
+    }
+    phrases.push(trimmed.clone());
+    words.insert(trimmed.clone());
+    for token in trimmed.split_whitespace() {
+        if !token.is_empty() {
+            words.insert(token.to_string());
+        }
+    }
+}
+
+pub fn term_index(residual_dir: &Path) -> Result<TermIndex> {
+    let mut words = std::collections::HashSet::new();
+    let mut phrases = Vec::new();
+
+    for t in load(residual_dir)? {
+        add_index_tokens(&mut words, &mut phrases, &t.term);
+        for alias in t.related_terms.split('|') {
+            add_index_tokens(&mut words, &mut phrases, alias);
+        }
+    }
+
+    for t in crate::storage::format::read_lexicon(residual_dir)? {
+        add_index_tokens(&mut words, &mut phrases, &t.term);
+        for alias in t.aliases.split('|') {
+            add_index_tokens(&mut words, &mut phrases, alias);
+        }
+    }
+
+    phrases.sort_by_key(|p| std::cmp::Reverse(p.len()));
+    phrases.dedup();
+
+    Ok(TermIndex { words, phrases })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,6 +132,38 @@ mod tests {
         let set = term_set(&terms);
         assert!(set.contains("attractor"));
         assert!(set.contains("stressor"));
+    }
+
+    #[test]
+    fn term_index_merges_lexicon_and_related_term_aliases() {
+        use crate::structure::definition::lexicon::Term as LexTerm;
+        let dir = tempdir().unwrap();
+        append(
+            dir.path(),
+            Term {
+                term: "family".into(),
+                definition: "kin".into(),
+                domain: "core".into(),
+                related_terms: "families".into(),
+            },
+        )
+        .unwrap();
+        crate::storage::format::write_lexicon(
+            dir.path(),
+            &[LexTerm {
+                term: "residue".into(),
+                definition: "mapping".into(),
+                domain: "core".into(),
+                aliases: "residual-map|residual-architecture".into(),
+            }],
+        )
+        .unwrap();
+        let index = term_index(dir.path()).unwrap();
+        assert!(index.words.contains("family"));
+        assert!(index.words.contains("families"));
+        assert!(index.words.contains("residue"));
+        assert!(index.words.contains("residual-map"));
+        assert!(index.phrases.iter().any(|p| p.contains("residual-architecture")));
     }
 
     #[test]

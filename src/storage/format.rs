@@ -370,7 +370,8 @@ mod tests {
     #[test]
     fn format_roundtrips_residues_and_attractors_v3() {
         let dir = tempdir().unwrap();
-        let residue = Residue::new("R-01", "S-01", "cli");
+        let mut residue = Residue::new("R-01", "S-01", "cli");
+        residue.status = "proposed".to_string();
         let attractor = Attractor::new(
             "A-01",
             "Clarity",

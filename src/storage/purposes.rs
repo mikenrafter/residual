@@ -30,32 +30,33 @@ pub fn load(residual_dir: &Path) -> Result<Vec<Purpose>> {
 }
 
 pub fn append(residual_dir: &Path, purpose: Purpose) -> Result<()> {
-    let path = residual_dir.join("purposes.csv");
-    let file_exists = path.exists() && std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?;
-    if !file_exists {
-        writeln!(file, "id,description,feature,outcomes,components_enabled,attractor_id")?;
+    let mut all = load(residual_dir)?;
+    if all.iter().any(|p| p.id == purpose.id) {
+        anyhow::bail!("purpose id '{}' already exists", purpose.id);
     }
-    let mut buf = Vec::new();
-    {
-        let mut wtr = csv::WriterBuilder::new()
-            .has_headers(false)
-            .from_writer(&mut buf);
-        wtr.write_record(&[
-            &purpose.id,
-            &purpose.description,
-            &purpose.feature,
-            &purpose.outcomes,
-            &purpose.components_enabled,
-            &purpose.attractor_id,
-        ])?;
-        wtr.flush()?;
+    all.push(purpose);
+    write_all(residual_dir, &all)
+}
+
+fn write_all(residual_dir: &Path, rows: &[Purpose]) -> Result<()> {
+    let mut buf = String::from("id,description,feature,outcomes,components_enabled,attractor_id\n");
+    for p in rows {
+        let mut row = Vec::new();
+        {
+            let mut wtr = csv::WriterBuilder::new().has_headers(false).from_writer(&mut row);
+            wtr.write_record(&[
+                &p.id,
+                &p.description,
+                &p.feature,
+                &p.outcomes,
+                &p.components_enabled,
+                &p.attractor_id,
+            ])?;
+            wtr.flush()?;
+        }
+        buf.push_str(std::str::from_utf8(&row)?);
     }
-    file.write_all(&buf)?;
+    std::fs::write(residual_dir.join("purposes.csv"), buf)?;
     Ok(())
 }
 
@@ -122,6 +123,14 @@ mod tests {
         let loaded = load(dir.path()).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].id, "P-01");
+    }
+
+    #[test]
+    fn append_rejects_duplicate_id() {
+        let dir = tempdir().unwrap();
+        append(dir.path(), make_purpose("P-01")).unwrap();
+        let err = append(dir.path(), make_purpose("P-01")).unwrap_err();
+        assert!(err.to_string().contains("already exists"));
     }
 
     #[test]

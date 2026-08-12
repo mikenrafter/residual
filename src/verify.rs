@@ -21,7 +21,7 @@ pub fn run(cfg: &Config, check: VerifyCheck) -> Result<()> {
                 println!("OK: all attractor links are valid.");
             } else {
                 for v in &violations {
-                    println!("VIOLATION [{}] {}: missing attractor '{}'", v.source, v.id, v.missing_attractor_id);
+                    println!("VIOLATION [{}] {}: {}", v.source, v.id, v.message);
                 }
                 bail!("{} link violation(s) found.", violations.len());
             }
@@ -34,7 +34,7 @@ pub fn run(cfg: &Config, check: VerifyCheck) -> Result<()> {
                 println!("OUTCOME VIOLATION [{}] {}: {} — {}", v.source, v.id, v.outcome_str, v.reason);
             }
             for v in &link_violations {
-                println!("LINK VIOLATION [{}] {}: missing attractor '{}'", v.source, v.id, v.missing_attractor_id);
+                println!("LINK VIOLATION [{}] {}: {}", v.source, v.id, v.message);
             }
             if total == 0 {
                 println!("OK: all checks passed.");
@@ -52,8 +52,7 @@ pub fn run(cfg: &Config, check: VerifyCheck) -> Result<()> {
 pub fn check_outcomes(cfg: &Config) -> Result<Vec<OutcomeViolation>> {
     let stressors = crate::storage::stressors::load(&cfg.residual_dir)?;
     let purposes = crate::storage::purposes::load(&cfg.residual_dir)?;
-    let terms = crate::storage::terminology::load(&cfg.residual_dir)?;
-    let term_set = crate::storage::terminology::term_set(&terms);
+    let term_index = crate::storage::terminology::term_index(&cfg.residual_dir)?;
 
     let mut violations = Vec::new();
 
@@ -73,7 +72,7 @@ pub fn check_outcomes(cfg: &Config) -> Result<Vec<OutcomeViolation>> {
                     });
                 }
                 Some(parts) => {
-                    if !outcome_uses_terminology(&parts, &term_set) {
+                    if !outcome_uses_terminology(raw_outcome, &parts, &term_index) {
                         violations.push(OutcomeViolation {
                             source: "stressor".to_string(),
                             id: stressor.id.clone(),
@@ -102,7 +101,7 @@ pub fn check_outcomes(cfg: &Config) -> Result<Vec<OutcomeViolation>> {
                     });
                 }
                 Some(parts) => {
-                    if !outcome_uses_terminology(&parts, &term_set) {
+                    if !outcome_uses_terminology(raw_outcome, &parts, &term_index) {
                         violations.push(OutcomeViolation {
                             source: "purpose".to_string(),
                             id: purpose.id.clone(),
@@ -132,7 +131,7 @@ pub fn check_links(cfg: &Config) -> Result<Vec<LinkViolation>> {
             violations.push(LinkViolation {
                 source: "stressor".to_string(),
                 id: stressor.id.clone(),
-                missing_attractor_id: stressor.attractor_id.clone(),
+                message: format!("missing attractor '{}'", stressor.attractor_id),
             });
         }
     }
@@ -142,7 +141,53 @@ pub fn check_links(cfg: &Config) -> Result<Vec<LinkViolation>> {
             violations.push(LinkViolation {
                 source: "purpose".to_string(),
                 id: purpose.id.clone(),
-                missing_attractor_id: purpose.attractor_id.clone(),
+                message: format!("missing attractor '{}'", purpose.attractor_id),
+            });
+        }
+    }
+
+    let forces = crate::storage::format::read_forces(&cfg.residual_dir)?;
+    let residues = crate::storage::format::read_residues(&cfg.residual_dir)?;
+    let registry = crate::structure::definition::components::load(&cfg.residual_dir)?;
+    let mut force_ids = std::collections::HashSet::new();
+    for s in &stressors {
+        force_ids.insert(s.id.clone());
+    }
+    for p in &purposes {
+        force_ids.insert(p.id.clone());
+    }
+    for f in &forces {
+        force_ids.insert(f.id.clone());
+    }
+    let component_names: std::collections::HashSet<String> =
+        registry.iter().map(|c| c.name.clone()).collect();
+
+    for force in &forces {
+        if !force.attractor_id.is_empty() && !attractor_ids.contains(&force.attractor_id) {
+            violations.push(LinkViolation {
+                source: "force".to_string(),
+                id: force.id.clone(),
+                message: format!("missing attractor '{}'", force.attractor_id),
+            });
+        }
+    }
+
+    for residue in &residues {
+        if !residue.force_id.is_empty() && !force_ids.contains(&residue.force_id) {
+            violations.push(LinkViolation {
+                source: "residue".to_string(),
+                id: residue.id.clone(),
+                message: format!("force_id '{}' not found", residue.force_id),
+            });
+        }
+        if !residue.component_id.is_empty() && !component_names.contains(&residue.component_id) {
+            violations.push(LinkViolation {
+                source: "residue".to_string(),
+                id: residue.id.clone(),
+                message: format!(
+                    "component_id '{}' not found in components.csv",
+                    residue.component_id
+                ),
             });
         }
     }
@@ -184,25 +229,32 @@ pub struct OutcomeViolation {
 pub struct LinkViolation {
     pub source: String,
     pub id: String,
-    pub missing_attractor_id: String,
+    pub message: String,
 }
 
-/// Check if any word in the outcome touches the terminology set.
+/// Check if any word or phrase in the outcome touches the terminology index.
 pub fn outcome_uses_terminology(
+    outcome_str: &str,
     parts: &OutcomeParts,
-    term_set: &std::collections::HashSet<String>,
+    index: &crate::storage::terminology::TermIndex,
 ) -> bool {
-    if term_set.contains(&parts.subject.to_lowercase()) {
+    if index.words.contains(&parts.subject.to_lowercase()) {
         return true;
     }
-    if term_set.contains(&parts.verb.to_lowercase()) {
+    if index.words.contains(&parts.verb.to_lowercase()) {
         return true;
     }
     for predicate in &parts.predicates {
         for word in predicate.split_whitespace() {
-            if term_set.contains(&word.to_lowercase()) {
+            if index.words.contains(&word.to_lowercase()) {
                 return true;
             }
+        }
+    }
+    let lower = outcome_str.to_lowercase();
+    for phrase in &index.phrases {
+        if phrase.len() >= 3 && lower.contains(phrase.as_str()) {
+            return true;
         }
     }
     false
@@ -211,12 +263,12 @@ pub fn outcome_uses_terminology(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
     use tempfile::tempdir;
     use crate::config::Config;
     use crate::storage::stressors;
     use crate::storage::attractors;
     use crate::storage::terminology;
+    use crate::structure::analysis::residues::Residue;
 
     fn cfg_for(dir: &std::path::Path) -> Config {
         Config {
@@ -250,9 +302,11 @@ mod tests {
             verb: "handles".to_string(),
             predicates: vec!["auth".to_string()],
         };
-        let mut terms = HashSet::new();
-        terms.insert("auth".to_string());
-        assert!(outcome_uses_terminology(&parts, &terms));
+        let index = terminology::TermIndex {
+            words: ["auth".to_string()].into_iter().collect(),
+            phrases: vec![],
+        };
+        assert!(outcome_uses_terminology("system handles auth", &parts, &index));
     }
 
     #[test]
@@ -262,9 +316,29 @@ mod tests {
             verb: "does".to_string(),
             predicates: vec!["something".to_string()],
         };
-        let mut terms = HashSet::new();
-        terms.insert("auth".to_string());
-        assert!(!outcome_uses_terminology(&parts, &terms));
+        let index = terminology::TermIndex {
+            words: ["auth".to_string()].into_iter().collect(),
+            phrases: vec![],
+        };
+        assert!(!outcome_uses_terminology("system does something", &parts, &index));
+    }
+
+    #[test]
+    fn outcome_uses_terminology_phrase_match() {
+        let parts = OutcomeParts {
+            subject: "operator".to_string(),
+            verb: "reads".to_string(),
+            predicates: vec!["commit history using defined outcome".to_string()],
+        };
+        let index = terminology::TermIndex {
+            words: ["operator".to_string(), "reads".to_string()].into_iter().collect(),
+            phrases: vec!["defined outcome".to_string()],
+        };
+        assert!(outcome_uses_terminology(
+            "operator reads commit history using defined outcome",
+            &parts,
+            &index
+        ));
     }
 
     #[test]
@@ -368,7 +442,7 @@ mod tests {
         .unwrap();
         let violations = check_links(&cfg).unwrap();
         assert!(!violations.is_empty(), "expected violation for nonexistent attractor");
-        assert_eq!(violations[0].missing_attractor_id, "A-99");
+        assert_eq!(violations[0].message, "missing attractor 'A-99'");
     }
 
     #[test]
@@ -400,6 +474,30 @@ mod tests {
         .unwrap();
         let violations = check_links(&cfg).unwrap();
         assert!(violations.is_empty(), "expected no violations when attractor exists");
+    }
+
+    #[test]
+    fn check_links_bad_residue_force_is_violation() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_for(dir.path());
+        crate::storage::format::write_residues(
+            dir.path(),
+            &[Residue {
+                id: "R-01".to_string(),
+                force_id: "S-99".to_string(),
+                component_id: "cli".to_string(),
+                status: "proposed".to_string(),
+                notes: String::new(),
+            }],
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("components.csv"),
+            "name,description,status,architecture_set\ncli,desc,proposed,baseline\n",
+        )
+        .unwrap();
+        let violations = check_links(&cfg).unwrap();
+        assert!(violations.iter().any(|v| v.source == "residue" && v.message.contains("S-99")));
     }
 
     #[test]
