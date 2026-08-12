@@ -1,0 +1,26 @@
+name,description,status,architecture_set
+research-study,STANDALONE NOT RUNTIME — registry + terminology only (alpha/beta study unhomed),proposed,iter4-cli-hub
+cli,Thin hub: dispatch only; process text lives beside each clap action,proposed,iter4-cli-hub
+cli-help,Completions / man / generate help artifacts,proposed,iter4-cli-hub
+skills-personas,Save/retrieve personas. Verification enforces min:2 until alpha/beta,proposed,iter4-cli-hub
+skills-research,Save/retrieve walk+persona research notes. Distinct from research-study,proposed,iter4-cli-hub
+skills-phases,Owns skill-list skill-show skill-data and ATAM+FMEA prose,proposed,iter4-cli-hub
+skills-installer,skill-install and skill check-install (skill-check alias OK),proposed,iter4-cli-hub
+verification,Criticality link+lexicon continuity one-way tags personas adequacy; reads policy from storage-config,proposed,iter4-cli-hub
+verification-git-hook,Pre-commit hook install under Verification,proposed,iter4-cli-hub
+structure,EXTERNAL filter/sort/group API (default group=attractor),proposed,iter4-cli-hub
+structure-analysis,NKP only — NOT ATAM/FMEA,proposed,iter4-cli-hub
+structure-analysis-tag-scan,Tag scanning as suggestions not enforcement,proposed,iter4-cli-hub
+structure-analysis-force,Force = 1/2 of residue (purpose XOR stressor); naive_change + outcomes,proposed,iter4-cli-hub
+structure-analysis-purposes,Purpose as Force specialization; naive_change + outcomes NOT traits,proposed,iter4-cli-hub
+structure-analysis-stressors,Stressor as Force specialization; naive_change + outcomes NOT traits,proposed,iter4-cli-hub
+structure-analysis-attractors,Attractors with +/- states; NO valence,proposed,iter4-cli-hub
+structure-analysis-residues,Force id x component id mapping (+ status/notes),proposed,iter4-cli-hub
+structure-definition-lexicon,Terms and aliases; continuity in outcome AND shortname,proposed,iter4-cli-hub
+structure-definition-components,Component registry status architecture_set,proposed,iter4-cli-hub
+structure-definition-iterations,Iteration-complete plus component name list,proposed,iter4-cli-hub
+storage,Read write and mutate (not append-only),proposed,iter4-cli-hub
+storage-config,THE config (v3 TOML): app + verify policy keys (super_strict token_warn),proposed,iter4-cli-hub
+storage-sessions,Locks change-detection hash; --force or diff on drift,proposed,iter4-cli-hub
+storage-migration,Naive to v3 format transfer only,proposed,iter4-cli-hub
+storage-format,CSV round-trip for structure.analysis.* and structure.definition.*,proposed,iter4-cli-hub

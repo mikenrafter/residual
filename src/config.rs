@@ -52,8 +52,7 @@ pub fn load() -> Result<Config> {
     let mut cfg = if config_path.exists() {
         let raw = std::fs::read_to_string(&config_path)
             .with_context(|| format!("read {}", config_path.display()))?;
-        toml::from_str::<Config>(&raw)
-            .with_context(|| format!("parse {}", config_path.display()))?
+        parse_any(&raw).with_context(|| format!("parse {}", config_path.display()))?
     } else {
         Config::default()
     };
@@ -84,6 +83,47 @@ fn find_residual_dir() -> Result<PathBuf> {
 
 pub fn residual_dir(cfg: &Config) -> &Path {
     &cfg.residual_dir
+}
+
+#[derive(Debug, Deserialize)]
+struct V3Shim {
+    #[serde(default)]
+    verification: Option<V3VerificationSection>,
+    #[serde(default)]
+    validation: Option<ValidationConfig>,
+    #[serde(default)]
+    skills: Option<SkillsConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct V3VerificationSection {
+    #[serde(default = "default_strict")]
+    super_strict: bool,
+    #[serde(default = "default_token_warn")]
+    token_warn: usize,
+}
+
+fn parse_any(raw: &str) -> Result<Config> {
+    // v3 TOML: [verification] / [storage] / format_version. Policy keys map onto
+    // the legacy Config fields so the rest of the binary stays stable.
+    if raw.contains("format_version") || raw.contains("[verification]") || raw.contains("[storage]")
+    {
+        let shim: V3Shim = toml::from_str(raw)?;
+        let (strict, token_warn) = if let Some(v) = shim.verification {
+            (v.super_strict, v.token_warn)
+        } else {
+            (
+                shim.validation.map(|v| v.strict).unwrap_or_else(default_strict),
+                shim.skills.map(|s| s.token_warn).unwrap_or_else(default_token_warn),
+            )
+        };
+        return Ok(Config {
+            validation: ValidationConfig { strict },
+            skills: SkillsConfig { token_warn },
+            residual_dir: PathBuf::new(),
+        });
+    }
+    Ok(toml::from_str::<Config>(raw)?)
 }
 
 #[cfg(test)]

@@ -4,6 +4,9 @@ use crate::config::Config;
 use crate::cli::{AddTarget, ListTarget};
 
 pub mod attractors;
+pub mod config;
+pub mod format;
+pub mod integrity;
 pub mod iterations;
 pub mod personas;
 pub mod purposes;
@@ -11,16 +14,25 @@ pub mod research;
 pub mod stressors;
 pub mod terminology;
 
-pub fn init(cfg: &Config) -> Result<()> {
+pub fn init(cfg: &Config, force: bool) -> Result<()> {
+    let session = integrity::sessions::begin_mutation(&cfg.residual_dir, force)?;
+    init_dirs_and_files(cfg)?;
+    session.commit()?;
+    println!("Initialized residual/ at {}", cfg.residual_dir.display());
+    Ok(())
+}
+
+fn init_dirs_and_files(cfg: &Config) -> Result<()> {
     let dir = &cfg.residual_dir;
     fs::create_dir_all(dir.join("iterations"))?;
     fs::create_dir_all(dir.join("personas"))?;
     fs::create_dir_all(dir.join("research"))?;
 
-    // Write empty config.toml if not present
+    // Write v3 config.toml if not present (storage-config owns app + verify policy).
     let config_path = dir.join("config.toml");
     if !config_path.exists() {
-        fs::write(&config_path, "# residual configuration\n[validation]\nstrict = true\n\n[skills]\ntoken_warn = 1000\n")?;
+        let toml = crate::storage::config::render_v3(&crate::storage::config::StorageConfig::default());
+        fs::write(&config_path, toml)?;
     }
 
     // Write empty CSVs with headers if not present
@@ -29,6 +41,10 @@ pub fn init(cfg: &Config) -> Result<()> {
         ("purposes.csv", "id,description,feature,traits,components_enabled,attractor_id"),
         ("attractors.csv", "id,name,valence,description,phase_state"),
         ("terminology.csv", "term,definition,domain,related_terms"),
+        ("forces.csv", "id,kind,shortname,naive_change,outcomes,description,attractor_id"),
+        ("lexicon.csv", "term,definition,domain,aliases"),
+        ("residues.csv", "id,force_id,component_id,status,notes"),
+        ("components.csv", "name,description,status,architecture_set"),
     ];
     for (filename, header) in csvs {
         let path = dir.join(filename);
@@ -36,12 +52,17 @@ pub fn init(cfg: &Config) -> Result<()> {
             fs::write(&path, format!("{}\n", header))?;
         }
     }
-
-    println!("Initialized residual/ at {}", dir.display());
     Ok(())
 }
 
-pub fn add(cfg: &Config, target: AddTarget) -> Result<()> {
+pub fn add(cfg: &Config, target: AddTarget, force: bool) -> Result<()> {
+    let session = integrity::sessions::begin_mutation(&cfg.residual_dir, force)?;
+    add_entry(cfg, target)?;
+    session.commit()?;
+    Ok(())
+}
+
+fn add_entry(cfg: &Config, target: AddTarget) -> Result<()> {
     let dir = &cfg.residual_dir;
     match target {
         AddTarget::Stressor { description, attractor_id, naive_change, traits, components } => {

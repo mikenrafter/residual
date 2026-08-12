@@ -5,7 +5,9 @@ mod config;
 mod nkp;
 mod skills;
 mod storage;
+mod structure;
 mod tags;
+mod verification;
 mod verify;
 
 fn main() -> Result<()> {

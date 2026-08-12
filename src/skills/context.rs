@@ -10,11 +10,34 @@ pub fn build(cfg: &Config, skill_name: &str) -> Result<String> {
     let terms      = crate::storage::terminology::load(dir).unwrap_or_default();
     let personas   = crate::storage::personas::load_all(dir).unwrap_or_default();
 
-    // NKP summary values
-    let n = attractors.len() + stressors.len() + purposes.len();
-    let k: usize = stressors.iter().map(|s| {
-        s.components_affected.split(',').filter(|c| !c.trim().is_empty()).count()
-    }).sum();
+    // NKP summary: N = stressors + unique components (matrix semantics), not entity bag count.
+    let mut component_set = std::collections::BTreeSet::new();
+    for s in &stressors {
+        for c in s.components_affected.split(',') {
+            let c = c.trim();
+            if !c.is_empty() {
+                component_set.insert(c.to_string());
+            }
+        }
+    }
+    for p in &purposes {
+        for c in p.components_enabled.split(',') {
+            let c = c.trim();
+            if !c.is_empty() {
+                component_set.insert(c.to_string());
+            }
+        }
+    }
+    let n = stressors.len() + component_set.len();
+    let k: usize = stressors
+        .iter()
+        .map(|s| {
+            s.components_affected
+                .split(',')
+                .filter(|c| !c.trim().is_empty())
+                .count()
+        })
+        .sum();
     let k_per_n = if n == 0 { 0.0 } else { k as f64 / n as f64 };
 
     let want_attractors;
@@ -212,14 +235,11 @@ mod tests {
             components_affected: "auth,db".to_string(),
         }).unwrap();
         let out = build(&cfg, "integrate").unwrap();
-        // With 1 stressor affecting 2 components (auth, db), N should = 3
-        // (1 stressor + 2 components per matrix.rs semantics), or 2 (components only).
-        // Currently context.rs computes N = 0 attractors + 1 stressor + 0 purposes = 1.
-        // This assertion documents the expected (correct) behavior; it FAILS today.
-        assert!(
-            out.contains("N=3,") || out.contains("N=2,"),
-            "expected N to reflect component+stressor count (2 or 3), got context: {}",
-            &out[out.find("NKP").unwrap_or(0)..out.len().min(out.find("NKP").unwrap_or(0) + 80)]
-        );
+        // With 1 stressor affecting 2 components (auth, db), N = stressors + unique components = 3.
+    assert!(
+        out.contains("N=3,") || out.contains("N=2,"),
+        "expected N to reflect component+stressor count (2 or 3), got context: {}",
+        &out[out.find("NKP").unwrap_or(0)..out.len().min(out.find("NKP").unwrap_or(0) + 80)]
+    );
     }
 }
