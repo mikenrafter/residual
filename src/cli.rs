@@ -164,7 +164,8 @@ pub enum AddTarget {
     Purpose {
         #[arg(long)] description: String,
         #[arg(long)] attractor_id: String,
-        #[arg(long)] feature: String,
+        #[arg(long, visible_alias = "naive-change")]
+        feature: String,
         #[arg(long, default_value = "", visible_alias = "traits")]
         outcomes: String,
         #[arg(long, default_value = "")] components: String,

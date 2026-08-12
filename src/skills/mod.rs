@@ -55,6 +55,9 @@ pub fn data(cfg: &Config, name: &str) -> Result<()> {
 }
 
 pub fn list_all() -> Result<()> {
+    println!(
+        "Skills are selectable analytical lenses (a-la-carte) — invoke only the steps your workflow needs.\n"
+    );
     println!("{:<20} {:>7}  {:>12}", "SKILL", "VERSION", "TOKENS (~)");
     println!("{}", "-".repeat(44));
     for (name, content, version) in SKILLS {

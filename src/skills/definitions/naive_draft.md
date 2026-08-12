@@ -5,6 +5,8 @@ version: 1
 
 # Naive Draft
 
+**Analytical lens (optional).**
+
 Produce a naïve architecture and a TDD-first prototype that highlights initial flaws and gives the user something to show stakeholders.
 
 ## Interaction Pattern

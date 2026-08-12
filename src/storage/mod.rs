@@ -167,7 +167,8 @@ pub fn list(cfg: &Config, target: ListTarget) -> Result<()> {
                 println!("No purposes.");
             } else {
                 for p in &items {
-                    println!("[{}] {} (feature: {})", p.id, p.description, p.feature);
+                    let extra = if p.outcomes.is_empty() { String::new() } else { format!(" | outcomes: {}", p.outcomes) };
+                    println!("[{}] {} (naive_change: {}{})", p.id, p.description, p.feature, extra);
                 }
             }
         }
