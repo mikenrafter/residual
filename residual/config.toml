@@ -1,6 +1,9 @@
-# residual configuration — self-application (dogfood)
-[validation]
-strict = true
+# residual v3 configuration (migrated from naive)
+format_version = "v3"
 
-[skills]
+[storage]
+change_detection = true
+
+[verification]
+super_strict = true
 token_warn = 1000

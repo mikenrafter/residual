@@ -4,11 +4,15 @@
 use anyhow::Result;
 use std::path::Path;
 
+use crate::structure::analysis::attractors::Attractor;
 use crate::structure::analysis::force::{Force, ForceKind};
+use crate::structure::analysis::residues::Residue;
 use crate::structure::definition::lexicon::Term;
 
 const FORCES_HEADER: &str = "id,kind,shortname,naive_change,outcomes,description,attractor_id";
 const LEXICON_HEADER: &str = "term,definition,domain,aliases";
+const RESIDUES_HEADER: &str = "id,force_id,component_id,status,notes";
+const ATTRACTORS_V3_HEADER: &str = "id,name,description,positive_state,negative_state";
 
 pub fn write_forces(residual_dir: &Path, forces: &[Force]) -> Result<()> {
     let path = residual_dir.join("forces.csv");
@@ -116,6 +120,100 @@ pub fn read_lexicon(residual_dir: &Path) -> Result<Vec<Term>> {
     Ok(out)
 }
 
+pub fn write_residues(residual_dir: &Path, residues: &[Residue]) -> Result<()> {
+    let path = residual_dir.join("residues.csv");
+    let mut buf = RESIDUES_HEADER.to_string();
+    buf.push('\n');
+    for r in residues {
+        let mut row = Vec::new();
+        {
+            let mut wtr = csv::WriterBuilder::new()
+                .has_headers(false)
+                .from_writer(&mut row);
+            wtr.write_record(&[
+                r.id.as_str(),
+                r.force_id.as_str(),
+                r.component_id.as_str(),
+                r.status.as_str(),
+                r.notes.as_str(),
+            ])?;
+            wtr.flush()?;
+        }
+        buf.push_str(std::str::from_utf8(&row)?);
+    }
+    std::fs::write(path, buf)?;
+    Ok(())
+}
+
+pub fn read_residues(residual_dir: &Path) -> Result<Vec<Residue>> {
+    let path = residual_dir.join("residues.csv");
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_path(&path)?;
+    let mut out = Vec::new();
+    for rec in rdr.records() {
+        let rec = rec?;
+        out.push(Residue {
+            id: rec.get(0).unwrap_or("").to_string(),
+            force_id: rec.get(1).unwrap_or("").to_string(),
+            component_id: rec.get(2).unwrap_or("").to_string(),
+            status: rec.get(3).unwrap_or("").to_string(),
+            notes: rec.get(4).unwrap_or("").to_string(),
+        });
+    }
+    Ok(out)
+}
+
+pub fn write_attractors_v3(residual_dir: &Path, attractors: &[Attractor]) -> Result<()> {
+    let path = residual_dir.join("attractors.csv");
+    let mut buf = ATTRACTORS_V3_HEADER.to_string();
+    buf.push('\n');
+    for a in attractors {
+        let mut row = Vec::new();
+        {
+            let mut wtr = csv::WriterBuilder::new()
+                .has_headers(false)
+                .from_writer(&mut row);
+            wtr.write_record(&[
+                a.id.as_str(),
+                a.name.as_str(),
+                a.description.as_str(),
+                a.positive_state.as_str(),
+                a.negative_state.as_str(),
+            ])?;
+            wtr.flush()?;
+        }
+        buf.push_str(std::str::from_utf8(&row)?);
+    }
+    std::fs::write(path, buf)?;
+    Ok(())
+}
+
+pub fn read_attractors_v3(residual_dir: &Path) -> Result<Vec<Attractor>> {
+    let path = residual_dir.join("attractors.csv");
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_path(&path)?;
+    let mut out = Vec::new();
+    for rec in rdr.records() {
+        let rec = rec?;
+        out.push(Attractor {
+            id: rec.get(0).unwrap_or("").to_string(),
+            name: rec.get(1).unwrap_or("").to_string(),
+            description: rec.get(2).unwrap_or("").to_string(),
+            positive_state: rec.get(3).unwrap_or("").to_string(),
+            negative_state: rec.get(4).unwrap_or("").to_string(),
+        });
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,5 +240,21 @@ mod tests {
         let terms = read_lexicon(dir.path()).unwrap();
         assert_eq!(forces, vec![force]);
         assert_eq!(terms, vec![term]);
+    }
+
+    #[test]
+    fn format_roundtrips_residues_and_attractors_v3() {
+        let dir = tempdir().unwrap();
+        let residue = Residue::new("R-01", "S-01", "cli");
+        let attractor = Attractor::new(
+            "A-01",
+            "Clarity",
+            "NKP data reflects stress surface",
+            "Ri collapses; stressors undefined",
+        );
+        write_residues(dir.path(), &[residue.clone()]).unwrap();
+        write_attractors_v3(dir.path(), &[attractor.clone()]).unwrap();
+        assert_eq!(read_residues(dir.path()).unwrap(), vec![residue]);
+        assert_eq!(read_attractors_v3(dir.path()).unwrap(), vec![attractor]);
     }
 }

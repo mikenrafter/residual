@@ -1,0 +1,23 @@
+term,definition,domain,aliases
+stressor,a narrative describing how the business system moves to a different attractor without requiring probability or consensus,nkp,attractor residue walk
+attractor,a recurring multivariate condition a system returns to; described by a positive state (what keeps it going) and a negative state (what it looks like when pressure fails) — not classified as solely positive or solely negative,nkp,stressor phase-state hyperliminal positive-residual negative-residual
+residue,what is left over after stress or intent is applied; the unit of architectural change; a residue contains either a stressor (negative residual) or a purpose (positive residual),nkp,stressor purpose naive-architecture residual-architecture negative-residual positive-residual
+walk,iterative traversal of a domain with multiple stakeholders to build rich layered understanding,methodology,deleuzian-walk persona stressor-walk
+criticality,the point at which a system has the right balance of N (nodes) and K (links) to be resilient to unknown stressors without being chaotic,nkp,n k p kauffman
+hyperliminal,describing coupling that is invisible until a stressor activates it — shared stress response across components,nkp,coupling matrix stressor
+fusion,combining two components that share identical stress-response patterns into one to safely reduce N,nkp,fission matrix criticality
+fission,splitting a component with excessive stress surface (high K) into smaller parts to reduce coupling,nkp,fusion matrix criticality
+trait,"a verifiable statement of a desired outcome — end state, mode of operation, or way of being — of the form subject + verb + predicate; must use defined terminology",verification,terminology purpose stressor outcome
+persona,a stakeholder voice used during stressor-walk to surface concerns and desires from a specific role's perspective,methodology,attractor purpose-walk stressor-walk user
+naive-architecture,the first-pass architecture produced before stressor analysis; the starting point for residual analysis,architecture,residue stressor-walk integrate
+skill,a versioned agent-agnostic prompt document encoding a specific methodology step in the residuality workflow,tool,purpose-walk naive-draft stressor-walk integrate fmea atam
+residual-architecture,architecture that has considered many stressors and purposes; the post-exposure architecture under evaluation; contrasted with naive-architecture,architecture,residue naive-architecture criticality
+resilient-architecture,a residual-architecture that has reached criticality,architecture,residual-architecture criticality
+operator,human developer or non-human agent that runs residual commands and skill sessions; may work alone or with additional outside input; contrasted with prospect,tool,persona prospect skill user walk
+whole-system-residue,"a residue whose surviving change may land outside the software boundary — hardware, process, organization, or policy — when that change answers the stressor better than a software-only patch",architecture,residue stressor naive-architecture
+negative-residual,a residue whose content is a stressor; the negative side of residual analysis,nkp,residue stressor positive-residual
+positive-residual,a residue whose content is a purpose; the positive side of residual analysis,nkp,residue purpose negative-residual
+outcome,"what a trait encodes: a desired end state, mode of operation, journey, or way of being — not limited to one-off completion events",verification,trait purpose feature
+probability-framing,encoding exploration as likelihoods or risk scores; in non-ergodic hyperliminal systems probabilities are exclusionary opinions — they collapse unseen attractors and block full state-space walks because only pre-weighted futures get attention,methodology,stressor attractor hyperliminal
+prospect,a potential operator who has not yet adopted residuality; may be evaluating efficacy before becoming an operator,tool,operator skill walk
+user,a person or system that uses the application or service being architected; not the residual operator or prospect,architecture,persona operator prospect walk

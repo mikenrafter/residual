@@ -92,6 +92,16 @@ pub enum Command {
         #[command(subcommand)]
         artifact: GenerateArtifact,
     },
+    /// Migrate residual/ from naive on-disk shape to v3.
+    ///
+    /// Process: config → storage-config; stressors/purposes → forces+residues;
+    /// attractors valence → +/- states; terminology → lexicon. Legacy force CSVs
+    /// remain for mid-transition readers.
+    Migrate {
+        /// Overwrite session snapshot when residual files drifted outside this tool.
+        #[arg(long)]
+        force: bool,
+    },
     Config,
 }
 
@@ -151,9 +161,9 @@ pub enum AddTarget {
     },
     Attractor {
         #[arg(long)] name: String,
-        #[arg(long)] valence: String,
         #[arg(long)] description: String,
-        #[arg(long, default_value = "")] phase_state: String,
+        #[arg(long)] positive_state: String,
+        #[arg(long)] negative_state: String,
     },
     Term {
         #[arg(long)] term: String,
@@ -255,6 +265,7 @@ pub fn run() -> Result<()> {
             GenerateArtifact::Man => crate::cli::help::generate_man(),
             GenerateArtifact::Hook => crate::verification::git_hook::install(),
         },
+        Command::Migrate { force } => crate::storage::migrate(&cfg, force),
         Command::Config => crate::config::print(&cfg),
     }
 }

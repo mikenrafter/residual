@@ -39,7 +39,7 @@ fn init_dirs_and_files(cfg: &Config) -> Result<()> {
     let csvs: &[(&str, &str)] = &[
         ("stressors.csv", "id,description,naive_change,traits,components_affected,attractor_id"),
         ("purposes.csv", "id,description,feature,traits,components_enabled,attractor_id"),
-        ("attractors.csv", "id,name,valence,description,phase_state"),
+        ("attractors.csv", "id,name,description,positive_state,negative_state"),
         ("terminology.csv", "term,definition,domain,related_terms"),
         ("forces.csv", "id,kind,shortname,naive_change,outcomes,description,attractor_id"),
         ("lexicon.csv", "term,definition,domain,aliases"),
@@ -91,17 +91,24 @@ fn add_entry(cfg: &Config, target: AddTarget) -> Result<()> {
             })?;
             println!("Added purpose {}", id);
         }
-        AddTarget::Attractor { name, valence, description, phase_state } => {
+        AddTarget::Attractor {
+            name,
+            description,
+            positive_state,
+            negative_state,
+        } => {
             let existing = attractors::load(dir)?;
             let id = attractors::next_id(&existing);
-            let valence: attractors::Valence = valence.parse()?;
-            attractors::append(dir, attractors::Attractor {
-                id: id.clone(),
-                name,
-                valence,
-                description,
-                phase_state,
-            })?;
+            attractors::append(
+                dir,
+                attractors::Attractor {
+                    id: id.clone(),
+                    name,
+                    description,
+                    positive_state,
+                    negative_state,
+                },
+            )?;
             println!("Added attractor {}", id);
         }
         AddTarget::Term { term, definition, domain, related } => {
@@ -170,7 +177,13 @@ pub fn list(cfg: &Config, target: ListTarget) -> Result<()> {
                 println!("No attractors.");
             } else {
                 for a in &items {
-                    println!("[{}] {} ({:?})", a.id, a.name, a.valence);
+                    println!(
+                        "[{}] {} (+/{} | -/{} )",
+                        a.id,
+                        a.name,
+                        truncate_state(&a.positive_state),
+                        truncate_state(&a.negative_state)
+                    );
                 }
             }
         }
@@ -206,6 +219,38 @@ pub fn list(cfg: &Config, target: ListTarget) -> Result<()> {
                 }
             }
         }
+    }
+    Ok(())
+}
+
+fn truncate_state(s: &str) -> String {
+    const MAX: usize = 40;
+    if s.chars().count() <= MAX {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(MAX).collect();
+        out.push('…');
+        out
+    }
+}
+
+/// Run naive → v3 migration for the project's residual/ directory.
+pub fn migrate(cfg: &Config, force: bool) -> Result<()> {
+    let report = integrity::migration::migrate_residual_dir(&cfg.residual_dir, force)?;
+    println!(
+        "Migrated {} → v3 (config={}, forces={}, residues={}, attractors={}, lexicon={})",
+        cfg.residual_dir.display(),
+        report.config_migrated,
+        report.forces,
+        report.residues,
+        report.attractors,
+        report.lexicon_terms
+    );
+    if !report.unmapped_components.is_empty() {
+        println!(
+            "Unmapped naive component tokens (left as-is): {}",
+            report.unmapped_components.join(", ")
+        );
     }
     Ok(())
 }

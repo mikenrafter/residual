@@ -55,7 +55,7 @@ fn init_idempotent() {
 fn add_attractor_then_list() {
     let dir = TempDir::new().unwrap();
     init(&dir);
-    let add = run(&dir, &["add", "attractor", "--name", "Stability", "--valence", "positive", "--description", "stable baseline"]);
+    let add = run(&dir, &["add", "attractor", "--name", "Stability", "--description", "stable baseline", "--positive-state", "coherent", "--negative-state", "collapse"]);
     assert!(add.status.success(), "add attractor failed: {}", String::from_utf8_lossy(&add.stderr));
     let list = run(&dir, &["list", "attractors"]);
     let stdout = String::from_utf8_lossy(&list.stdout);
@@ -66,7 +66,7 @@ fn add_attractor_then_list() {
 fn add_stressor_then_list() {
     let dir = TempDir::new().unwrap();
     init(&dir);
-    run(&dir, &["add", "attractor", "--name", "Stability", "--valence", "positive", "--description", "d"]);
+    run(&dir, &["add", "attractor", "--name", "Stability", "--description", "d", "--positive-state", "ok", "--negative-state", "bad"]);
     let add = run(&dir, &["add", "stressor",
         "--description", "auth service overwhelmed",
         "--attractor-id", "A-01",
@@ -164,7 +164,7 @@ fn matrix_calc_on_empty_data_does_not_panic() {
 fn matrix_calc_reports_n_k_and_ratio() {
     let dir = TempDir::new().unwrap();
     init(&dir);
-    run(&dir, &["add", "attractor", "--name", "X", "--valence", "positive", "--description", "d"]);
+    run(&dir, &["add", "attractor", "--name", "X", "--description", "d", "--positive-state", "ok", "--negative-state", "bad"]);
     run(&dir, &["add", "stressor",
         "--description", "test",
         "--attractor-id", "A-01",

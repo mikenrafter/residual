@@ -104,12 +104,12 @@ pub fn build(cfg: &Config, skill_name: &str) -> Result<String> {
 
     if want_attractors {
         out.push_str("## Attractors\n");
-        out.push_str("| id | name | valence | description |\n");
+        out.push_str("| id | name | positive_state | negative_state |\n");
         out.push_str("|---|---|---|---|\n");
         for a in &attractors {
             out.push_str(&format!(
                 "| {} | {} | {} | {} |\n",
-                a.id, a.name, a.valence, a.description
+                a.id, a.name, a.positive_state, a.negative_state
             ));
         }
         out.push('\n');

@@ -388,9 +388,9 @@ mod tests {
             attractors::Attractor {
                 id: "A-01".to_string(),
                 name: "Stability".to_string(),
-                valence: attractors::Valence::Positive,
                 description: "stable".to_string(),
-                phase_state: "active".to_string(),
+                positive_state: "active".to_string(),
+                negative_state: "unstable".to_string(),
             },
         ).unwrap();
         stressors::append(

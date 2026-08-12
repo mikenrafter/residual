@@ -1,95 +1,22 @@
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Attractor {
-    pub id: String,
-    pub name: String,
-    pub valence: Valence,
-    pub description: String,
-    pub phase_state: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum Valence {
-    Positive,
-    Negative,
-}
-
-impl std::str::FromStr for Valence {
-    type Err = anyhow::Error;
-    fn from_str(s: &str) -> Result<Self> {
-        match s.to_lowercase().as_str() {
-            "positive" => Ok(Valence::Positive),
-            "negative" => Ok(Valence::Negative),
-            other => anyhow::bail!("invalid valence '{}': must be 'positive' or 'negative'", other),
-        }
-    }
-}
-
-impl std::fmt::Display for Valence {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Valence::Positive => write!(f, "positive"),
-            Valence::Negative => write!(f, "negative"),
-        }
-    }
-}
+pub use crate::structure::analysis::attractors::Attractor;
 
 pub fn load(residual_dir: &Path) -> Result<Vec<Attractor>> {
-    let path = residual_dir.join("attractors.csv");
-    if !path.exists() {
-        return Ok(vec![]);
-    }
-    let mut rdr = csv::ReaderBuilder::new()
-        .has_headers(true)
-        .from_path(&path)?;
-    let mut result = Vec::new();
-    for record in rdr.deserialize() {
-        let a: Attractor = record?;
-        result.push(a);
-    }
-    Ok(result)
+    crate::storage::format::read_attractors_v3(residual_dir)
 }
 
 pub fn append(residual_dir: &Path, attractor: Attractor) -> Result<()> {
-    let path = residual_dir.join("attractors.csv");
-    let file_exists = path.exists() && std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?;
-    if !file_exists {
-        writeln!(file, "id,name,valence,description,phase_state")?;
-    }
-    let valence_str = attractor.valence.to_string();
-    let mut buf = Vec::new();
-    {
-        let mut wtr = csv::WriterBuilder::new()
-            .has_headers(false)
-            .from_writer(&mut buf);
-        wtr.write_record(&[
-            &attractor.id,
-            &attractor.name,
-            &valence_str,
-            &attractor.description,
-            &attractor.phase_state,
-        ])?;
-        wtr.flush()?;
-    }
-    file.write_all(&buf)?;
-    Ok(())
+    let mut existing = load(residual_dir)?;
+    existing.push(attractor);
+    crate::storage::format::write_attractors_v3(residual_dir, &existing)
 }
 
 pub fn next_id(attractors: &[Attractor]) -> String {
     let max = attractors
         .iter()
-        .filter_map(|a| {
-            a.id.strip_prefix("A-").and_then(|n| n.parse::<u32>().ok())
-        })
+        .filter_map(|a| a.id.strip_prefix("A-").and_then(|n| n.parse::<u32>().ok()))
         .max()
         .unwrap_or(0);
     format!("A-{:02}", max + 1)
@@ -109,9 +36,9 @@ mod tests {
         Attractor {
             id: id.to_string(),
             name: "Stability".to_string(),
-            valence: Valence::Positive,
             description: "System remains stable".to_string(),
-            phase_state: "active".to_string(),
+            positive_state: "coherent NKP".to_string(),
+            negative_state: "Ri collapses".to_string(),
         }
     }
 
@@ -140,24 +67,6 @@ mod tests {
     }
 
     #[test]
-    fn valence_positive_parses() {
-        let v: Valence = "positive".parse().unwrap();
-        assert_eq!(v, Valence::Positive);
-    }
-
-    #[test]
-    fn valence_negative_parses() {
-        let v: Valence = "negative".parse().unwrap();
-        assert_eq!(v, Valence::Negative);
-    }
-
-    #[test]
-    fn valence_invalid_errors() {
-        let result: Result<Valence> = "neutral".parse::<Valence>().map_err(|e| e.into());
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn attractor_round_trips() {
         let dir = tempdir().unwrap();
         let a = make_attractor("A-01");
@@ -165,7 +74,8 @@ mod tests {
         let loaded = load(dir.path()).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].id, "A-01");
-        assert_eq!(loaded[0].valence, Valence::Positive);
+        assert_eq!(loaded[0].positive_state, "coherent NKP");
+        assert_eq!(loaded[0].negative_state, "Ri collapses");
         assert_eq!(loaded[0].name, "Stability");
     }
 
