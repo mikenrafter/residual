@@ -49,7 +49,7 @@ pub fn installed_version(name: &str, agent: &Agent, global: bool) -> Result<Opti
     Ok(parse_version_from_front_matter(&content))
 }
 
-fn parse_version_from_front_matter(content: &str) -> Option<u32> {
+pub fn parse_version_from_front_matter(content: &str) -> Option<u32> {
     // Front-matter is between the first and second `---` markers
     let mut lines = content.lines();
 
@@ -81,6 +81,59 @@ pub fn write_skill(path: &PathBuf, content: &str) -> Result<()> {
     std::fs::write(path, content)
         .with_context(|| format!("failed to write skill to {}", path.display()))?;
     Ok(())
+}
+
+/// Verb + subject phrase for the installed agent shim (S-07).
+pub fn skill_request_phrase(name: &str) -> &'static str {
+    match name {
+        "purpose-walk" => "walk the purposes",
+        "naive-draft" => "draft a naïve architecture",
+        "stressor-walk" => "walk the stressors",
+        "integrate" => "integrate the residual architecture",
+        "fmea" => "run FMEA",
+        "atam" => "run ATAM",
+        _ => "apply this residual skill",
+    }
+}
+
+/// Thin installed stub: agent fetches full methodology from the binary (S-07).
+pub fn passthrough_stub(name: &str) -> String {
+    let phrase = skill_request_phrase(name);
+    format!(
+        "---\n\
+         name: {name}\n\
+         passthrough: true\n\
+         description: Residual {name} — begin with residual skill-show / skill-data\n\
+         ---\n\
+         \n\
+         The operator has requested you (agent) {phrase} in this project. \
+         Begin by running `residual skill-show {name}` and `residual skill-data {name}`.\n\
+         \n\
+         Work Socratically throughout:\n\
+         - **Gather freely**: read commands (`skill-show`, `skill-data`, `list`, `matrix show`, …) without asking.\n\
+         - **Act only with approval**: any modification (`residual add …`, file writes) requires explicit operator sign-off.\n\
+         \n\
+         `skill-data` reports verify status. Follow its strictness guidance before diving into analysis.\n"
+    )
+}
+
+pub fn is_passthrough_stub(content: &str) -> bool {
+    let mut lines = content.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return content.contains("residual skill-show") && content.contains("residual skill-data");
+    }
+    for line in lines {
+        let line = line.trim();
+        if line == "---" {
+            break;
+        }
+        if line == "passthrough: true"
+            || (line.starts_with("passthrough:") && line.contains("true"))
+        {
+            return true;
+        }
+    }
+    content.contains("Begin by running `residual skill-show")
 }
 
 #[cfg(test)]
@@ -232,6 +285,23 @@ mod tests {
         // Then read the file manually to verify front-matter was preserved.
         let content = std::fs::read_to_string(&skill_path).unwrap();
         assert!(content.contains("version: 0"), "version should be in front-matter");
+    }
+
+    #[test]
+    fn passthrough_stub_requests_skill_show_and_data() {
+        let stub = passthrough_stub("stressor-walk");
+        assert!(is_passthrough_stub(&stub));
+        assert!(stub.contains("walk the stressors in this project"));
+        assert!(stub.contains("`residual skill-show stressor-walk`"));
+        assert!(stub.contains("`residual skill-data stressor-walk`"));
+        assert!(stub.contains("Socratically"));
+        assert!(!stub.contains("## Process"));
+    }
+
+    #[test]
+    fn passthrough_stub_purpose_walk_phrase() {
+        let stub = passthrough_stub("purpose-walk");
+        assert!(stub.contains("walk the purposes in this project"));
     }
 
     fn dirs_or_fallback() -> String {

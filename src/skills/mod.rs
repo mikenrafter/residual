@@ -35,12 +35,18 @@ pub fn show(name: &str, version_only: bool) -> Result<()> {
 }
 
 pub fn install(name: &str, agent: &str, global: bool) -> Result<()> {
-    let (content, _version) = find(name)
-        .with_context(|| format!("skill '{}' not found", name))?;
+    // Ensure the skill exists in the binary; install a thin passthrough stub (S-07).
+    let _ = find(name).with_context(|| format!("skill '{}' not found", name))?;
     let agent_parsed: install::Agent = agent.parse()?;
     let path = install::install_path(name, &agent_parsed, global)?;
-    install::write_skill(&path, content)?;
-    println!("Installed '{}' to {}", name, path.display());
+    let stub = install::passthrough_stub(name);
+    install::write_skill(&path, &stub)?;
+    println!(
+        "Installed '{}' passthrough stub to {} (full content via `residual skill-show {}`)",
+        name,
+        path.display(),
+        name
+    );
     Ok(())
 }
 
@@ -68,22 +74,39 @@ pub fn list_all() -> Result<()> {
 }
 
 pub fn check(name: &str, agent: &str) -> Result<()> {
-    let (_content, embedded_version) = find(name)
-        .with_context(|| format!("skill '{}' not found", name))?;
+    let _ = find(name).with_context(|| format!("skill '{}' not found", name))?;
     let agent_parsed: install::Agent = agent.parse()?;
-    match install::installed_version(name, &agent_parsed, false)? {
-        None => {
-            println!("'{}' is not installed for agent '{}'.", name, agent);
+    let path = install::install_path(name, &agent_parsed, false)?;
+    if !path.exists() {
+        println!("'{}' is not installed for agent '{}'.", name, agent);
+        return Ok(());
+    }
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    if install::is_passthrough_stub(&content) {
+        println!(
+            "'{}' is a passthrough stub — methodology lives in the binary (`residual skill-show {}`).",
+            name, name
+        );
+        return Ok(());
+    }
+    // Legacy versioned install: compare front-matter version to embedded.
+    let embedded_version = find(name).map(|(_, v)| v).unwrap_or(0);
+    match install::parse_version_from_front_matter(&content) {
+        Some(installed_ver) if installed_ver == embedded_version => {
+            println!("'{}' is up to date (version {}).", name, installed_ver);
         }
         Some(installed_ver) => {
-            if installed_ver == embedded_version {
-                println!("'{}' is up to date (version {}).", name, installed_ver);
-            } else {
-                println!(
-                    "'{}' is outdated: installed version {}, embedded version {}.",
-                    name, installed_ver, embedded_version
-                );
-            }
+            println!(
+                "'{}' is outdated: installed version {}, embedded version {}. Re-run skill-install for a passthrough stub.",
+                name, installed_ver, embedded_version
+            );
+        }
+        None => {
+            println!(
+                "'{}' is a legacy install without passthrough or version — re-run skill-install.",
+                name
+            );
         }
     }
     Ok(())

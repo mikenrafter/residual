@@ -101,6 +101,7 @@ pub fn build(cfg: &Config, skill_name: &str) -> Result<String> {
 
     let mut out = String::new();
     out.push_str(&format!("# Residual Context — {}\n\n", skill_name));
+    out.push_str(&verify_status_section(cfg)?);
     out.push_str(
         "## Fluent capture\n\
          Metadata (`residual add stressor|purpose|attractor|term|persona`) works in **any order**, \
@@ -197,6 +198,59 @@ pub fn build(cfg: &Config, skill_name: &str) -> Result<String> {
     Ok(out)
 }
 
+/// Socratic verify guidance: strict → fix with operator first; else note and proceed.
+fn verify_status_section(cfg: &Config) -> Result<String> {
+    let outcome_violations = crate::verify::check_outcomes(cfg).unwrap_or_default();
+    let link_violations = crate::verify::check_links(cfg).unwrap_or_default();
+    let total = outcome_violations.len() + link_violations.len();
+    let strict = cfg.validation.strict;
+
+    let mut out = String::new();
+    out.push_str("## Verify status\n");
+    out.push_str(&format!(
+        "Policy: `super_strict` / validation.strict = **{}**\n\n",
+        strict
+    ));
+
+    if total == 0 {
+        out.push_str("Ledger checks passed. Proceed Socratically with the skill.\n\n");
+        return Ok(out);
+    }
+
+    out.push_str(&format!(
+        "**{total}** verify finding(s) ({} outcome, {} link):\n",
+        outcome_violations.len(),
+        link_violations.len()
+    ));
+    for v in outcome_violations.iter().take(8) {
+        out.push_str(&format!(
+            "- outcome [{}] {}: {} — {}\n",
+            v.source, v.id, v.outcome_str, v.reason
+        ));
+    }
+    for v in link_violations.iter().take(8) {
+        out.push_str(&format!("- link [{}] {}: {}\n", v.source, v.id, v.message));
+    }
+    if total > 16 {
+        out.push_str(&format!("- …and {} more (run `residual verify all`)\n", total - 16));
+    }
+    out.push('\n');
+
+    if strict {
+        out.push_str(
+            "**Strict mode — fix before analysis.** Work Socratically with the operator: \
+             propose concrete `residual add` / edits that clear these findings, wait for approval, \
+             re-run `residual verify all`, then continue the skill. Do not invent architecture on a broken baseline.\n\n",
+        );
+    } else {
+        out.push_str(
+            "**Advisory mode — note and proceed.** Surface these findings to the operator, then jump into the skill. \
+             Repair when ready; capture is not blocked. Still Socratic: gather freely, modify only with approval.\n\n",
+        );
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,26 +299,84 @@ mod tests {
     fn nkp_summary_n_reflects_components_not_entity_count() {
         let dir = tempdir().unwrap();
         let cfg = cfg_for(dir.path());
-        terminology::append(dir.path(), terminology::Term {
-            term: "auth".to_string(),
-            definition: "authentication".to_string(),
-            domain: "".to_string(),
-            related_terms: "".to_string(),
-        }).unwrap();
-        stressors::append(dir.path(), stressors::Stressor {
-            id: "S-01".to_string(),
-            description: "test".to_string(),
-            attractor_id: "".to_string(),
-            naive_change: "none".to_string(),
-            outcomes: "system handles auth".to_string(),
-            components_affected: "auth,db".to_string(),
-        }).unwrap();
+        terminology::append(
+            dir.path(),
+            terminology::Term {
+                term: "auth".to_string(),
+                definition: "authentication".to_string(),
+                domain: "".to_string(),
+                related_terms: "".to_string(),
+            },
+        )
+        .unwrap();
+        stressors::append(
+            dir.path(),
+            stressors::Stressor {
+                id: "S-01".to_string(),
+                description: "test".to_string(),
+                attractor_id: "".to_string(),
+                naive_change: "none".to_string(),
+                outcomes: "system handles auth".to_string(),
+                components_affected: "auth,db".to_string(),
+            },
+        )
+        .unwrap();
         let out = build(&cfg, "integrate").unwrap();
-        // With 1 stressor affecting 2 components (auth, db), N = stressors + unique components = 3.
-    assert!(
-        out.contains("N=3,") || out.contains("N=2,"),
-        "expected N to reflect component+stressor count (2 or 3), got context: {}",
-        &out[out.find("NKP").unwrap_or(0)..out.len().min(out.find("NKP").unwrap_or(0) + 80)]
-    );
+        assert!(
+            out.contains("N=3,") || out.contains("N=2,"),
+            "expected N to reflect component+stressor count (2 or 3), got context: {}",
+            &out[out.find("NKP").unwrap_or(0)..out.len().min(out.find("NKP").unwrap_or(0) + 80)]
+        );
+    }
+
+    #[test]
+    fn build_includes_verify_status_strict_guidance() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_for(dir.path());
+        // Invalid outcome (no terminology) → findings under strict.
+        stressors::append(
+            dir.path(),
+            stressors::Stressor {
+                id: "S-01".to_string(),
+                description: "test".to_string(),
+                attractor_id: "".to_string(),
+                naive_change: "none".to_string(),
+                outcomes: "widget frobs blorple".to_string(),
+                components_affected: "x".to_string(),
+            },
+        )
+        .unwrap();
+        let out = build(&cfg, "purpose-walk").unwrap();
+        assert!(out.contains("## Verify status"), "expected verify status section");
+        assert!(
+            out.contains("Strict mode") || out.contains("fix before"),
+            "strict config should instruct fix-before-analysis, got: {}",
+            &out[..out.len().min(400)]
+        );
+    }
+
+    #[test]
+    fn build_includes_verify_status_advisory_when_not_strict() {
+        let dir = tempdir().unwrap();
+        let mut cfg = cfg_for(dir.path());
+        cfg.validation.strict = false;
+        stressors::append(
+            dir.path(),
+            stressors::Stressor {
+                id: "S-01".to_string(),
+                description: "test".to_string(),
+                attractor_id: "".to_string(),
+                naive_change: "none".to_string(),
+                outcomes: "widget frobs blorple".to_string(),
+                components_affected: "x".to_string(),
+            },
+        )
+        .unwrap();
+        let out = build(&cfg, "purpose-walk").unwrap();
+        assert!(
+            out.contains("Advisory mode") || out.contains("note and proceed"),
+            "non-strict should advise note-and-proceed, got: {}",
+            &out[..out.len().min(400)]
+        );
     }
 }
