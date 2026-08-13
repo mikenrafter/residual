@@ -3,4 +3,6 @@ target/
 *.pdf
 .DS_Store
 .claude/worktrees/
+.worktrees/
 .niri-workspace.yaml
+residual/.verify-stamp
