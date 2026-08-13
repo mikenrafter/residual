@@ -1,7 +1,9 @@
 # Iteration 4 v3 — CLI hub + fully-qualified Structure/Storage tree
 
-Prototype code structure (`architecture_set = iter4-cli-hub`, `status = proposed`).
-Component names are **fully-qualified** (e.g. `skills-personas`, not bare `personas`).
+Prototype code structure (`architecture_set = iter4-cli-hub`).
+**Iteration 5** implements A-02/A-04/A-06/A-07 outcomes atop this tree — see
+[`residual/iterations/5.md`](residual/iterations/5.md). Component names remain
+**fully-qualified** (e.g. `skills-personas`, not bare `personas`).
 
 ## Naming rule
 
