@@ -5,7 +5,7 @@ version: 1
 
 # Naive Draft
 
-**Analytical lens (optional).**
+**Analytical lens (optional / a-la-carte).** Use when drafting a naïve architecture — not a mandatory gate.
 
 Produce a naïve architecture and a TDD-first prototype that highlights initial flaws and gives the user something to show stakeholders.
 
