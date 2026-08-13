@@ -205,6 +205,10 @@ pub fn check_links(cfg: &Config) -> Result<Vec<LinkViolation>> {
                 message: format!("force_id '{}' not found", residue.force_id),
             });
         }
+        // whole-system-residue uses a virtual component outside the registry (A-07).
+        if crate::structure::analysis::residues::is_whole_system_residue(residue) {
+            continue;
+        }
         if !residue.component_id.is_empty() && !component_names.contains(&residue.component_id) {
             violations.push(LinkViolation {
                 source: "residue".to_string(),

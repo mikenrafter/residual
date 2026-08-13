@@ -46,6 +46,10 @@ residual \- NKP Residuality architecture CLI
 \fBresidual\fR is a command-line tool for applying NKP (N-K-P) Residuality theory
 to software architecture. It tracks stressors, attractors, purposes, and terminology,
 and provides skills (AI prompts) for structured architectural reasoning.
+.PP
+\fBFluent entry:\fR metadata capture via \fBadd\fR works in any order at any phase —
+skills are selectable analytical lenses, not mandatory gates.
+\fBverify all\fR enforces structure, not ceremony order.
 .SH COMMANDS
 .TP
 .B init

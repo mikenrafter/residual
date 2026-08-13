@@ -101,6 +101,31 @@ pub fn build(cfg: &Config, skill_name: &str) -> Result<String> {
 
     let mut out = String::new();
     out.push_str(&format!("# Residual Context — {}\n\n", skill_name));
+    out.push_str(
+        "## Fluent capture\n\
+         Metadata (`residual add stressor|purpose|attractor|term|persona`) works in **any order**, \
+         at **any phase**, without invoking a skill. Skills are **selectable analytical lenses** — \
+         not mandatory gates. `verify all` enforces structure, not ceremony order.\n\n",
+    );
+    if matches!(skill_name, "stressor-walk" | "fmea" | "integrate") {
+        out.push_str("## Whole-system-residue\n");
+        out.push_str(
+            "Examine **whole-system-residue** (hardware, process, organization, policy zig) \
+             before defaulting to a software-only patch. Use `--whole-system --notes` when the \
+             surviving change leaves the software boundary.\n\n",
+        );
+    }
+    if want_personas {
+        let persona_names: Vec<&str> = personas.iter().map(|p| p.name.as_str()).collect();
+        if matches!(skill_name, "stressor-walk" | "fmea" | "atam") {
+            if let Err(e) = crate::verification::check_personas_adequacy(&persona_names) {
+                out.push_str(&format!(
+                    "> **Persona note:** {} — add personas when ready; capture is not blocked.\n\n",
+                    e
+                ));
+            }
+        }
+    }
 
     if want_attractors {
         out.push_str("## Attractors\n");
@@ -130,12 +155,12 @@ pub fn build(cfg: &Config, skill_name: &str) -> Result<String> {
 
     if want_purposes {
         out.push_str("## Purposes\n");
-        out.push_str("| id | description | attractor_id | feature |\n");
-        out.push_str("|---|---|---|---|\n");
+        out.push_str("| id | description | attractor_id | naive_change | outcomes |\n");
+        out.push_str("|---|---|---|---|---|\n");
         for p in &purposes {
             out.push_str(&format!(
-                "| {} | {} | {} | {} |\n",
-                p.id, p.description, p.attractor_id, p.feature
+                "| {} | {} | {} | {} | {} |\n",
+                p.id, p.description, p.attractor_id, p.feature, p.outcomes
             ));
         }
         out.push('\n');
