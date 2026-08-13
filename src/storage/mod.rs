@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::fs;
 use crate::config::Config;
 use crate::cli::{AddTarget, ListTarget};
+use crate::structure::analysis::residues::Residue;
 
 pub mod attractors;
 pub mod config;
@@ -10,6 +11,7 @@ pub mod integrity;
 pub mod iterations;
 pub mod personas;
 pub mod purposes;
+pub mod residues;
 pub mod research;
 pub mod stressors;
 pub mod terminology;
@@ -43,7 +45,7 @@ fn init_dirs_and_files(cfg: &Config) -> Result<()> {
         ("terminology.csv", "term,definition,domain,related_terms"),
         ("forces.csv", "id,kind,shortname,naive_change,outcomes,description,attractor_id"),
         ("lexicon.csv", "term,definition,domain,aliases"),
-        ("residues.csv", "id,force_id,component_id,status,notes"),
+        ("residues.csv", "force"),
         ("components.csv", "name,description,status,architecture_set"),
     ];
     for (filename, header) in csvs {
@@ -130,6 +132,12 @@ fn add_entry(cfg: &Config, target: AddTarget) -> Result<()> {
             })?;
             println!("Added persona '{}'", name);
         }
+        AddTarget::Residue { force_id, component_id, status, notes } => {
+            if !residues::force_exists(dir, &force_id)? { anyhow::bail!("force id '{}' not found", force_id); }
+            let existing = residues::load(dir)?; let id = residues::next_id(&existing);
+            residues::append(dir, Residue { id: id.clone(), force_id, component_id, status, notes })?;
+            println!("Added residue {}", id);
+        }
         AddTarget::Iteration { notes, ri_score } => {
             let n = iterations::next_n(dir)?;
             let date = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -207,6 +215,7 @@ pub fn list(cfg: &Config, target: ListTarget) -> Result<()> {
                 }
             }
         }
+        ListTarget::Residues => { let matrix = format::format_residues_matrix(dir)?; if matrix.lines().count()<=1 { println!("No residues."); } else { print!("{matrix}"); } }
         ListTarget::Iterations => {
             let items = iterations::list(dir)?;
             if items.is_empty() {

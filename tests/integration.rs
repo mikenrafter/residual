@@ -348,3 +348,97 @@ fn matrix_show_sort_by_alphabetical() {
     let zeta = stdout.find("zeta-force").expect("zeta");
     assert!(alpha < zeta, "alphabetical order failed:\n{stdout}");
 }
+
+// --- A-04 Data Fragmentation ---
+
+#[test]
+fn init_preserves_existing_attractors_on_partial_tree() {
+    let dir = TempDir::new().unwrap();
+    let base = dir.path().join("residual");
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::write(
+        base.join("attractors.csv"),
+        "id,name,description,positive_state,negative_state\nA-99,Kept,existing link,positive ok,negative bad\n",
+    )
+    .unwrap();
+    init(&dir);
+    assert!(std::fs::read_to_string(base.join("attractors.csv")).unwrap().contains("A-99"));
+}
+
+#[test]
+fn stressor_append_rewrite_preserves_all_rows() {
+    let dir = TempDir::new().unwrap();
+    init(&dir);
+    run(&dir, &["add", "attractor", "--name", "X", "--description", "d", "--positive-state", "ok", "--negative-state", "bad"]);
+    run(&dir, &["add", "stressor", "--description", "first", "--attractor-id", "A-01", "--naive-change", "cache"]);
+    run(&dir, &["add", "stressor", "--description", "second", "--attractor-id", "A-01", "--naive-change", "lock"]);
+    let content = std::fs::read_to_string(dir.path().join("residual/stressors.csv")).unwrap();
+    assert_eq!(content.matches("id,").count(), 1);
+    assert!(content.contains("first"));
+    assert!(content.contains("second"));
+}
+
+#[test]
+fn residues_csv_is_matrix_shaped_after_write() {
+    let dir = TempDir::new().unwrap();
+    init(&dir);
+    run(&dir, &["add", "attractor", "--name", "X", "--description", "d", "--positive-state", "ok", "--negative-state", "bad"]);
+    run(&dir, &["add", "stressor", "--description", "lag", "--attractor-id", "A-01", "--naive-change", "cache"]);
+    std::fs::write(
+        dir.path().join("residual/forces.csv"),
+        "id,kind,shortname,naive_change,outcomes,description,attractor_id\nS-01,stressor,lexicon-scale-lag,cache,operator validates traits,lag,A-01\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("residual/components.csv"),
+        "name,description,status,architecture_set\nverification,path,proposed,baseline\n",
+    )
+    .unwrap();
+    assert!(
+        run(&dir, &["add", "--force", "residue", "--force-id", "S-01", "--component-id", "verification", "--status", "proposed"]).status.success()
+    );
+    assert!(std::fs::read_to_string(dir.path().join("residual/residues.csv")).unwrap().starts_with("force,"));
+}
+
+#[test]
+fn verify_links_accepts_purpose_residue() {
+    let dir = TempDir::new().unwrap();
+    init(&dir);
+    run(&dir, &["add", "attractor", "--name", "L", "--description", "d", "--positive-state", "ok", "--negative-state", "bad"]);
+    run(&dir, &["add", "purpose", "--description", "d", "--attractor-id", "A-01", "--feature", "f", "--outcomes", "operator reads commit history using defined outcome"]);
+    std::fs::write(
+        dir.path().join("residual/components.csv"),
+        "name,description,status,architecture_set\nhook,desc,proposed,baseline\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("residual/forces.csv"),
+        "id,kind,shortname,naive_change,outcomes,description,attractor_id\nP-01,purpose,git-log-lexicon,h,operator reads commit history using defined outcome,purpose force,A-01\n",
+    )
+    .unwrap();
+    assert!(
+        run(&dir, &["add", "--force", "residue", "--force-id", "P-01", "--component-id", "hook", "--status", "proposed"]).status.success()
+    );
+    assert!(run(&dir, &["verify", "links"]).status.success());
+}
+
+#[test]
+fn list_residues_prints_matrix() {
+    let dir = TempDir::new().unwrap();
+    init(&dir);
+    run(&dir, &["add", "attractor", "--name", "X", "--description", "d", "--positive-state", "ok", "--negative-state", "bad"]);
+    std::fs::write(
+        dir.path().join("residual/forces.csv"),
+        "id,kind,shortname,naive_change,outcomes,description,attractor_id\nS-01,stressor,t,c,o,d,A-01\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("residual/components.csv"),
+        "name,description,status,architecture_set\ncli,desc,proposed,baseline\n",
+    )
+    .unwrap();
+    run(&dir, &["add", "--force", "residue", "--force-id", "S-01", "--component-id", "cli", "--status", "active"]);
+    let list = run(&dir, &["list", "residues"]);
+    assert!(list.status.success());
+    assert!(String::from_utf8_lossy(&list.stdout).starts_with("force,"));
+}

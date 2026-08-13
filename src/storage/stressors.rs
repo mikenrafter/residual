@@ -30,33 +30,33 @@ pub fn load(residual_dir: &Path) -> Result<Vec<Stressor>> {
 }
 
 pub fn append(residual_dir: &Path, stressor: Stressor) -> Result<()> {
-    let path = residual_dir.join("stressors.csv");
-    let file_exists = path.exists() && std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?;
-    if !file_exists {
-        writeln!(file, "id,description,naive_change,outcomes,components_affected,attractor_id")?;
+    let mut all = load(residual_dir)?;
+    if all.iter().any(|s| s.id == stressor.id) {
+        anyhow::bail!("stressor id '{}' already exists", stressor.id);
     }
-    // Write the data row using csv writer to handle quoting
-    let mut buf = Vec::new();
-    {
-        let mut wtr = csv::WriterBuilder::new()
-            .has_headers(false)
-            .from_writer(&mut buf);
-        wtr.write_record(&[
-            &stressor.id,
-            &stressor.description,
-            &stressor.naive_change,
-            &stressor.outcomes,
-            &stressor.components_affected,
-            &stressor.attractor_id,
-        ])?;
-        wtr.flush()?;
+    all.push(stressor);
+    write_all(residual_dir, &all)
+}
+
+fn write_all(residual_dir: &Path, rows: &[Stressor]) -> Result<()> {
+    let mut buf = String::from("id,description,naive_change,outcomes,components_affected,attractor_id\n");
+    for s in rows {
+        let mut row = Vec::new();
+        {
+            let mut wtr = csv::WriterBuilder::new().has_headers(false).from_writer(&mut row);
+            wtr.write_record(&[
+                &s.id,
+                &s.description,
+                &s.naive_change,
+                &s.outcomes,
+                &s.components_affected,
+                &s.attractor_id,
+            ])?;
+            wtr.flush()?;
+        }
+        buf.push_str(std::str::from_utf8(&row)?);
     }
-    file.write_all(&buf)?;
+    std::fs::write(residual_dir.join("stressors.csv"), buf)?;
     Ok(())
 }
 
@@ -124,6 +124,14 @@ mod tests {
         let loaded = load(dir.path()).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].id, "S-01");
+    }
+
+    #[test]
+    fn append_rejects_duplicate_id() {
+        let dir = tempdir().unwrap();
+        append(dir.path(), make_stressor("S-01")).unwrap();
+        let err = append(dir.path(), make_stressor("S-01")).unwrap_err();
+        assert!(err.to_string().contains("already exists"));
     }
 
     #[test]

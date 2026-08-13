@@ -191,6 +191,12 @@ pub enum AddTarget {
         #[arg(long, default_value = "")] notes: String,
         #[arg(long, default_value = "")] ri_score: String,
     },
+    Residue {
+        #[arg(long)] force_id: String,
+        #[arg(long)] component_id: String,
+        #[arg(long, default_value = "proposed")] status: String,
+        #[arg(long, default_value = "")] notes: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -201,6 +207,7 @@ pub enum ListTarget {
     Terminology,
     Personas,
     Iterations,
+    Residues,
 }
 
 #[derive(Subcommand)]
