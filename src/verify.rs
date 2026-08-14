@@ -588,4 +588,84 @@ mod tests {
             "expected verify all to fail, got {err}"
         );
     }
+
+    // --- shortname verify tests (RED: check_links does not yet flag empty shortnames) ---
+
+    #[test]
+    fn check_links_flags_empty_shortname_stressor() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_for(dir.path());
+        attractors::append(
+            dir.path(),
+            attractors::Attractor {
+                id: "A-01".to_string(),
+                name: "Stability".to_string(),
+                description: "stable".to_string(),
+                positive_state: "coherent".to_string(),
+                negative_state: "collapse".to_string(),
+            },
+        )
+        .unwrap();
+        stressors::append(
+            dir.path(),
+            stressors::Stressor {
+                id: "S-01".to_string(),
+                description: "stressor without shortname".to_string(),
+                attractor_id: "A-01".to_string(),
+                naive_change: "none".to_string(),
+                outcomes: "system does x".to_string(),
+                components_affected: "x".to_string(),
+                shortname: "".to_string(),
+            },
+        )
+        .unwrap();
+        let violations = check_links(&cfg).unwrap();
+        let shortname_violation = violations
+            .iter()
+            .find(|v| v.source == "stressor" && v.id == "S-01" && v.message.contains("shortname"));
+        assert!(
+            shortname_violation.is_some(),
+            "expected a shortname violation for S-01 with empty shortname, got: {:?}",
+            violations.iter().map(|v| format!("[{}] {}: {}", v.source, v.id, v.message)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn check_links_passes_nonempty_shortname() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_for(dir.path());
+        attractors::append(
+            dir.path(),
+            attractors::Attractor {
+                id: "A-01".to_string(),
+                name: "Stability".to_string(),
+                description: "stable".to_string(),
+                positive_state: "coherent".to_string(),
+                negative_state: "collapse".to_string(),
+            },
+        )
+        .unwrap();
+        stressors::append(
+            dir.path(),
+            stressors::Stressor {
+                id: "S-01".to_string(),
+                description: "stressor with shortname".to_string(),
+                attractor_id: "A-01".to_string(),
+                naive_change: "none".to_string(),
+                outcomes: "system does x".to_string(),
+                components_affected: "x".to_string(),
+                shortname: "cli-bypass".to_string(),
+            },
+        )
+        .unwrap();
+        let violations = check_links(&cfg).unwrap();
+        let shortname_violation = violations
+            .iter()
+            .find(|v| v.source == "stressor" && v.id == "S-01" && v.message.contains("shortname"));
+        assert!(
+            shortname_violation.is_none(),
+            "expected no shortname violation for S-01 with non-empty shortname, got: {:?}",
+            violations.iter().map(|v| format!("[{}] {}: {}", v.source, v.id, v.message)).collect::<Vec<_>>()
+        );
+    }
 }

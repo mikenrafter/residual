@@ -422,6 +422,142 @@ fn verify_links_accepts_purpose_residue() {
     assert!(run(&dir, &["verify", "links"]).status.success());
 }
 
+// --- shortname CLI tests (RED: --shortname arg not yet accepted by add stressor/purpose) ---
+
+#[test]
+fn add_stressor_cli_stores_shortname() {
+    let dir = TempDir::new().unwrap();
+    init(&dir);
+    let add_attr = run(
+        &dir,
+        &[
+            "add", "attractor",
+            "--name", "Stability",
+            "--description", "stable",
+            "--positive-state", "coherent",
+            "--negative-state", "collapse",
+        ],
+    );
+    assert!(add_attr.status.success(), "add attractor failed: {}", String::from_utf8_lossy(&add_attr.stderr));
+    let add = run(
+        &dir,
+        &[
+            "add", "stressor",
+            "--description", "test stressor",
+            "--attractor-id", "A-01",
+            "--naive-change", "fix it",
+            "--outcomes", "operator records stressor",
+            "--shortname", "cli-bypass",
+        ],
+    );
+    assert!(add.status.success(), "add stressor with --shortname failed: {}", String::from_utf8_lossy(&add.stderr));
+    let content = std::fs::read_to_string(dir.path().join("residual/stressors.csv")).unwrap();
+    assert!(
+        content.contains("cli-bypass"),
+        "expected 'cli-bypass' in stressors.csv, got:\n{content}"
+    );
+}
+
+#[test]
+fn add_purpose_cli_stores_shortname() {
+    let dir = TempDir::new().unwrap();
+    init(&dir);
+    let add_attr = run(
+        &dir,
+        &[
+            "add", "attractor",
+            "--name", "Stability",
+            "--description", "stable",
+            "--positive-state", "coherent",
+            "--negative-state", "collapse",
+        ],
+    );
+    assert!(add_attr.status.success(), "add attractor failed: {}", String::from_utf8_lossy(&add_attr.stderr));
+    let add = run(
+        &dir,
+        &[
+            "add", "purpose",
+            "--description", "test purpose",
+            "--attractor-id", "A-01",
+            "--feature", "add purpose CLI",
+            "--outcomes", "operator adds purposes",
+            "--shortname", "persona-subagent-depth",
+        ],
+    );
+    assert!(add.status.success(), "add purpose with --shortname failed: {}", String::from_utf8_lossy(&add.stderr));
+    let content = std::fs::read_to_string(dir.path().join("residual/purposes.csv")).unwrap();
+    assert!(
+        content.contains("persona-subagent-depth"),
+        "expected 'persona-subagent-depth' in purposes.csv, got:\n{content}"
+    );
+}
+
+#[test]
+fn list_stressors_shows_shortname() {
+    let dir = TempDir::new().unwrap();
+    init(&dir);
+    run(
+        &dir,
+        &[
+            "add", "attractor",
+            "--name", "Stability",
+            "--description", "stable",
+            "--positive-state", "coherent",
+            "--negative-state", "collapse",
+        ],
+    );
+    run(
+        &dir,
+        &[
+            "add", "stressor",
+            "--description", "test stressor",
+            "--attractor-id", "A-01",
+            "--naive-change", "fix it",
+            "--outcomes", "operator records stressor",
+            "--shortname", "cli-bypass",
+        ],
+    );
+    let list = run(&dir, &["list", "stressors"]);
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        stdout.contains("cli-bypass"),
+        "expected 'cli-bypass' in list stressors output, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn list_purposes_shows_shortname() {
+    let dir = TempDir::new().unwrap();
+    init(&dir);
+    run(
+        &dir,
+        &[
+            "add", "attractor",
+            "--name", "Stability",
+            "--description", "stable",
+            "--positive-state", "coherent",
+            "--negative-state", "collapse",
+        ],
+    );
+    run(
+        &dir,
+        &[
+            "add", "purpose",
+            "--description", "test purpose",
+            "--attractor-id", "A-01",
+            "--feature", "add purpose CLI",
+            "--outcomes", "operator adds purposes",
+            "--shortname", "persona-subagent-depth",
+        ],
+    );
+    let list = run(&dir, &["list", "purposes"]);
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        stdout.contains("persona-subagent-depth"),
+        "expected 'persona-subagent-depth' in list purposes output, got:\n{stdout}"
+    );
+}
+
 #[test]
 fn list_residues_prints_matrix() {
     let dir = TempDir::new().unwrap();

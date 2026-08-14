@@ -139,4 +139,42 @@ mod tests {
         let result = load(dir.path()).unwrap();
         assert!(result.is_empty());
     }
+
+    // --- shortname field tests (RED: shortname field not yet on Purpose) ---
+
+    #[test]
+    fn purpose_with_shortname_roundtrips() {
+        let dir = tempdir().unwrap();
+        let p = Purpose {
+            id: "P-01".to_string(),
+            description: "test purpose".to_string(),
+            attractor_id: "A-01".to_string(),
+            feature: "add purpose cli".to_string(),
+            outcomes: "operator adds purposes".to_string(),
+            components_enabled: "cli".to_string(),
+            shortname: "persona-subagent-depth".to_string(),
+        };
+        append(dir.path(), p).unwrap();
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].shortname, "persona-subagent-depth");
+    }
+
+    #[test]
+    fn purpose_missing_shortname_column_deserializes_empty() {
+        let dir = tempdir().unwrap();
+        // Write a purposes.csv with the OLD header (no shortname column).
+        std::fs::write(
+            dir.path().join("purposes.csv"),
+            "id,description,feature,outcomes,components_enabled,attractor_id\n\
+             P-01,old purpose,old feature,system enables old,cli,A-01\n",
+        )
+        .unwrap();
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(
+            loaded[0].shortname, "",
+            "old CSV rows without shortname column should deserialize to empty string"
+        );
+    }
 }

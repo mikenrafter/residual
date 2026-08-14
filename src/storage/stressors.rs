@@ -140,4 +140,42 @@ mod tests {
         let result = load(dir.path()).unwrap();
         assert!(result.is_empty());
     }
+
+    // --- shortname field tests (RED: shortname field not yet on Stressor) ---
+
+    #[test]
+    fn stressor_with_shortname_roundtrips() {
+        let dir = tempdir().unwrap();
+        let s = Stressor {
+            id: "S-01".to_string(),
+            description: "test stressor".to_string(),
+            attractor_id: "A-01".to_string(),
+            naive_change: "fix it".to_string(),
+            outcomes: "system handles stressor".to_string(),
+            components_affected: "auth".to_string(),
+            shortname: "cli-bypass".to_string(),
+        };
+        append(dir.path(), s).unwrap();
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].shortname, "cli-bypass");
+    }
+
+    #[test]
+    fn stressor_missing_shortname_column_deserializes_empty() {
+        let dir = tempdir().unwrap();
+        // Write a stressors.csv with the OLD header (no shortname column).
+        std::fs::write(
+            dir.path().join("stressors.csv"),
+            "id,description,naive_change,outcomes,components_affected,attractor_id\n\
+             S-01,old stressor,old change,system handles old,auth,A-01\n",
+        )
+        .unwrap();
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(
+            loaded[0].shortname, "",
+            "old CSV rows without shortname column should deserialize to empty string"
+        );
+    }
 }
