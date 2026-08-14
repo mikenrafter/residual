@@ -73,6 +73,7 @@ fn add_entry(cfg: &Config, target: AddTarget) -> Result<()> {
             description,
             attractor_id,
             naive_change,
+            shortname,
             outcomes,
             components,
             whole_system,
@@ -91,7 +92,7 @@ fn add_entry(cfg: &Config, target: AddTarget) -> Result<()> {
             let id = stressors::next_id(&existing);
             stressors::append(dir, stressors::Stressor {
                 id: id.clone(),
-                shortname: String::new(),
+                shortname,
                 description,
                 attractor_id,
                 naive_change,
@@ -136,12 +137,12 @@ fn add_entry(cfg: &Config, target: AddTarget) -> Result<()> {
                 println!("Added residue {}", id);
             }
         }
-        AddTarget::Purpose { description, attractor_id, feature, outcomes, components } => {
+        AddTarget::Purpose { description, attractor_id, feature, shortname, outcomes, components } => {
             let existing = purposes::load(dir)?;
             let id = purposes::next_id(&existing);
             purposes::append(dir, purposes::Purpose {
                 id: id.clone(),
-                shortname: String::new(),
+                shortname,
                 description,
                 attractor_id,
                 feature,
@@ -216,7 +217,7 @@ pub fn list(cfg: &Config, target: ListTarget) -> Result<()> {
                 println!("No stressors.");
             } else {
                 for s in &items {
-                    println!("[{}] {} (attractor: {})", s.id, s.description, s.attractor_id);
+                    println!("[{}] {} {} (attractor: {})", s.id, s.shortname, s.description, s.attractor_id);
                 }
             }
         }
@@ -227,7 +228,7 @@ pub fn list(cfg: &Config, target: ListTarget) -> Result<()> {
             } else {
                 for p in &items {
                     let extra = if p.outcomes.is_empty() { String::new() } else { format!(" | outcomes: {}", p.outcomes) };
-                    println!("[{}] {} (naive_change: {}{})", p.id, p.description, p.feature, extra);
+                    println!("[{}] {} {} (naive_change: {}{})", p.id, p.shortname, p.description, p.feature, extra);
                 }
             }
         }

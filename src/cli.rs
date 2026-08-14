@@ -140,6 +140,7 @@ pub enum AddTarget {
         #[arg(long)] description: String,
         #[arg(long)] attractor_id: String,
         #[arg(long)] naive_change: String,
+        #[arg(long, default_value = "")] shortname: String,
         #[arg(long, default_value = "", visible_alias = "traits")]
         outcomes: String,
         #[arg(long, default_value = "")] components: String,
@@ -163,6 +164,7 @@ pub enum AddTarget {
         #[arg(long)] attractor_id: String,
         #[arg(long, visible_alias = "naive-change")]
         feature: String,
+        #[arg(long, default_value = "")] shortname: String,
         #[arg(long, default_value = "", visible_alias = "traits")]
         outcomes: String,
         #[arg(long, default_value = "")] components: String,
