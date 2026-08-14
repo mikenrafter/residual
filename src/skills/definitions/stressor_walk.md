@@ -11,7 +11,7 @@ Socratically discover stressors and attractors by simulating the business enviro
 
 ## Interaction Pattern
 This skill is Socratic.
-- **Gather freely**: read commands (`skill-data`, `list`, `matrix show`, etc.) run without asking.
+- **Gather freely**: read commands (`skill data`, `list`, `matrix show`, etc.) run without asking.
 - **Act only with approval**: any modification — `residual add stressor`, `add attractor`, `add term`, `add persona` — requires explicit user sign-off before executing.
 
 ## Rules
@@ -28,7 +28,7 @@ This skill is Socratic.
 - Examine **whole-system-residue** before defaulting to a software-only patch (hardware, process, organization, or policy zig).
 
 ## Before Starting
-Run: `residual skill-data stressor-walk`
+Run: `residual skill data stressor-walk`
 This provides current personas, attractors, and the naïve architecture.
 
 ## During This Skill
@@ -40,4 +40,4 @@ This provides current personas, attractors, and the naïve architecture.
 - `residual matrix show` — periodically check for emerging coupling patterns
 
 ## Version Check
-Run `residual skill-check stressor-walk --agent <your-agent>` before starting.
+Run `residual skill check-install stressor-walk --agent <your-agent>` before starting.

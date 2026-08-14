@@ -11,7 +11,7 @@ Surface political, cost, and business stakeholder concerns against the candidate
 
 ## Interaction Pattern
 This skill is Socratic.
-- **Gather freely**: read commands (`skill-data`, `list attractors`, `list personas`, etc.) run without asking.
+- **Gather freely**: read commands (`skill data`, `list attractors`, `list personas`, etc.) run without asking.
 - **Act only with approval**: any modification — recording findings to an iteration, `residual add persona` — requires explicit user sign-off before executing.
 
 ## Process
@@ -27,7 +27,7 @@ This skill is Socratic.
 - Personas define the political boundary. Technical decisions that ignore persona concerns will fail in deployment.
 
 ## Before Starting
-Run: `residual skill-data atam`
+Run: `residual skill data atam`
 This provides personas, attractors, and the current architecture iteration.
 
 ## During This Skill
@@ -36,4 +36,4 @@ This provides personas, attractors, and the current architecture iteration.
 - `residual add persona ...` — add any stakeholder voices not yet captured
 
 ## Version Check
-Run `residual skill-check atam --agent <your-agent>` before starting.
+Run `residual skill check-install atam --agent <your-agent>` before starting.

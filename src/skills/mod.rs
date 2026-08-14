@@ -107,7 +107,7 @@ pub fn check(name: &str, agent: &str) -> Result<()> {
         .with_context(|| format!("failed to read {}", path.display()))?;
     if install::is_passthrough_stub(&content) {
         println!(
-            "'{}' is a passthrough stub — methodology lives in the binary (`residual skill-show {}`).",
+            "'{}' is a passthrough stub — methodology lives in the binary (`residual skill show {}`).",
             name, name
         );
         return Ok(());
@@ -120,14 +120,14 @@ pub fn check(name: &str, agent: &str) -> Result<()> {
         }
         Some(installed_ver) => {
             println!(
-                "'{}' is outdated: installed version {}, embedded version {}. Re-run skill-install for a passthrough stub.",
-                name, installed_ver, embedded_version
+                "'{}' is outdated: installed version {}, embedded version {}. Re-run `residual skill install {}` for a passthrough stub.",
+                name, installed_ver, embedded_version, name
             );
         }
         None => {
             println!(
-                "'{}' is a legacy install without passthrough or version — re-run skill-install.",
-                name
+                "'{}' is a legacy install without passthrough or version — re-run `residual skill install {}`.",
+                name, name
             );
         }
     }

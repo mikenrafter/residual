@@ -11,7 +11,7 @@ Socratically define the project's purposes until every purpose has feature-level
 
 ## Interaction Pattern
 This skill is Socratic.
-- **Gather freely**: read commands (`skill-data`, `list`, etc.) run without asking.
+- **Gather freely**: read commands (`skill data`, `list`, etc.) run without asking.
 - **Act only with approval**: any modification — `residual add purpose`, `add term`, `add attractor` — requires explicit user sign-off before executing.
 
 ## Rules
@@ -21,7 +21,7 @@ This skill is Socratic.
 - Every 3 turns, step into a critic role and adversarially challenge all stated purposes for hidden assumptions, missing actors, or unmeasurable outcomes.
 
 ## Before Starting
-Run: `residual skill-data purpose-walk`
+Run: `residual skill data purpose-walk`
 
 ## During This Skill
 - Propose before recording: show the user the full `residual add purpose ...` command and wait for approval before running it.
@@ -30,4 +30,4 @@ Run: `residual skill-data purpose-walk`
 - `residual list purposes` — share the current list with the user periodically to check for gaps or overlaps.
 
 ## Version Check
-Run `residual skill-check purpose-walk --agent <your-agent>` before starting.
+Run `residual skill check-install purpose-walk --agent <your-agent>` before starting.

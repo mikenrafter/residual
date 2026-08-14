@@ -11,7 +11,7 @@ Use the NKP matrix to derive the residual architecture. Apply fusion, fission, a
 
 ## Interaction Pattern
 This skill is Socratic.
-- **Gather freely**: read commands (`skill-data`, `matrix show`, `matrix fusion`, `matrix fission`, `matrix criticality`) run without asking.
+- **Gather freely**: read commands (`skill data`, `matrix show`, `matrix fusion`, `matrix fission`, `matrix criticality`) run without asking.
 - **Act only with approval**: any modification — `residual add stressor`, `add iteration`, `matrix ri` — requires explicit user sign-off before executing.
 
 ## Process
@@ -30,7 +30,7 @@ This skill is Socratic.
 - Examine **whole-system-residue** before defaulting to a software-only patch when recording new stressors.
 
 ## Before Starting
-Run: `residual skill-data integrate`
+Run: `residual skill data integrate`
 
 ## During This Skill
 - `residual add stressor ...` — add any newly discovered stressors
@@ -39,4 +39,4 @@ Run: `residual skill-data integrate`
 - `residual matrix ri --stressors N --naive-survived X --residual-survived Y`
 
 ## Version Check
-Run `residual skill-check integrate --agent <your-agent>` before starting.
+Run `residual skill check-install integrate --agent <your-agent>` before starting.

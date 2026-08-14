@@ -11,7 +11,7 @@ Walk each component through its failure modes once the architecture is stable. C
 
 ## Interaction Pattern
 This skill is Socratic.
-- **Gather freely**: read commands (`skill-data`, `matrix show`, etc.) run without asking.
+- **Gather freely**: read commands (`skill data`, `matrix show`, etc.) run without asking.
 - **Act only with approval**: any modification — recording findings to an iteration, `residual add stressor` — requires explicit user sign-off before executing.
 
 ## Process
@@ -29,7 +29,7 @@ For each component in the residual architecture:
 - Examine **whole-system-residue** before defaulting to a software-only patch (hardware, process, organization, or policy zig).
 
 ## Before Starting
-Run: `residual skill-data fmea`
+Run: `residual skill data fmea`
 This provides the current component list from the NKP matrix and the latest iteration.
 
 ## During This Skill
@@ -39,4 +39,4 @@ This provides the current component list from the NKP matrix and the latest iter
 - `residual matrix show` — confirm components under analysis
 
 ## Version Check
-Run `residual skill-check fmea --agent <your-agent>` before starting.
+Run `residual skill check-install fmea --agent <your-agent>` before starting.

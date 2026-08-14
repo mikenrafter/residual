@@ -11,7 +11,7 @@ Produce a naïve architecture and a TDD-first prototype that highlights initial 
 
 ## Interaction Pattern
 This skill is Socratic.
-- **Gather freely**: read commands (`skill-data`, `list`, `matrix show`, etc.) run without asking.
+- **Gather freely**: read commands (`skill data`, `list`, `matrix show`, etc.) run without asking.
 - **Act only with approval**: any modification — `residual add ...`, writing files, recording an iteration — requires explicit user sign-off before executing.
 
 ## Architecture Philosophy
@@ -26,7 +26,7 @@ This skill is Socratic.
 3. **Scaffold**: Propose each failing test before writing it. After the user agrees on the test suite shape, write tests first, then minimal implementation to green.
 
 ## Before Starting
-Run: `residual skill-data naive-draft`
+Run: `residual skill data naive-draft`
 
 ## During This Skill
 - `residual list purposes` — share the list with the user; confirm every purpose has a home in the agreed architecture
@@ -34,4 +34,4 @@ Run: `residual skill-data naive-draft`
 - Write red tests in `tests/` before any `src/` implementation
 
 ## Version Check
-Run `residual skill-check naive-draft --agent <your-agent>` before starting.
+Run `residual skill check-install naive-draft --agent <your-agent>` before starting.
