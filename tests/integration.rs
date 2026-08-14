@@ -405,7 +405,7 @@ fn verify_links_accepts_purpose_residue() {
     let dir = TempDir::new().unwrap();
     init(&dir);
     run(&dir, &["add", "attractor", "--name", "L", "--description", "d", "--positive-state", "ok", "--negative-state", "bad"]);
-    run(&dir, &["add", "purpose", "--description", "d", "--attractor-id", "A-01", "--feature", "f", "--outcomes", "operator reads commit history using defined outcome"]);
+    run(&dir, &["add", "purpose", "--description", "d", "--attractor-id", "A-01", "--feature", "f", "--outcomes", "operator reads commit history using defined outcome", "--shortname", "git-log-lexicon"]);
     std::fs::write(
         dir.path().join("residual/components.csv"),
         "name,description,status,architecture_set\nhook,desc,proposed,baseline\n",

@@ -159,6 +159,13 @@ pub fn check_links(cfg: &Config) -> Result<Vec<LinkViolation>> {
                 message: format!("missing attractor '{}'", stressor.attractor_id),
             });
         }
+        if stressor.shortname.is_empty() {
+            violations.push(LinkViolation {
+                source: "stressor".to_string(),
+                id: stressor.id.clone(),
+                message: "missing shortname (use --shortname when adding)".to_string(),
+            });
+        }
     }
 
     for purpose in &purposes {
@@ -167,6 +174,13 @@ pub fn check_links(cfg: &Config) -> Result<Vec<LinkViolation>> {
                 source: "purpose".to_string(),
                 id: purpose.id.clone(),
                 message: format!("missing attractor '{}'", purpose.attractor_id),
+            });
+        }
+        if purpose.shortname.is_empty() {
+            violations.push(LinkViolation {
+                source: "purpose".to_string(),
+                id: purpose.id.clone(),
+                message: "missing shortname (use --shortname when adding)".to_string(),
             });
         }
     }
@@ -524,7 +538,7 @@ mod tests {
             dir.path(),
             stressors::Stressor {
                 id: "S-01".to_string(),
-                shortname: String::new(),
+                shortname: "auth-overload".to_string(),
                 description: "test".to_string(),
                 attractor_id: "A-01".to_string(),
                 naive_change: "none".to_string(),
