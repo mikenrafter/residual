@@ -89,12 +89,13 @@ fn s12_outcome_accepts_multi_word_phrase_alias() {
 }
 
 #[test]
-fn s12_outcome_accepts_terminology_related_term_alias() {
+fn s12_outcome_accepts_lexicon_related_term_alias() {
     let dir = TempDir::new().unwrap();
     init(&dir);
+    // terminology.csv is fully replaced by lexicon.csv — write directly to lexicon
     std::fs::write(
-        dir.path().join("residual/terminology.csv"),
-        "term,definition,domain,related_terms\n\
+        dir.path().join("residual/lexicon.csv"),
+        "term,definition,domain,aliases\n\
          family,kin grouping,core,families\n",
     )
     .unwrap();
@@ -107,7 +108,7 @@ fn s12_outcome_accepts_terminology_related_term_alias() {
     let out = run(&dir, &["verify", "outcomes"]);
     assert!(
         out.status.success(),
-        "terminology related_terms alias should match; stderr={}",
+        "lexicon alias should match; stderr={}",
         String::from_utf8_lossy(&out.stderr)
     );
 }

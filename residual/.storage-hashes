@@ -2,7 +2,6 @@
 attractors.csv=1716b0b09d2ba095
 components.csv=ef59bf0199342485
 config.toml=1f1e270d4679e5d5
-forces.csv=8925c5dc4b6482e4
 iterations/1.md=dcf32757637f4854
 iterations/2.md=df62931d5da549bc
 iterations/4.md=a270ea805600ee45
@@ -10,7 +9,6 @@ iterations/5.md=ae5c5adb0679b0fb
 lexicon.csv=9e83abcf5a537942
 personas/agent.md=8b0135fe35258d31
 personas/architect.md=c43ffc1c5fda1a2a
-purposes.csv=6f962285d69fead1
+purposes.csv=dc32eacdf0067f7e
 residues.csv=168016612e16bf88
-stressors.csv=5958de0ed22a28fa
-terminology.csv=c117a2370121c217
+stressors.csv=3f6ada1881734a12

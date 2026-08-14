@@ -1,4 +1,4 @@
-id,shortname,description,naive_change,outcomes,components_affected,attractor_id
+id,shortname,description,naive_change,outcomes,components,attractor_id
 S-01,skill-version-drift,An operator installs a skill and later updates the binary — the installed skill is now at an older version with different methodology,Add version field to skill front-matter and a check command that compares installed vs embedded,skill versions remain consistent across binary updates,"skills-installer, skills-phases",A-03
 S-02,lexicon-scale-lag,terminology.csv grows to 200+ terms and trait validation becomes prohibitively slow,Add indexing or caching for the term set; keep term_set() as a HashSet for O(1) lookup,the system validates each trait without blocking commits,"verification, structure-definition-lexicon",A-04
 S-03,concurrent-purpose-write,Two operators run purpose-walk concurrently and both append to purposes.csv simultaneously,CSV append is not atomic; add file locking or make append idempotent by checking for duplicate IDs,concurrent stressor writes preserve data consistency,"storage-sessions, storage-format, structure-analysis-purposes",A-04

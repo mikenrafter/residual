@@ -32,7 +32,7 @@ fn init_creates_expected_csv_files() {
     let dir = TempDir::new().unwrap();
     init(&dir);
     let base = dir.path().join("residual");
-    for file in &["stressors.csv", "purposes.csv", "attractors.csv", "terminology.csv"] {
+    for file in &["stressors.csv", "purposes.csv", "attractors.csv", "lexicon.csv"] {
         assert!(base.join(file).exists(), "{} should exist after init", file);
     }
 }
@@ -131,9 +131,9 @@ fn commit_check_accepts_force_subject() {
     )
     .unwrap();
     std::fs::write(
-        dir.path().join("residual/forces.csv"),
-        "id,kind,shortname,naive_change,outcomes,description,attractor_id\n\
-         S-28,stressor,lexicon-commit-drift,add hook,git hook enforces lexicon,drift,A-02\n",
+        dir.path().join("residual/stressors.csv"),
+        "id,shortname,description,naive_change,outcomes,components,attractor_id\n\
+         S-28,lexicon-commit-drift,drift,add hook,git hook enforces lexicon,,A-02\n",
     )
     .unwrap();
     let out = run(
@@ -155,9 +155,9 @@ fn commit_template_prints_scaffold() {
     let dir = TempDir::new().unwrap();
     init(&dir);
     std::fs::write(
-        dir.path().join("residual/forces.csv"),
-        "id,kind,shortname,naive_change,outcomes,description,attractor_id\n\
-         P-18,purpose,git-log-lexicon,add hook,git log uses lexicon,desc,A-01\n",
+        dir.path().join("residual/purposes.csv"),
+        "id,shortname,description,naive_change,outcomes,components,attractor_id\n\
+         P-18,git-log-lexicon,desc,add hook,git log uses lexicon,,A-01\n",
     )
     .unwrap();
     std::fs::write(
@@ -259,15 +259,8 @@ fn matrix_show_csv_emits_header_and_cells() {
         "--naive-change", "pin skill versions",
         "--components", "auth,db",
         "--outcomes", "skill residue stays current",
+        "--shortname", "skill-version-drift",
     ]);
-    // Seed a shortname via forces.csv (add stressor may not write forces yet).
-    let forces = dir.path().join("residual/forces.csv");
-    std::fs::write(
-        &forces,
-        "id,kind,shortname,naive_change,outcomes,description,attractor_id\n\
-         S-01,stressor,skill-version-drift,pin skill versions,skill residue stays current,skill versions drift after binary update,A-01\n",
-    )
-    .unwrap();
     let out = run(&dir, &["matrix", "show", "--csv"]);
     assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -290,6 +283,7 @@ fn matrix_show_filter_keeps_matching_attractor() {
         "--naive-change", "none",
         "--components", "auth",
         "--outcomes", "operator records a stressor against attractor one",
+        "--shortname", "alpha-force",
     ]);
     run(&dir, &["add", "stressor",
         "--description", "second force hits db",
@@ -297,15 +291,8 @@ fn matrix_show_filter_keeps_matching_attractor() {
         "--naive-change", "none",
         "--components", "db",
         "--outcomes", "operator records a stressor against attractor two",
+        "--shortname", "beta-force",
     ]);
-    let forces = dir.path().join("residual/forces.csv");
-    std::fs::write(
-        &forces,
-        "id,kind,shortname,naive_change,outcomes,description,attractor_id\n\
-         S-01,stressor,alpha-force,none,operator records a stressor against attractor one,first force hits auth,A-01\n\
-         S-02,stressor,beta-force,none,operator records a stressor against attractor two,second force hits db,A-02\n",
-    )
-    .unwrap();
     let out = run(&dir, &["matrix", "show", "--csv", "--filter", "A-02"]);
     assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -325,6 +312,7 @@ fn matrix_show_sort_by_alphabetical() {
         "--naive-change", "none",
         "--components", "auth",
         "--outcomes", "operator records residue zeta",
+        "--shortname", "zeta-force",
     ]);
     run(&dir, &["add", "stressor",
         "--description", "alpha force",
@@ -332,15 +320,8 @@ fn matrix_show_sort_by_alphabetical() {
         "--naive-change", "none",
         "--components", "db",
         "--outcomes", "operator records residue alpha",
+        "--shortname", "alpha-force",
     ]);
-    let forces = dir.path().join("residual/forces.csv");
-    std::fs::write(
-        &forces,
-        "id,kind,shortname,naive_change,outcomes,description,attractor_id\n\
-         S-01,stressor,zeta-force,none,operator records residue zeta,zeta force,A-01\n\
-         S-02,stressor,alpha-force,none,operator records residue alpha,alpha force,A-01\n",
-    )
-    .unwrap();
     let out = run(&dir, &["matrix", "show", "--csv", "--sort-by", "alphabetical"]);
     assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -385,11 +366,6 @@ fn residues_csv_is_matrix_shaped_after_write() {
     run(&dir, &["add", "attractor", "--name", "X", "--description", "d", "--positive-state", "ok", "--negative-state", "bad"]);
     run(&dir, &["add", "stressor", "--description", "lag", "--attractor-id", "A-01", "--naive-change", "cache"]);
     std::fs::write(
-        dir.path().join("residual/forces.csv"),
-        "id,kind,shortname,naive_change,outcomes,description,attractor_id\nS-01,stressor,lexicon-scale-lag,cache,operator validates traits,lag,A-01\n",
-    )
-    .unwrap();
-    std::fs::write(
         dir.path().join("residual/components.csv"),
         "name,description,status,architecture_set\nverification,path,proposed,baseline\n",
     )
@@ -409,11 +385,6 @@ fn verify_links_accepts_purpose_residue() {
     std::fs::write(
         dir.path().join("residual/components.csv"),
         "name,description,status,architecture_set\nhook,desc,proposed,baseline\n",
-    )
-    .unwrap();
-    std::fs::write(
-        dir.path().join("residual/forces.csv"),
-        "id,kind,shortname,naive_change,outcomes,description,attractor_id\nP-01,purpose,git-log-lexicon,h,operator reads commit history using defined outcome,purpose force,A-01\n",
     )
     .unwrap();
     assert!(
@@ -563,11 +534,7 @@ fn list_residues_prints_matrix() {
     let dir = TempDir::new().unwrap();
     init(&dir);
     run(&dir, &["add", "attractor", "--name", "X", "--description", "d", "--positive-state", "ok", "--negative-state", "bad"]);
-    std::fs::write(
-        dir.path().join("residual/forces.csv"),
-        "id,kind,shortname,naive_change,outcomes,description,attractor_id\nS-01,stressor,t,c,o,d,A-01\n",
-    )
-    .unwrap();
+    run(&dir, &["add", "stressor", "--description", "d", "--attractor-id", "A-01", "--naive-change", "c"]);
     std::fs::write(
         dir.path().join("residual/components.csv"),
         "name,description,status,architecture_set\ncli,desc,proposed,baseline\n",

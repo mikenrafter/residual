@@ -1,4 +1,4 @@
-id,shortname,description,feature,outcomes,components_enabled,attractor_id
+id,shortname,description,naive_change,outcomes,components,attractor_id
 P-01,purpose-cli-add,An operator can define and iterate on project purposes without writing code,`residual add purpose` CLI command,operator adds purposes tied to an attractor without writing code,"structure-analysis-purposes, structure-analysis-force, cli",A-01
 P-02,skill-data-context,An operator can retrieve all current project context before starting a skill session,`residual skill-data <name>` prints formatted markdown context,operator begins skill sessions with current residual context,skills-phases,A-01
 P-03,skill-install-paths,An operator can install skills into any supported agent's config directory without manual file management,`residual skill-install --agent <name>` command,operator installs skill files without manual file copying,skills-installer,A-01
