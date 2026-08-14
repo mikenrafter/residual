@@ -3,15 +3,21 @@ use std::collections::HashMap;
 
 use crate::cli::{MatrixOp, MatrixSortBy};
 use crate::config::Config;
-use crate::storage::format;
+
 
 pub mod criticality;
 pub mod matrix;
 pub mod residual_index;
 
 fn force_shortnames(residual_dir: &std::path::Path) -> Result<HashMap<String, String>> {
-    let forces = format::read_forces(residual_dir)?;
-    Ok(forces.into_iter().map(|f| (f.id, f.shortname)).collect())
+    let mut map = HashMap::new();
+    for s in crate::storage::stressors::load(residual_dir)? {
+        map.insert(s.id, s.shortname);
+    }
+    for p in crate::storage::purposes::load(residual_dir)? {
+        map.insert(p.id, p.shortname);
+    }
+    Ok(map)
 }
 
 fn attractor_names(residual_dir: &std::path::Path) -> Result<HashMap<String, String>> {

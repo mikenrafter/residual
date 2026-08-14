@@ -185,7 +185,6 @@ pub fn check_links(cfg: &Config) -> Result<Vec<LinkViolation>> {
         }
     }
 
-    let forces = crate::storage::format::read_forces(&cfg.residual_dir)?;
     let residues = crate::storage::format::read_residues(&cfg.residual_dir)?;
     let registry = crate::structure::definition::components::load(&cfg.residual_dir)?;
     let mut force_ids = std::collections::HashSet::new();
@@ -195,21 +194,8 @@ pub fn check_links(cfg: &Config) -> Result<Vec<LinkViolation>> {
     for p in &purposes {
         force_ids.insert(p.id.clone());
     }
-    for f in &forces {
-        force_ids.insert(f.id.clone());
-    }
     let component_names: std::collections::HashSet<String> =
         registry.iter().map(|c| c.name.clone()).collect();
-
-    for force in &forces {
-        if !force.attractor_id.is_empty() && !attractor_ids.contains(&force.attractor_id) {
-            violations.push(LinkViolation {
-                source: "force".to_string(),
-                id: force.id.clone(),
-                message: format!("missing attractor '{}'", force.attractor_id),
-            });
-        }
-    }
 
     for residue in &residues {
         if !residue.force_id.is_empty() && !force_ids.contains(&residue.force_id) {
@@ -307,8 +293,10 @@ mod tests {
     use crate::config::Config;
     use crate::storage::stressors;
     use crate::storage::attractors;
-    use crate::storage::terminology;
+    use crate::storage::format;
+    use crate::storage::terminology::TermIndex as TermIndex;
     use crate::structure::analysis::residues::Residue;
+    use crate::structure::definition::lexicon::Term as LexTerm;
 
     fn cfg_for(dir: &std::path::Path) -> Config {
         Config {
@@ -342,7 +330,7 @@ mod tests {
             verb: "handles".to_string(),
             predicates: vec!["auth".to_string()],
         };
-        let index = terminology::TermIndex {
+        let index = TermIndex {
             words: ["auth".to_string()].into_iter().collect(),
             phrases: vec![],
         };
@@ -356,7 +344,7 @@ mod tests {
             verb: "does".to_string(),
             predicates: vec!["something".to_string()],
         };
-        let index = terminology::TermIndex {
+        let index = TermIndex {
             words: ["auth".to_string()].into_iter().collect(),
             phrases: vec![],
         };
@@ -370,7 +358,7 @@ mod tests {
             verb: "cites".to_string(),
             predicates: vec!["this example has a dash in it here".to_string()],
         };
-        let index = terminology::TermIndex {
+        let index = TermIndex {
             words: std::collections::HashSet::new(),
             phrases: vec!["this example has a dash in it".to_string()],
         };
@@ -388,7 +376,7 @@ mod tests {
             verb: "reads".to_string(),
             predicates: vec!["commit history using defined outcome".to_string()],
         };
-        let index = terminology::TermIndex {
+        let index = TermIndex {
             words: ["operator".to_string(), "reads".to_string()].into_iter().collect(),
             phrases: vec!["defined outcome".to_string()],
         };
@@ -424,7 +412,7 @@ mod tests {
                 attractor_id: "A-01".to_string(),
                 naive_change: "none".to_string(),
                 outcomes: "system handles auth".to_string(),
-                components_affected: "auth".to_string(),
+                components: "auth".to_string(),
             },
         )
         .unwrap();
@@ -436,14 +424,9 @@ mod tests {
     fn check_outcomes_valid_outcome_no_violations() {
         let dir = tempdir().unwrap();
         let cfg = cfg_for(dir.path());
-        terminology::append(
+        format::append_lexicon(
             dir.path(),
-            terminology::Term {
-                term: "auth".to_string(),
-                definition: "authentication".to_string(),
-                domain: "core".to_string(),
-                related_terms: "".to_string(),
-            },
+            LexTerm { term: "auth".into(), definition: "authentication".into(), domain: "core".into(), aliases: "".into() },
         )
         .unwrap();
         stressors::append(
@@ -455,7 +438,7 @@ mod tests {
                 attractor_id: "A-01".to_string(),
                 naive_change: "none".to_string(),
                 outcomes: "system handles auth".to_string(),
-                components_affected: "auth".to_string(),
+                components: "auth".to_string(),
             },
         )
         .unwrap();
@@ -467,14 +450,9 @@ mod tests {
     fn check_outcomes_no_matching_term_is_violation() {
         let dir = tempdir().unwrap();
         let cfg = cfg_for(dir.path());
-        terminology::append(
+        format::append_lexicon(
             dir.path(),
-            terminology::Term {
-                term: "auth".to_string(),
-                definition: "authentication".to_string(),
-                domain: "core".to_string(),
-                related_terms: "".to_string(),
-            },
+            LexTerm { term: "auth".into(), definition: "authentication".into(), domain: "core".into(), aliases: "".into() },
         )
         .unwrap();
         stressors::append(
@@ -486,7 +464,7 @@ mod tests {
                 attractor_id: "A-01".to_string(),
                 naive_change: "none".to_string(),
                 outcomes: "widget frobs blorple".to_string(),
-                components_affected: "widget".to_string(),
+                components: "widget".to_string(),
             },
         )
         .unwrap();
@@ -510,7 +488,7 @@ mod tests {
                 attractor_id: "A-99".to_string(),
                 naive_change: "none".to_string(),
                 outcomes: "system does x".to_string(),
-                components_affected: "x".to_string(),
+                components: "x".to_string(),
             },
         )
         .unwrap();
@@ -543,7 +521,7 @@ mod tests {
                 attractor_id: "A-01".to_string(),
                 naive_change: "none".to_string(),
                 outcomes: "system does x".to_string(),
-                components_affected: "x".to_string(),
+                components: "x".to_string(),
             },
         )
         .unwrap();
@@ -579,14 +557,9 @@ mod tests {
     fn verify_all_fails_when_outcomes_invalid() {
         let dir = tempdir().unwrap();
         let cfg = cfg_for(dir.path());
-        terminology::append(
+        format::append_lexicon(
             dir.path(),
-            terminology::Term {
-                term: "operator".to_string(),
-                definition: "human or agent".to_string(),
-                domain: "tool".to_string(),
-                related_terms: "".to_string(),
-            },
+            LexTerm { term: "operator".into(), definition: "human or agent".into(), domain: "tool".into(), aliases: "".into() },
         )
         .unwrap();
         stressors::append(
@@ -598,7 +571,7 @@ mod tests {
                 attractor_id: "A-01".to_string(),
                 naive_change: "none".to_string(),
                 outcomes: "widget frobs blorple".to_string(),
-                components_affected: "x".to_string(),
+                components: "x".to_string(),
             },
         )
         .unwrap();
@@ -634,7 +607,7 @@ mod tests {
                 attractor_id: "A-01".to_string(),
                 naive_change: "none".to_string(),
                 outcomes: "system does x".to_string(),
-                components_affected: "x".to_string(),
+                components: "x".to_string(),
                 shortname: "".to_string(),
             },
         )
@@ -673,7 +646,7 @@ mod tests {
                 attractor_id: "A-01".to_string(),
                 naive_change: "none".to_string(),
                 outcomes: "system does x".to_string(),
-                components_affected: "x".to_string(),
+                components: "x".to_string(),
                 shortname: "cli-bypass".to_string(),
             },
         )

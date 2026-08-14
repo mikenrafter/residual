@@ -79,11 +79,10 @@ pub enum Command {
         #[command(subcommand)]
         artifact: GenerateArtifact,
     },
-    /// Migrate residual/ from naive on-disk shape to v3.
+    /// Migrate residual/ from legacy on-disk shape to current.
     ///
-    /// Process: config → storage-config; stressors/purposes → forces+residues;
-    /// attractors valence → +/- states; terminology → lexicon. Legacy force CSVs
-    /// remain for mid-transition readers.
+    /// Process: config → storage-config; terminology.csv → lexicon.csv;
+    /// attractors valence → +/- states; forces.csv deleted if present.
     Migrate {
         /// Overwrite session snapshot when residual files drifted outside this tool.
         #[arg(long)]
@@ -162,8 +161,8 @@ pub enum AddTarget {
     Purpose {
         #[arg(long)] description: String,
         #[arg(long)] attractor_id: String,
-        #[arg(long, visible_alias = "naive-change")]
-        feature: String,
+        #[arg(long, visible_alias = "feature")]
+        naive_change: String,
         #[arg(long, default_value = "")] shortname: String,
         #[arg(long, default_value = "", visible_alias = "traits")]
         outcomes: String,
@@ -271,9 +270,9 @@ pub enum MatrixSortBy {
 
 #[derive(Subcommand)]
 pub enum MatrixOp {
-    /// Print the NKP coupling table (force shortnames × components).
+    /// Print the NKP coupling table (stressor/purpose shortnames × components).
     ///
-    /// Process: rows are force shortnames from forces.csv; cells come from
+    /// Process: rows are shortnames from stressors/purposes; cells come from
     /// stressor↔component coupling. Forces are grouped by attractor with
     /// separator rows. Pass `--csv` for machine-readable stdout.
     Show {

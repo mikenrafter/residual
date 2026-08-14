@@ -7,13 +7,13 @@ pub fn build(cfg: &Config, skill_name: &str) -> Result<String> {
     let attractors = crate::storage::attractors::load(dir).unwrap_or_default();
     let stressors  = crate::storage::stressors::load(dir).unwrap_or_default();
     let purposes   = crate::storage::purposes::load(dir).unwrap_or_default();
-    let terms      = crate::storage::terminology::load(dir).unwrap_or_default();
+    let terms      = crate::storage::format::read_lexicon(dir).unwrap_or_default();
     let personas   = crate::storage::personas::load_all(dir).unwrap_or_default();
 
     // NKP summary: N = stressors + unique components (matrix semantics), not entity bag count.
     let mut component_set = std::collections::BTreeSet::new();
     for s in &stressors {
-        for c in s.components_affected.split(',') {
+        for c in s.components.split(',') {
             let c = c.trim();
             if !c.is_empty() {
                 component_set.insert(c.to_string());
@@ -21,7 +21,7 @@ pub fn build(cfg: &Config, skill_name: &str) -> Result<String> {
         }
     }
     for p in &purposes {
-        for c in p.components_enabled.split(',') {
+        for c in p.components.split(',') {
             let c = c.trim();
             if !c.is_empty() {
                 component_set.insert(c.to_string());
@@ -32,7 +32,7 @@ pub fn build(cfg: &Config, skill_name: &str) -> Result<String> {
     let k: usize = stressors
         .iter()
         .map(|s| {
-            s.components_affected
+            s.components
                 .split(',')
                 .filter(|c| !c.trim().is_empty())
                 .count()
@@ -148,7 +148,7 @@ pub fn build(cfg: &Config, skill_name: &str) -> Result<String> {
         for s in &stressors {
             out.push_str(&format!(
                 "| {} | {} | {} | {} |\n",
-                s.id, s.description, s.attractor_id, s.components_affected
+                s.id, s.description, s.attractor_id, s.components
             ));
         }
         out.push('\n');
@@ -161,7 +161,7 @@ pub fn build(cfg: &Config, skill_name: &str) -> Result<String> {
         for p in &purposes {
             out.push_str(&format!(
                 "| {} | {} | {} | {} | {} |\n",
-                p.id, p.description, p.attractor_id, p.feature, p.outcomes
+                p.id, p.description, p.attractor_id, p.naive_change, p.outcomes
             ));
         }
         out.push('\n');
@@ -256,7 +256,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
     use crate::config::Config;
-    use crate::storage::{stressors, terminology};
+    use crate::storage::{format, stressors};
 
     fn cfg_for(dir: &std::path::Path) -> Config {
         Config {
@@ -299,14 +299,9 @@ mod tests {
     fn nkp_summary_n_reflects_components_not_entity_count() {
         let dir = tempdir().unwrap();
         let cfg = cfg_for(dir.path());
-        terminology::append(
+        format::append_lexicon(
             dir.path(),
-            terminology::Term {
-                term: "auth".to_string(),
-                definition: "authentication".to_string(),
-                domain: "".to_string(),
-                related_terms: "".to_string(),
-            },
+            crate::structure::definition::lexicon::Term { term: "auth".into(), definition: "authentication".into(), domain: "".into(), aliases: "".into() },
         )
         .unwrap();
         stressors::append(
@@ -318,7 +313,7 @@ mod tests {
                 attractor_id: "".to_string(),
                 naive_change: "none".to_string(),
                 outcomes: "system handles auth".to_string(),
-                components_affected: "auth,db".to_string(),
+                components: "auth,db".to_string(),
             },
         )
         .unwrap();
@@ -344,7 +339,7 @@ mod tests {
                 attractor_id: "".to_string(),
                 naive_change: "none".to_string(),
                 outcomes: "widget frobs blorple".to_string(),
-                components_affected: "x".to_string(),
+                components: "x".to_string(),
             },
         )
         .unwrap();
@@ -371,7 +366,7 @@ mod tests {
                 attractor_id: "".to_string(),
                 naive_change: "none".to_string(),
                 outcomes: "widget frobs blorple".to_string(),
-                components_affected: "x".to_string(),
+                components: "x".to_string(),
             },
         )
         .unwrap();

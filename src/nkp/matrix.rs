@@ -28,7 +28,7 @@ impl NkpMatrix {
     pub fn build(stressors: &[Stressor]) -> Self {
         let mut components: Vec<String> = Vec::new();
         for s in stressors {
-            for comp in s.components_affected.split(',') {
+            for comp in s.components.split(',') {
                 let comp = comp.trim().to_string();
                 if !comp.is_empty() && !components.contains(&comp) {
                     components.push(comp);
@@ -43,7 +43,7 @@ impl NkpMatrix {
             .iter()
             .map(|s| {
                 let affected: Vec<&str> =
-                    s.components_affected.split(',').map(|c| c.trim()).collect();
+                    s.components.split(',').map(|c| c.trim()).collect();
                 components
                     .iter()
                     .map(|comp| {
@@ -504,7 +504,7 @@ mod tests {
             attractor_id: attractor.to_string(),
             naive_change: "change".to_string(),
             outcomes: "system handles auth".to_string(),
-            components_affected: components.to_string(),
+            components: components.to_string(),
         }
     }
 

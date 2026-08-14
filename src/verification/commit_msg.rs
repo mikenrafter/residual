@@ -11,7 +11,6 @@ use std::path::Path;
 use crate::config::Config;
 use crate::storage::config::StorageConfig;
 use crate::storage::format;
-use crate::storage::terminology;
 use crate::structure::definition::components;
 
 const CONVENTIONAL_TYPES: &[&str] = &[
@@ -57,13 +56,6 @@ pub fn load_vocabulary(residual_dir: &Path) -> Result<Vocabulary> {
         }
     }
 
-    for term in terminology::load(residual_dir)? {
-        add_phrases(&mut phrases, &term.term);
-        for alias in term.related_terms.split('|') {
-            add_phrases(&mut phrases, alias);
-        }
-    }
-
     let mut phrase_vec: Vec<String> = phrases.into_iter().collect();
     phrase_vec.sort_by_key(|p| std::cmp::Reverse(p.len()));
 
@@ -72,9 +64,10 @@ pub fn load_vocabulary(residual_dir: &Path) -> Result<Vocabulary> {
         .map(|c| c.name.to_lowercase())
         .collect::<Vec<_>>();
 
-    let force_ids = format::read_forces(residual_dir)?
+    let force_ids: HashSet<String> = crate::storage::stressors::load(residual_dir)?
         .into_iter()
-        .map(|f| f.id)
+        .map(|s| s.id)
+        .chain(crate::storage::purposes::load(residual_dir)?.into_iter().map(|p| p.id))
         .collect();
 
     Ok(Vocabulary {
@@ -213,7 +206,8 @@ pub fn suggest_subjects(
 ) -> Result<Vec<String>> {
     let vocab = load_vocabulary(&cfg.residual_dir)?;
     let hints = staged_component_hints(staged_paths, &vocab);
-    let forces = format::read_forces(&cfg.residual_dir)?;
+    let stressors = crate::storage::stressors::load(&cfg.residual_dir)?;
+    let purposes = crate::storage::purposes::load(&cfg.residual_dir)?;
     let residues = format::read_residues(&cfg.residual_dir)?;
 
     let mut suggestions = Vec::new();
@@ -224,9 +218,14 @@ pub fn suggest_subjects(
             .iter()
             .filter(|r| r.component_id.eq_ignore_ascii_case(component))
         {
-            if let Some(force) = forces.iter().find(|f| f.id == residue.force_id) {
-                let prefix = force.id.to_uppercase();
-                let summary = force.shortname.replace('-', " ");
+            let shortname = stressors
+                .iter()
+                .find(|s| s.id == residue.force_id)
+                .map(|s| s.shortname.as_str())
+                .or_else(|| purposes.iter().find(|p| p.id == residue.force_id).map(|p| p.shortname.as_str()));
+            if let Some(sn) = shortname {
+                let prefix = residue.force_id.to_uppercase();
+                let summary = sn.replace('-', " ");
                 suggestions.push(format!("{component}: {prefix}: {summary}"));
                 added = true;
             }
@@ -253,23 +252,28 @@ pub fn suggest_subjects(
 
 pub fn template_for_force(cfg: &Config, force_id: &str) -> Result<String> {
     let force_id = force_id.to_uppercase();
-    let forces = format::read_forces(&cfg.residual_dir)?;
-    let force = forces
-        .iter()
-        .find(|f| f.id.eq_ignore_ascii_case(&force_id))
-        .with_context(|| format!("force '{force_id}' not found in forces.csv"))?;
+    let stressors = crate::storage::stressors::load(&cfg.residual_dir)?;
+    let purposes = crate::storage::purposes::load(&cfg.residual_dir)?;
+
+    let (canonical_id, shortname) = if let Some(s) = stressors.iter().find(|s| s.id.eq_ignore_ascii_case(&force_id)) {
+        (s.id.clone(), s.shortname.clone())
+    } else if let Some(p) = purposes.iter().find(|p| p.id.eq_ignore_ascii_case(&force_id)) {
+        (p.id.clone(), p.shortname.clone())
+    } else {
+        anyhow::bail!("force '{force_id}' not found in stressors or purposes");
+    };
 
     let residues = format::read_residues(&cfg.residual_dir)?;
     let component = residues
         .iter()
-        .find(|r| r.force_id.eq_ignore_ascii_case(&force.id))
+        .find(|r| r.force_id.eq_ignore_ascii_case(&canonical_id))
         .map(|r| r.component_id.as_str())
         .unwrap_or("component-name");
 
-    let summary = force.shortname.replace('-', " ");
+    let summary = shortname.replace('-', " ");
     Ok(format!(
         "{component}: {}: {summary}\n\n- \n- \n",
-        force.id.to_uppercase()
+        canonical_id.to_uppercase()
     ))
 }
 
@@ -374,7 +378,6 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::storage::format;
-    use crate::structure::analysis::force::Force;
     use crate::structure::analysis::residues::Residue;
     use tempfile::tempdir;
 
@@ -403,14 +406,17 @@ mod tests {
             "name,description,status,architecture_set\nverification-git-hook,hook,proposed,test\ncli,cli,proposed,test\n",
         )
         .unwrap();
-        format::write_forces(
+        crate::storage::stressors::append(
             dir,
-            &[Force::stressor(
-                "S-28",
-                "lexicon-commit-drift",
-                "add commit-msg hook",
-                vec!["git hook enforces lexicon continuity".into()],
-            )],
+            crate::storage::stressors::Stressor {
+                id: "S-28".into(),
+                shortname: "lexicon-commit-drift".into(),
+                description: "commit msg hook drift".into(),
+                attractor_id: "".into(),
+                naive_change: "add commit-msg hook".into(),
+                outcomes: "git hook enforces lexicon continuity".into(),
+                components: "verification-git-hook".into(),
+            },
         )
         .unwrap();
     }
