@@ -5,6 +5,8 @@ use std::path::Path;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Purpose {
     pub id: String,
+    #[serde(default)]
+    pub shortname: String,
     pub description: String,
     pub attractor_id: String,
     pub feature: String,
@@ -39,13 +41,14 @@ pub fn append(residual_dir: &Path, purpose: Purpose) -> Result<()> {
 }
 
 fn write_all(residual_dir: &Path, rows: &[Purpose]) -> Result<()> {
-    let mut buf = String::from("id,description,feature,outcomes,components_enabled,attractor_id\n");
+    let mut buf = String::from("id,shortname,description,feature,outcomes,components_enabled,attractor_id\n");
     for p in rows {
         let mut row = Vec::new();
         {
             let mut wtr = csv::WriterBuilder::new().has_headers(false).from_writer(&mut row);
             wtr.write_record(&[
                 &p.id,
+                &p.shortname,
                 &p.description,
                 &p.feature,
                 &p.outcomes,
@@ -79,6 +82,7 @@ mod tests {
     fn make_purpose(id: &str) -> Purpose {
         Purpose {
             id: id.to_string(),
+            shortname: String::new(),
             description: "desc".to_string(),
             attractor_id: "A-01".to_string(),
             feature: "feat".to_string(),

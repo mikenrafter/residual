@@ -499,6 +499,7 @@ mod tests {
     fn make_stressor(id: &str, attractor: &str, components: &str) -> Stressor {
         Stressor {
             id: id.to_string(),
+            shortname: String::new(),
             description: "desc".to_string(),
             attractor_id: attractor.to_string(),
             naive_change: "change".to_string(),

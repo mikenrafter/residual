@@ -5,6 +5,8 @@ use std::path::Path;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Stressor {
     pub id: String,
+    #[serde(default)]
+    pub shortname: String,
     pub description: String,
     pub attractor_id: String,
     pub naive_change: String,
@@ -39,13 +41,14 @@ pub fn append(residual_dir: &Path, stressor: Stressor) -> Result<()> {
 }
 
 fn write_all(residual_dir: &Path, rows: &[Stressor]) -> Result<()> {
-    let mut buf = String::from("id,description,naive_change,outcomes,components_affected,attractor_id\n");
+    let mut buf = String::from("id,shortname,description,naive_change,outcomes,components_affected,attractor_id\n");
     for s in rows {
         let mut row = Vec::new();
         {
             let mut wtr = csv::WriterBuilder::new().has_headers(false).from_writer(&mut row);
             wtr.write_record(&[
                 &s.id,
+                &s.shortname,
                 &s.description,
                 &s.naive_change,
                 &s.outcomes,
@@ -79,6 +82,7 @@ mod tests {
     fn make_stressor(id: &str) -> Stressor {
         Stressor {
             id: id.to_string(),
+            shortname: String::new(),
             description: "desc".to_string(),
             attractor_id: "A-01".to_string(),
             naive_change: "change".to_string(),

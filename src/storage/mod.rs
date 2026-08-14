@@ -41,8 +41,8 @@ fn init_dirs_and_files(cfg: &Config) -> Result<()> {
 
     // Write empty CSVs with headers if not present
     let csvs: &[(&str, &str)] = &[
-        ("stressors.csv", "id,description,naive_change,outcomes,components_affected,attractor_id"),
-        ("purposes.csv", "id,description,feature,outcomes,components_enabled,attractor_id"),
+        ("stressors.csv", "id,shortname,description,naive_change,outcomes,components_affected,attractor_id"),
+        ("purposes.csv", "id,shortname,description,feature,outcomes,components_enabled,attractor_id"),
         ("attractors.csv", "id,name,description,positive_state,negative_state"),
         ("terminology.csv", "term,definition,domain,related_terms"),
         ("forces.csv", "id,kind,shortname,naive_change,outcomes,description,attractor_id"),
@@ -91,6 +91,7 @@ fn add_entry(cfg: &Config, target: AddTarget) -> Result<()> {
             let id = stressors::next_id(&existing);
             stressors::append(dir, stressors::Stressor {
                 id: id.clone(),
+                shortname: String::new(),
                 description,
                 attractor_id,
                 naive_change,
@@ -140,6 +141,7 @@ fn add_entry(cfg: &Config, target: AddTarget) -> Result<()> {
             let id = purposes::next_id(&existing);
             purposes::append(dir, purposes::Purpose {
                 id: id.clone(),
+                shortname: String::new(),
                 description,
                 attractor_id,
                 feature,

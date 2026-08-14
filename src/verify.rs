@@ -405,6 +405,7 @@ mod tests {
             dir.path(),
             stressors::Stressor {
                 id: "S-01".to_string(),
+                shortname: String::new(),
                 description: "test stressor".to_string(),
                 attractor_id: "A-01".to_string(),
                 naive_change: "none".to_string(),
@@ -435,6 +436,7 @@ mod tests {
             dir.path(),
             stressors::Stressor {
                 id: "S-01".to_string(),
+                shortname: String::new(),
                 description: "test stressor".to_string(),
                 attractor_id: "A-01".to_string(),
                 naive_change: "none".to_string(),
@@ -465,6 +467,7 @@ mod tests {
             dir.path(),
             stressors::Stressor {
                 id: "S-01".to_string(),
+                shortname: String::new(),
                 description: "test stressor".to_string(),
                 attractor_id: "A-01".to_string(),
                 naive_change: "none".to_string(),
@@ -488,6 +491,7 @@ mod tests {
             dir.path(),
             stressors::Stressor {
                 id: "S-01".to_string(),
+                shortname: String::new(),
                 description: "test".to_string(),
                 attractor_id: "A-99".to_string(),
                 naive_change: "none".to_string(),
@@ -520,6 +524,7 @@ mod tests {
             dir.path(),
             stressors::Stressor {
                 id: "S-01".to_string(),
+                shortname: String::new(),
                 description: "test".to_string(),
                 attractor_id: "A-01".to_string(),
                 naive_change: "none".to_string(),
@@ -574,6 +579,7 @@ mod tests {
             dir.path(),
             stressors::Stressor {
                 id: "S-01".to_string(),
+                shortname: String::new(),
                 description: "test".to_string(),
                 attractor_id: "A-01".to_string(),
                 naive_change: "none".to_string(),
