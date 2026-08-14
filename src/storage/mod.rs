@@ -41,11 +41,9 @@ fn init_dirs_and_files(cfg: &Config) -> Result<()> {
 
     // Write empty CSVs with headers if not present
     let csvs: &[(&str, &str)] = &[
-        ("stressors.csv", "id,shortname,description,naive_change,outcomes,components_affected,attractor_id"),
-        ("purposes.csv", "id,shortname,description,feature,outcomes,components_enabled,attractor_id"),
+        ("stressors.csv", "id,shortname,description,naive_change,outcomes,components,attractor_id"),
+        ("purposes.csv", "id,shortname,description,naive_change,outcomes,components,attractor_id"),
         ("attractors.csv", "id,name,description,positive_state,negative_state"),
-        ("terminology.csv", "term,definition,domain,related_terms"),
-        ("forces.csv", "id,kind,shortname,naive_change,outcomes,description,attractor_id"),
         ("lexicon.csv", "term,definition,domain,aliases"),
         ("residues.csv", "force"),
         ("components.csv", "name,description,status,architecture_set"),
@@ -97,7 +95,7 @@ fn add_entry(cfg: &Config, target: AddTarget) -> Result<()> {
                 attractor_id,
                 naive_change,
                 outcomes,
-                components_affected: components,
+                components,
             })?;
             if whole_system {
                 let residue_id = residues::append_whole_system(dir, &id, &notes)?;
@@ -137,7 +135,7 @@ fn add_entry(cfg: &Config, target: AddTarget) -> Result<()> {
                 println!("Added residue {}", id);
             }
         }
-        AddTarget::Purpose { description, attractor_id, feature, shortname, outcomes, components } => {
+        AddTarget::Purpose { description, attractor_id, naive_change, shortname, outcomes, components } => {
             let existing = purposes::load(dir)?;
             let id = purposes::next_id(&existing);
             purposes::append(dir, purposes::Purpose {
@@ -145,9 +143,9 @@ fn add_entry(cfg: &Config, target: AddTarget) -> Result<()> {
                 shortname,
                 description,
                 attractor_id,
-                feature,
+                naive_change,
                 outcomes,
-                components_enabled: components,
+                components,
             })?;
             println!("Added purpose {}", id);
         }
@@ -172,11 +170,11 @@ fn add_entry(cfg: &Config, target: AddTarget) -> Result<()> {
             println!("Added attractor {}", id);
         }
         AddTarget::Term { term, definition, domain, related } => {
-            terminology::append(dir, terminology::Term {
+            format::append_lexicon(dir, crate::structure::definition::lexicon::Term {
                 term: term.clone(),
                 definition,
                 domain,
-                related_terms: related,
+                aliases: related,
             })?;
             println!("Added term '{}'", term);
         }
@@ -228,7 +226,7 @@ pub fn list(cfg: &Config, target: ListTarget) -> Result<()> {
             } else {
                 for p in &items {
                     let extra = if p.outcomes.is_empty() { String::new() } else { format!(" | outcomes: {}", p.outcomes) };
-                    println!("[{}] {} {} (naive_change: {}{})", p.id, p.shortname, p.description, p.feature, extra);
+                    println!("[{}] {} {} (naive_change: {}{})", p.id, p.shortname, p.description, p.naive_change, extra);
                 }
             }
         }
@@ -249,7 +247,7 @@ pub fn list(cfg: &Config, target: ListTarget) -> Result<()> {
             }
         }
         ListTarget::Terminology => {
-            let items = terminology::load(dir)?;
+            let items = format::read_lexicon(dir)?;
             if items.is_empty() {
                 println!("No terminology.");
             } else {
@@ -300,19 +298,11 @@ fn truncate_state(s: &str) -> String {
 pub fn migrate(cfg: &Config, force: bool) -> Result<()> {
     let report = integrity::migration::migrate_residual_dir(&cfg.residual_dir, force)?;
     println!(
-        "Migrated {} → v3 (config={}, forces={}, residues={}, attractors={}, lexicon={})",
+        "Migrated {} (config={}, attractors={}, lexicon={})",
         cfg.residual_dir.display(),
         report.config_migrated,
-        report.forces,
-        report.residues,
         report.attractors,
         report.lexicon_terms
     );
-    if !report.unmapped_components.is_empty() {
-        println!(
-            "Unmapped naive component tokens (left as-is): {}",
-            report.unmapped_components.join(", ")
-        );
-    }
     Ok(())
 }

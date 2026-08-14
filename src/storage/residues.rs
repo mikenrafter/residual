@@ -41,12 +41,6 @@ pub fn next_id(residues: &[Residue]) -> String {
 }
 
 pub fn force_exists(residual_dir: &Path, force_id: &str) -> Result<bool> {
-    if crate::storage::format::read_forces(residual_dir)?
-        .iter()
-        .any(|f| f.id == force_id)
-    {
-        return Ok(true);
-    }
     if crate::storage::stressors::load(residual_dir)?
         .iter()
         .any(|s| s.id == force_id)
@@ -71,7 +65,7 @@ pub fn append_whole_system(
         bail!("--whole-system requires --notes describing the hardware, process, organization, or policy zig");
     }
     if !force_exists(residual_dir, force_id)? {
-        bail!("force id '{}' not found in stressors, purposes, or forces", force_id);
+        bail!("force id '{}' not found in stressors or purposes", force_id);
     }
     let existing = load(residual_dir)?;
     let id = next_id(&existing);

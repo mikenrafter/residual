@@ -12,7 +12,8 @@ pub struct Stressor {
     pub naive_change: String,
     #[serde(rename = "outcomes", alias = "traits")]
     pub outcomes: String,
-    pub components_affected: String,
+    #[serde(alias = "components_affected")]
+    pub components: String,
 }
 
 pub fn load(residual_dir: &Path) -> Result<Vec<Stressor>> {
@@ -40,8 +41,12 @@ pub fn append(residual_dir: &Path, stressor: Stressor) -> Result<()> {
     write_all(residual_dir, &all)
 }
 
+pub fn write_all_pub(residual_dir: &Path, rows: &[Stressor]) -> Result<()> {
+    write_all(residual_dir, rows)
+}
+
 fn write_all(residual_dir: &Path, rows: &[Stressor]) -> Result<()> {
-    let mut buf = String::from("id,shortname,description,naive_change,outcomes,components_affected,attractor_id\n");
+    let mut buf = String::from("id,shortname,description,naive_change,outcomes,components,attractor_id\n");
     for s in rows {
         let mut row = Vec::new();
         {
@@ -52,7 +57,7 @@ fn write_all(residual_dir: &Path, rows: &[Stressor]) -> Result<()> {
                 &s.description,
                 &s.naive_change,
                 &s.outcomes,
-                &s.components_affected,
+                &s.components,
                 &s.attractor_id,
             ])?;
             wtr.flush()?;
@@ -87,7 +92,7 @@ mod tests {
             attractor_id: "A-01".to_string(),
             naive_change: "change".to_string(),
             outcomes: "system handles auth".to_string(),
-            components_affected: "auth,db".to_string(),
+            components: "auth,db".to_string(),
         }
     }
 
@@ -156,7 +161,7 @@ mod tests {
             attractor_id: "A-01".to_string(),
             naive_change: "fix it".to_string(),
             outcomes: "system handles stressor".to_string(),
-            components_affected: "auth".to_string(),
+            components: "auth".to_string(),
             shortname: "cli-bypass".to_string(),
         };
         append(dir.path(), s).unwrap();
@@ -171,7 +176,7 @@ mod tests {
         // Write a stressors.csv with the OLD header (no shortname column).
         std::fs::write(
             dir.path().join("stressors.csv"),
-            "id,description,naive_change,outcomes,components_affected,attractor_id\n\
+            "id,description,naive_change,outcomes,components,attractor_id\n\
              S-01,old stressor,old change,system handles old,auth,A-01\n",
         )
         .unwrap();

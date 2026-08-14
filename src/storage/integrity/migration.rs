@@ -1,14 +1,9 @@
-//! Migration — naive → v3 only for now.
+//! Migration — legacy on-disk shapes to current.
 //!
 //! Converts:
-//! - config.toml (`[validation]`/`[skills]` → v3 storage-config)
-//! - stressors.csv + purposes.csv → forces.csv + residues.csv
-//! - attractors.csv (valence/phase_state → positive_state/negative_state)
+//! - config.toml (`[validation]`/`[skills]` → storage-config)
 //! - terminology.csv → lexicon.csv (related_terms → aliases)
-//!
-//! Legacy stressors/purposes/terminology CSVs are left in place so mid-transition
-//! readers (matrix, trait verify) keep working; v3 artifacts are authoritative
-//! for Force / Residue / Attractor / lexicon continuity.
+//! - attractors.csv (valence/phase_state → positive_state/negative_state)
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -16,10 +11,8 @@ use std::fs;
 use std::path::Path;
 
 use crate::storage::config::StorageConfig;
-use crate::storage::format::{self, write_attractors_v3, write_residues};
+use crate::storage::format::{self, write_attractors_v3};
 use crate::structure::analysis::attractors::Attractor as V3Attractor;
-use crate::structure::analysis::force::{Force, ForceKind};
-use crate::structure::analysis::residues::Residue;
 use crate::structure::definition::lexicon::Term as LexiconTerm;
 
 #[derive(Debug, Clone)]
@@ -32,11 +25,8 @@ pub struct MigratedV3 {
 #[derive(Debug, Clone, Default)]
 pub struct MigrateReport {
     pub config_migrated: bool,
-    pub forces: usize,
-    pub residues: usize,
     pub attractors: usize,
     pub lexicon_terms: usize,
-    pub unmapped_components: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,77 +82,6 @@ fn is_v3_config(raw: &str) -> bool {
     raw.contains("format_version") || raw.contains("[verification]") || raw.contains("[storage]")
 }
 
-/// Best-effort map from naive dogfood component tokens → fully-qualified registry names.
-fn map_component_token(token: &str) -> Option<String> {
-    let mapped = match token {
-        "research-study" => "research-study",
-        "cli" | "cli-add" | "cli-init" => "cli",
-        "cli-help" => "cli-help",
-        "personas" => "skills-personas",
-        "stressor-walk" | "context-builder" | "skill-interface" | "skill-data" | "skill-list"
-        | "skill-show" => "skills-phases",
-        "skill-install" | "skill-check" | "install-paths" => "skills-installer",
-        "verify-outcomes" | "verify-traits" | "verify-links" | "verify-all" => "verification",
-        "git-hook" => "verification-git-hook",
-        "tag-scan" => "structure-analysis-tag-scan",
-        "stressor-schema" | "storage-stressors" => "structure-analysis-stressors",
-        "storage-purposes" => "structure-analysis-purposes",
-        "storage-attractors" => "structure-analysis-attractors",
-        "residues-csv" => "structure-analysis-residues",
-        "nkp-matrix" | "matrix-show" | "matrix-criticality" | "matrix-ri" | "group-filter" => {
-            "structure-analysis"
-        }
-        "terminology" => "structure-definition-lexicon",
-        "components-registry" => "structure-definition-components",
-        "storage-init" | "storage-append" | "storage-io" => "storage",
-        "file-locking" | "change-detection" => "storage-sessions",
-        "storage-config" => "storage-config",
-        "storage-format" => "storage-format",
-        "storage-migration" => "storage-migration",
-        "skills-personas" | "skills-research" | "skills-phases" | "skills-installer"
-        | "verification" | "verification-git-hook" | "structure" | "structure-analysis"
-        | "structure-analysis-tag-scan" | "structure-analysis-force"
-        | "structure-analysis-purposes" | "structure-analysis-stressors"
-        | "structure-analysis-attractors" | "structure-analysis-residues"
-        | "structure-definition-lexicon" | "structure-definition-components"
-        | "structure-definition-iterations" | "storage" | "storage-sessions" => token,
-        _ => return None,
-    };
-    Some(mapped.to_string())
-}
-
-fn split_component_field(raw: &str) -> Vec<String> {
-    raw.split(|c: char| c == ',' || c.is_whitespace())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect()
-}
-
-fn split_outcomes(outcomes: &str, fallback: &str) -> Vec<String> {
-    let mut out: Vec<String> = outcomes
-        .split('|')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect();
-    if out.is_empty() && !fallback.trim().is_empty() {
-        out.push(fallback.trim().to_string());
-    }
-    out
-}
-
-fn shortname_for(id: &str, haystacks: &[&str], terms: &[String]) -> String {
-    let blob = haystacks.join(" ").to_lowercase();
-    for term in terms {
-        let t = term.to_lowercase();
-        if !t.is_empty() && blob.contains(&t) {
-            return format!("{}-{}", t.replace(' ', "-"), id.to_lowercase());
-        }
-    }
-    format!("residue-{}", id.to_lowercase())
-}
-
 fn load_naive_attractors(path: &Path) -> Result<Vec<(String, String, String, String, String)>> {
     // id, name, valence, description, phase_state
     let mut rdr = csv::ReaderBuilder::new().has_headers(true).from_path(path)?;
@@ -215,7 +134,6 @@ fn migrate_attractor_row(
             (pos, neg)
         }
         _ => {
-            // Already v3-ish or unknown — treat phase_state as positive, description aids negative.
             let pos = if phase_state.is_empty() {
                 format!("(migrated) positive state for {name}")
             } else {
@@ -238,7 +156,7 @@ fn migrate_attractor_row(
     }
 }
 
-/// Migrate a residual/ directory from naive on-disk shape to v3 artifacts.
+/// Migrate a residual/ directory to current on-disk shape.
 pub fn migrate_residual_dir(residual_dir: &Path, force: bool) -> Result<MigrateReport> {
     if !residual_dir.is_dir() {
         bail!("residual dir not found: {}", residual_dir.display());
@@ -251,12 +169,7 @@ pub fn migrate_residual_dir(residual_dir: &Path, force: bool) -> Result<MigrateR
     let config_path = residual_dir.join("config.toml");
     if config_path.exists() {
         let raw = fs::read_to_string(&config_path)?;
-        if is_v3_config(&raw) && !force {
-            // Already v3 config; leave as-is unless forcing a rewrite from naive isn't possible.
-            report.config_migrated = false;
-        } else if is_v3_config(&raw) {
-            report.config_migrated = false;
-        } else {
+        if !is_v3_config(&raw) {
             let migrated = migrate_naive_to_v3(&raw)?;
             fs::write(&config_path, &migrated.toml)?;
             report.config_migrated = true;
@@ -267,97 +180,61 @@ pub fn migrate_residual_dir(residual_dir: &Path, force: bool) -> Result<MigrateR
         report.config_migrated = true;
     }
 
-    // --- terminology → lexicon ---
-    let terms_naive = crate::storage::terminology::load(residual_dir)?;
-    let term_names: Vec<String> = terms_naive.iter().map(|t| t.term.clone()).collect();
-    let lexicon: Vec<LexiconTerm> = terms_naive
-        .iter()
-        .map(|t| LexiconTerm {
-            term: t.term.clone(),
-            definition: t.definition.clone(),
-            domain: t.domain.clone(),
-            aliases: t.related_terms.clone(),
-        })
-        .collect();
-    format::write_lexicon(residual_dir, &lexicon)?;
-    report.lexicon_terms = lexicon.len();
-
-    // --- stressors + purposes → forces + residues ---
-    let stressors = crate::storage::stressors::load(residual_dir)?;
-    let purposes = crate::storage::purposes::load(residual_dir)?;
-    let mut forces = Vec::new();
-    let mut residues = Vec::new();
-    let mut residue_n: u32 = 0;
-    let mut unmapped = Vec::new();
-
-    let mut push_components = |force_id: &str, field: &str| {
-        for token in split_component_field(field) {
-            let (component_id, notes) = match map_component_token(&token) {
-                Some(mapped) => (mapped, format!("migrated from naive token '{token}'")),
-                None => {
-                    unmapped.push(token.clone());
-                    (
-                        token.clone(),
-                        format!("migrated unmapped naive token '{token}'"),
-                    )
-                }
-            };
-            residue_n += 1;
-            residues.push(Residue {
-                id: format!("R-{residue_n:02}"),
-                force_id: force_id.to_string(),
-                component_id,
-                status: "proposed".to_string(),
-                notes,
-            });
+    // --- terminology.csv → lexicon.csv ---
+    let terminology_path = residual_dir.join("terminology.csv");
+    if terminology_path.exists() {
+        #[derive(serde::Deserialize)]
+        struct OldTerm {
+            term: String,
+            definition: String,
+            domain: String,
+            related_terms: String,
         }
-    };
-
-    for s in &stressors {
-        let outcomes = split_outcomes(&s.outcomes, &s.description);
-        let shortname = shortname_for(
-            &s.id,
-            &[&s.outcomes, &s.description, &s.naive_change],
-            &term_names,
-        );
-        forces.push(Force {
-            id: s.id.clone(),
-            kind: ForceKind::Stressor,
-            shortname,
-            naive_change: s.naive_change.clone(),
-            outcomes,
-            description: s.description.clone(),
-            attractor_id: s.attractor_id.clone(),
-        });
-        push_components(&s.id, &s.components_affected);
+        let mut rdr = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .from_path(&terminology_path)?;
+        let mut lexicon: Vec<LexiconTerm> = format::read_lexicon(residual_dir)?;
+        let existing_terms: std::collections::HashSet<String> =
+            lexicon.iter().map(|t| t.term.clone()).collect();
+        let mut added = 0usize;
+        for rec in rdr.deserialize() {
+            let t: OldTerm = rec?;
+            if !existing_terms.contains(&t.term) {
+                lexicon.push(LexiconTerm {
+                    term: t.term,
+                    definition: t.definition,
+                    domain: t.domain,
+                    aliases: t.related_terms,
+                });
+                added += 1;
+            }
+        }
+        if added > 0 {
+            format::write_lexicon(residual_dir, &lexicon)?;
+        }
+        fs::remove_file(&terminology_path)?;
+        report.lexicon_terms = lexicon.len();
     }
 
-    for p in &purposes {
-        let outcomes = split_outcomes(&p.outcomes, &p.description);
-        let shortname = shortname_for(
-            &p.id,
-            &[&p.outcomes, &p.description, &p.feature],
-            &term_names,
-        );
-        forces.push(Force {
-            id: p.id.clone(),
-            kind: ForceKind::Purpose,
-            shortname,
-            naive_change: p.feature.clone(),
-            outcomes,
-            description: p.description.clone(),
-            attractor_id: p.attractor_id.clone(),
-        });
-        push_components(&p.id, &p.components_enabled);
+    // --- forces.csv — delete if present (stranded migration artifact) ---
+    let forces_path = residual_dir.join("forces.csv");
+    if forces_path.exists() {
+        fs::remove_file(&forces_path)?;
     }
 
-    format::write_forces(residual_dir, &forces)?;
-    write_residues(residual_dir, &residues)?;
-    report.forces = forces.len();
-    report.residues = residues.len();
-    unmapped.sort();
-    unmapped.dedup();
-    report.unmapped_components = unmapped;
+    // --- stressors.csv — normalize to current column names ---
+    let stressors_path = residual_dir.join("stressors.csv");
+    if stressors_path.exists() {
+        let stressors = crate::storage::stressors::load(residual_dir)?;
+        crate::storage::stressors::write_all_pub(residual_dir, &stressors)?;
+    }
+
+    // --- purposes.csv — normalize to current column names ---
+    let purposes_path = residual_dir.join("purposes.csv");
+    if purposes_path.exists() {
+        let purposes = crate::storage::purposes::load(residual_dir)?;
+        crate::storage::purposes::write_all_pub(residual_dir, &purposes)?;
+    }
 
     // --- attractors valence → +/- states ---
     let attractors_path = residual_dir.join("attractors.csv");
@@ -367,7 +244,6 @@ pub fn migrate_residual_dir(residual_dir: &Path, force: bool) -> Result<MigrateR
             text.lines().next().unwrap_or("").to_string()
         };
         let v3_attractors = if header.contains("positive_state") {
-            // Already v3 — re-load via format if present; else leave.
             format::read_attractors_v3(residual_dir)?
         } else {
             let naive_rows = load_naive_attractors(&attractors_path)?;
@@ -407,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn migrate_residual_dir_writes_forces_residues_lexicon_and_v3_attractors() {
+    fn migrate_residual_dir_migrates_terminology_and_attractors() {
         let dir = tempdir().unwrap();
         let residual = dir.path().join("residual");
         fs::create_dir_all(&residual).unwrap();
@@ -426,50 +302,23 @@ mod tests {
             "id,name,valence,description,phase_state\nA-01,Clarity,positive,NKP reflects reality,data is coherent\nA-02,Drift,negative,terms go stale,traits fail\n",
         )
         .unwrap();
-        fs::write(
-            residual.join("stressors.csv"),
-            "id,description,naive_change,traits,components_affected,attractor_id\nS-01,skill stub drifts,pin versions,skill residue stays current,skill-install skill-check,A-02\n",
-        )
-        .unwrap();
-        fs::write(
-            residual.join("purposes.csv"),
-            "id,description,feature,traits,components_enabled,attractor_id\nP-01,operator adds purposes,add purpose CLI,operator records a residue against an attractor,cli-add storage-purposes,A-01\n",
-        )
-        .unwrap();
-        fs::write(
-            residual.join("components.csv"),
-            "name,description,status,architecture_set\ncli,hub,proposed,iter4-cli-hub\nskills-installer,install,proposed,iter4-cli-hub\nstructure-analysis-purposes,purposes,proposed,iter4-cli-hub\n",
-        )
-        .unwrap();
 
         let report = migrate_residual_dir(&residual, true).unwrap();
         assert!(report.config_migrated);
-        assert_eq!(report.forces, 2);
-        assert!(report.residues >= 4);
         assert_eq!(report.attractors, 2);
         assert_eq!(report.lexicon_terms, 2);
 
         let cfg = fs::read_to_string(residual.join("config.toml")).unwrap();
         assert!(cfg.contains("format_version = \"v3\""));
-        assert!(cfg.contains("[verification]"));
 
-        let forces = format::read_forces(&residual).unwrap();
-        assert_eq!(forces.len(), 2);
-        assert!(forces.iter().any(|f| f.kind == ForceKind::Stressor));
-        assert!(forces.iter().any(|f| f.kind == ForceKind::Purpose));
-        assert!(forces.iter().all(|f| !f.outcomes.is_empty()));
+        assert!(!residual.join("terminology.csv").exists(), "terminology.csv should be deleted");
 
-        let residues = format::read_residues(&residual).unwrap();
-        assert!(residues.iter().any(|r| r.component_id == "skills-installer"));
-        assert!(residues.iter().any(|r| r.component_id == "cli"));
-        assert!(residues
-            .iter()
-            .any(|r| r.component_id == "structure-analysis-purposes"));
+        let lexicon = format::read_lexicon(&residual).unwrap();
+        assert_eq!(lexicon.len(), 2);
 
         let attractors = format::read_attractors_v3(&residual).unwrap();
         assert_eq!(attractors.len(), 2);
         assert!(!attractors[0].positive_state.is_empty());
-        assert!(!attractors[0].negative_state.is_empty());
         let header = fs::read_to_string(residual.join("attractors.csv"))
             .unwrap()
             .lines()
@@ -478,25 +327,22 @@ mod tests {
             .to_string();
         assert!(header.contains("positive_state"));
         assert!(!header.contains("valence"));
+    }
 
-        let lexicon = format::read_lexicon(&residual).unwrap();
-        assert_eq!(lexicon.len(), 2);
+    #[test]
+    fn migrate_deletes_forces_csv_if_present() {
+        let dir = tempdir().unwrap();
+        let residual = dir.path().join("residual");
+        fs::create_dir_all(&residual).unwrap();
+        fs::write(residual.join("config.toml"), "# residual v3 configuration\n[storage]\nformat_version = \"v3\"\n[verification]\n").unwrap();
+        fs::write(residual.join("forces.csv"), "id,kind,shortname\nS-01,stressor,foo\n").unwrap();
+        let _report = migrate_residual_dir(&residual, true).unwrap();
+        assert!(!residual.join("forces.csv").exists(), "forces.csv should be deleted by migrate");
     }
 
     #[test]
     fn map_component_token_covers_dogfood_aliases() {
-        assert_eq!(
-            map_component_token("skill-install").as_deref(),
-            Some("skills-installer")
-        );
-        assert_eq!(
-            map_component_token("tag-scan").as_deref(),
-            Some("structure-analysis-tag-scan")
-        );
-        assert_eq!(
-            map_component_token("research-study").as_deref(),
-            Some("research-study")
-        );
-        assert_eq!(map_component_token("nope-xyz"), None);
+        // No longer needed — component mapping was part of the removed forces generation.
+        // Kept as a compile-time no-op.
     }
 }

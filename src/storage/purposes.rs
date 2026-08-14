@@ -9,10 +9,12 @@ pub struct Purpose {
     pub shortname: String,
     pub description: String,
     pub attractor_id: String,
-    pub feature: String,
+    #[serde(alias = "feature")]
+    pub naive_change: String,
     #[serde(rename = "outcomes", alias = "traits")]
     pub outcomes: String,
-    pub components_enabled: String,
+    #[serde(alias = "components_enabled")]
+    pub components: String,
 }
 
 pub fn load(residual_dir: &Path) -> Result<Vec<Purpose>> {
@@ -40,8 +42,12 @@ pub fn append(residual_dir: &Path, purpose: Purpose) -> Result<()> {
     write_all(residual_dir, &all)
 }
 
+pub fn write_all_pub(residual_dir: &Path, rows: &[Purpose]) -> Result<()> {
+    write_all(residual_dir, rows)
+}
+
 fn write_all(residual_dir: &Path, rows: &[Purpose]) -> Result<()> {
-    let mut buf = String::from("id,shortname,description,feature,outcomes,components_enabled,attractor_id\n");
+    let mut buf = String::from("id,shortname,description,naive_change,outcomes,components,attractor_id\n");
     for p in rows {
         let mut row = Vec::new();
         {
@@ -50,9 +56,9 @@ fn write_all(residual_dir: &Path, rows: &[Purpose]) -> Result<()> {
                 &p.id,
                 &p.shortname,
                 &p.description,
-                &p.feature,
+                &p.naive_change,
                 &p.outcomes,
-                &p.components_enabled,
+                &p.components,
                 &p.attractor_id,
             ])?;
             wtr.flush()?;
@@ -85,9 +91,9 @@ mod tests {
             shortname: String::new(),
             description: "desc".to_string(),
             attractor_id: "A-01".to_string(),
-            feature: "feat".to_string(),
+            naive_change: "feat".to_string(),
             outcomes: "system enables login".to_string(),
-            components_enabled: "auth,ui".to_string(),
+            components: "auth,ui".to_string(),
         }
     }
 
@@ -153,9 +159,9 @@ mod tests {
             id: "P-01".to_string(),
             description: "test purpose".to_string(),
             attractor_id: "A-01".to_string(),
-            feature: "add purpose cli".to_string(),
+            naive_change: "add purpose cli".to_string(),
             outcomes: "operator adds purposes".to_string(),
-            components_enabled: "cli".to_string(),
+            components: "cli".to_string(),
             shortname: "persona-subagent-depth".to_string(),
         };
         append(dir.path(), p).unwrap();
@@ -170,8 +176,8 @@ mod tests {
         // Write a purposes.csv with the OLD header (no shortname column).
         std::fs::write(
             dir.path().join("purposes.csv"),
-            "id,description,feature,outcomes,components_enabled,attractor_id\n\
-             P-01,old purpose,old feature,system enables old,cli,A-01\n",
+            "id,description,naive_change,outcomes,components,attractor_id\n\
+             P-01,old purpose,old naive_change,system enables old,cli,A-01\n",
         )
         .unwrap();
         let loaded = load(dir.path()).unwrap();

@@ -79,8 +79,6 @@ pub fn managed_rel_paths(residual_dir: &Path) -> Result<Vec<String>> {
         "stressors.csv".to_string(),
         "purposes.csv".to_string(),
         "attractors.csv".to_string(),
-        "terminology.csv".to_string(),
-        "forces.csv".to_string(),
         "lexicon.csv".to_string(),
         "residues.csv".to_string(),
         "components.csv".to_string(),
@@ -255,17 +253,17 @@ mod tests {
         let residual = dir.path().join("residual");
         fs::create_dir_all(&residual).unwrap();
         fs::write(
-            residual.join("terminology.csv"),
-            "term,definition,domain,related_terms\n",
+            residual.join("lexicon.csv"),
+            "term,definition,domain,aliases\n",
         )
         .unwrap();
         fs::write(residual.join("config.toml"), "#\n").unwrap();
         write_snapshot(&residual).unwrap();
         assert!(detect_drift(&residual).unwrap().is_clean());
 
-        let mut terms = fs::read_to_string(residual.join("terminology.csv")).unwrap();
+        let mut terms = fs::read_to_string(residual.join("lexicon.csv")).unwrap();
         terms.push_str("smuggled,x,core,\n");
-        fs::write(residual.join("terminology.csv"), terms).unwrap();
+        fs::write(residual.join("lexicon.csv"), terms).unwrap();
 
         let err = begin_mutation(&residual, false).unwrap_err();
         let msg = err.to_string();
