@@ -92,6 +92,7 @@ pub fn skill_request_phrase(name: &str) -> &'static str {
         "integrate" => "integrate the residual architecture",
         "fmea" => "run FMEA",
         "atam" => "run ATAM",
+        "tdd-implement" => "implement with R/G TDD and subagents",
         _ => "apply this residual skill",
     }
 }
@@ -103,24 +104,24 @@ pub fn passthrough_stub(name: &str) -> String {
         "---\n\
          name: {name}\n\
          passthrough: true\n\
-         description: Residual {name} — begin with residual skill-show / skill-data\n\
+         description: Residual {name} — begin with residual skill show / skill data\n\
          ---\n\
          \n\
          The operator has requested you (agent) {phrase} in this project. \
-         Begin by running `residual skill-show {name}` and `residual skill-data {name}`.\n\
+         Begin by running `residual skill show {name}` and `residual skill data {name}`.\n\
          \n\
          Work Socratically throughout:\n\
-         - **Gather freely**: read commands (`skill-show`, `skill-data`, `list`, `matrix show`, …) without asking.\n\
+         - **Gather freely**: read commands (`skill show`, `skill data`, `list`, `matrix show`, …) without asking.\n\
          - **Act only with approval**: any modification (`residual add …`, file writes) requires explicit operator sign-off.\n\
          \n\
-         `skill-data` reports verify status. Follow its strictness guidance before diving into analysis.\n"
+         `skill data` reports verify status. Follow its strictness guidance before diving into analysis.\n"
     )
 }
 
 pub fn is_passthrough_stub(content: &str) -> bool {
     let mut lines = content.lines();
     if lines.next().map(str::trim) != Some("---") {
-        return content.contains("residual skill-show") && content.contains("residual skill-data");
+        return content.contains("residual skill show") && content.contains("residual skill data");
     }
     for line in lines {
         let line = line.trim();
@@ -133,7 +134,7 @@ pub fn is_passthrough_stub(content: &str) -> bool {
             return true;
         }
     }
-    content.contains("Begin by running `residual skill-show")
+    content.contains("Begin by running `residual skill show")
 }
 
 #[cfg(test)]
@@ -292,8 +293,8 @@ mod tests {
         let stub = passthrough_stub("stressor-walk");
         assert!(is_passthrough_stub(&stub));
         assert!(stub.contains("walk the stressors in this project"));
-        assert!(stub.contains("`residual skill-show stressor-walk`"));
-        assert!(stub.contains("`residual skill-data stressor-walk`"));
+        assert!(stub.contains("`residual skill show stressor-walk`"));
+        assert!(stub.contains("`residual skill data stressor-walk`"));
         assert!(stub.contains("Socratically"));
         assert!(!stub.contains("## Process"));
     }

@@ -9,12 +9,13 @@ pub mod phases;
 pub mod research;
 
 pub const SKILLS: &[(&str, &str, u32)] = &[
-    ("purpose-walk",   include_str!("definitions/purpose_walk.md"),   0),
-    ("naive-draft",    include_str!("definitions/naive_draft.md"),     0),
-    ("stressor-walk",  include_str!("definitions/stressor_walk.md"),   0),
-    ("integrate",      include_str!("definitions/integrate.md"),       0),
-    ("fmea",           include_str!("definitions/fmea.md"),            0),
-    ("atam",           include_str!("definitions/atam.md"),            0),
+    ("purpose-walk",    include_str!("definitions/purpose_walk.md"),    0),
+    ("naive-draft",     include_str!("definitions/naive_draft.md"),     0),
+    ("stressor-walk",   include_str!("definitions/stressor_walk.md"),   0),
+    ("integrate",       include_str!("definitions/integrate.md"),       0),
+    ("fmea",            include_str!("definitions/fmea.md"),            0),
+    ("atam",            include_str!("definitions/atam.md"),            0),
+    ("tdd-implement",   include_str!("definitions/tdd_implement.md"),   0),
 ];
 
 pub fn find(name: &str) -> Option<(&'static str, u32)> {
@@ -35,18 +36,39 @@ pub fn show(name: &str, version_only: bool) -> Result<()> {
 }
 
 pub fn install(name: &str, agent: &str, global: bool) -> Result<()> {
+    if name == "all" {
+        return install_all(agent, global);
+    }
     // Ensure the skill exists in the binary; install a thin passthrough stub (S-07).
     let _ = find(name).with_context(|| format!("skill '{}' not found", name))?;
-    let agent_parsed: install::Agent = agent.parse()?;
-    let path = install::install_path(name, &agent_parsed, global)?;
-    let stub = install::passthrough_stub(name);
-    install::write_skill(&path, &stub)?;
-    println!(
-        "Installed '{}' passthrough stub to {} (full content via `residual skill-show {}`)",
-        name,
-        path.display(),
-        name
-    );
+    install_one(name, agent, global)
+}
+
+fn install_one(name: &str, agent: &str, global: bool) -> Result<()> {
+    let agents: Vec<&str> = if agent == "all" {
+        vec!["claude", "cursor", "copilot", "agnostic"]
+    } else {
+        vec![agent]
+    };
+    for a in agents {
+        let agent_parsed: install::Agent = a.parse()?;
+        let path = install::install_path(name, &agent_parsed, global)?;
+        let stub = install::passthrough_stub(name);
+        install::write_skill(&path, &stub)?;
+        println!(
+            "Installed '{}' → {} (full content via `residual skill show {}`)",
+            name,
+            path.display(),
+            name
+        );
+    }
+    Ok(())
+}
+
+fn install_all(agent: &str, global: bool) -> Result<()> {
+    for (name, _, _) in SKILLS {
+        install_one(name, agent, global)?;
+    }
     Ok(())
 }
 
@@ -167,11 +189,11 @@ mod tests {
     }
 
     #[test]
-    fn all_six_skills_present() {
+    fn all_skills_present() {
         let names: Vec<&str> = SKILLS.iter().map(|(n, _, _)| *n).collect();
-        for expected in &["purpose-walk", "naive-draft", "stressor-walk", "integrate", "fmea", "atam"] {
+        for expected in &["purpose-walk", "naive-draft", "stressor-walk", "integrate", "fmea", "atam", "tdd-implement"] {
             assert!(names.contains(expected), "missing skill: {}", expected);
         }
-        assert_eq!(SKILLS.len(), 6, "expected exactly 6 skills");
+        assert_eq!(SKILLS.len(), 7, "expected exactly 7 skills");
     }
 }

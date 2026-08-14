@@ -8,6 +8,26 @@ Most architecture work tries to predict the future (risk scores, edge cases, “
 
 `residual` operationalizes that method (plus the small expansions above). It stores your walks as structured project data, keeps language consistent, and hands your agent focused skill prompts. Usage is **a-la-carte**: pick the lens you need, mid-session, without a rigid ceremony. Verify enforces structure, not phase order.
 
+## Demos
+
+Selected excerpts from real sessions — the methodology being used on its own codebase.
+
+- [**Naive draft on residual itself**](demos/naive-draft-dogfood.md) — Running the
+  `naive-draft` skill on this repo: surfacing `skill-stub-burden`,
+  `absent-metadata-session`, and `residuals-incongruence` as live stressors from
+  a real architectural walk.
+
+- [**Purpose-walk: product purposes and actor terms**](demos/purpose-walk-product-purposes.md) — A
+  full purpose-walk on this repo: discovering that P-01–P-07 only described tooling
+  plumbing, then adding eight product purposes, eight terms (`operator`,
+  `residual-architecture`, `probability-framing`, and more), and a structural change to
+  attractors (dual positive/negative states instead of valence labels).
+
+- [**Stressor-walk: session lifecycle, write integrity, matrix identity**](demos/stressor-walk-session-lifecycle.md) — Walking
+  four lanes (A–D) on the `residual` codebase itself: surfacing the version-mismatch
+  stressor, the super-strict-mode edge case, the session-lock concept (S-29/P-18), and
+  why a diagonal matrix means free-text component labels are hiding coupling.
+
 ## Learn the method
 
 Start with O’Reilly. The practical + philosophical pair is sold together:
@@ -40,7 +60,7 @@ cargo build --release
 residual init
 
 # Install a skill for your agent, then load project context into the session
-residual skill-install purpose-walk --agent claude
+residual skill install purpose-walk --agent claude
 # Launch the /residual-purpose-walk skill once initialized
 claude
 ```
@@ -77,13 +97,15 @@ Each step writes into `residual/`:
 Skills are agent-agnostic prompt documents embedded in the binary. Install a-la-carte — only the lenses you actually use.
 
 ```bash
-residual skill-list                          # list skills with version + token estimate
-residual skill-show purpose-walk             # print skill definition
-residual skill-install purpose-walk \
+residual skill list                          # list skills with version + token estimate
+residual skill show purpose-walk             # print skill definition
+residual skill install purpose-walk \
   --agent claude                             # install for that agent
-residual skill-check purpose-walk \
+residual skill install all --agent claude    # install every skill for that agent
+residual skill install all --agent all       # install every skill for every agent
+residual skill check-install purpose-walk \
   --agent claude                             # verify installed version matches binary
-residual skill-data purpose-walk             # print current project context for this skill
+residual skill data purpose-walk             # print current project context for this skill
 ```
 
 Supported agents: `claude`, `cursor`, `copilot`, `agnostic`

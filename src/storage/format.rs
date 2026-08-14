@@ -175,7 +175,9 @@ fn render_residues_matrix(residues: &[Residue]) -> String {
     }
     buf.push('\n');
     for force_id in cells.keys() {
-        let force_cells = cells.get(force_id).unwrap();
+        let force_cells = cells
+            .get(force_id)
+            .expect("force_id comes from cells.keys()");
         let mut row = vec![force_id.as_str()];
         let mut cell_values = Vec::new();
         for c in &components {
@@ -194,10 +196,13 @@ fn render_residues_matrix(residues: &[Residue]) -> String {
             let mut wtr = csv::WriterBuilder::new()
                 .has_headers(false)
                 .from_writer(&mut out);
-            wtr.write_record(&row).unwrap();
-            wtr.flush().unwrap();
+            wtr.write_record(&row)
+                .expect("csv write to Vec<u8> is infallible");
+            wtr.flush().expect("csv flush to Vec<u8> is infallible");
         }
-        buf.push_str(std::str::from_utf8(&out).unwrap());
+        buf.push_str(
+            std::str::from_utf8(&out).expect("csv output is always valid UTF-8"),
+        );
     }
     buf
 }

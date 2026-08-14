@@ -62,31 +62,10 @@ pub enum Command {
         #[command(subcommand)]
         op: MatrixOp,
     },
-    SkillShow {
-        name: String,
-        #[arg(long)]
-        version: bool,
-    },
-    SkillInstall {
-        name: String,
-        #[arg(long, default_value = "agnostic")]
-        agent: String,
-        #[arg(long)]
-        global: bool,
-    },
-    SkillData {
-        name: String,
-    },
-    SkillList,
-    /// Alias for `skill check-install`.
-    SkillCheck {
-        name: String,
-        #[arg(long, default_value = "agnostic")]
-        agent: String,
-    },
     /// Phase + installer skills.
     ///
     /// Process: a-la-carte — only the invoked subcommand carries ceremony.
+    /// Use `skill install all` or `--agent all` to batch-install.
     Skill {
         #[command(subcommand)]
         op: SkillCommand,
@@ -131,8 +110,13 @@ pub enum SkillCommand {
     /// List phase skills (stub + full) with token estimates.
     List,
     /// Install a phase skill into an agent directory.
+    ///
+    /// Pass `all` as the skill name to install every skill.
+    /// Pass `--agent all` to install for every supported agent.
     Install {
+        /// Skill name, or `all` to install every skill.
         name: String,
+        /// Agent name (`claude`, `cursor`, `copilot`, `agnostic`), or `all`.
         #[arg(long, default_value = "agnostic")]
         agent: String,
         #[arg(long)]
@@ -364,13 +348,6 @@ pub fn run() -> Result<()> {
             }
         },
         Command::Matrix { op } => crate::structure::analysis::nkp::run(&cfg, op),
-        Command::SkillShow { name, version } => crate::skills::phases::show(&name, version),
-        Command::SkillInstall { name, agent, global } => {
-            crate::skills::installer::install(&name, &agent, global)
-        }
-        Command::SkillData { name } => crate::skills::phases::data(&cfg, &name),
-        Command::SkillList => crate::skills::phases::list_all(),
-        Command::SkillCheck { name, agent } => crate::skills::installer::check(&name, &agent),
         Command::Skill { op } => match op {
             SkillCommand::Show { name, version } => crate::skills::phases::show(&name, version),
             SkillCommand::Data { name } => crate::skills::phases::data(&cfg, &name),

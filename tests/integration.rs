@@ -192,8 +192,8 @@ fn verify_links_catches_dangling_attractor() {
 fn skill_data_naive_draft_contains_purposes_section() {
     let dir = TempDir::new().unwrap();
     init(&dir);
-    let out = run(&dir, &["skill-data", "naive-draft"]);
-    assert!(out.status.success(), "skill-data failed: {}", String::from_utf8_lossy(&out.stderr));
+    let out = run(&dir, &["skill", "data", "naive-draft"]);
+    assert!(out.status.success(), "skill data failed: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("## Purposes"), "expected '## Purposes' section in naive-draft context, got: {}", stdout);
 }
@@ -202,22 +202,22 @@ fn skill_data_naive_draft_contains_purposes_section() {
 fn skill_data_naive_draft_excludes_stressors_section() {
     let dir = TempDir::new().unwrap();
     init(&dir);
-    let out = run(&dir, &["skill-data", "naive-draft"]);
+    let out = run(&dir, &["skill", "data", "naive-draft"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(!stdout.contains("## Stressors"), "naive-draft context should not include Stressors, got: {}", stdout);
 }
 
 #[test]
-fn skill_list_shows_all_six_skills() {
+fn skill_list_shows_all_skills() {
     let dir = TempDir::new().unwrap();
     let out = Command::new(bin())
-        .args(["skill-list"])
+        .args(["skill", "list"])
         .current_dir(dir.path())
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    for name in &["purpose-walk", "naive-draft", "stressor-walk", "integrate", "fmea", "atam"] {
-        assert!(stdout.contains(name), "expected '{}' in skill-list output, got: {}", name, stdout);
+    for name in &["purpose-walk", "naive-draft", "stressor-walk", "integrate", "fmea", "atam", "tdd-implement"] {
+        assert!(stdout.contains(name), "expected '{}' in skill list output, got: {}", name, stdout);
     }
 }
 

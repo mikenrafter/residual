@@ -1,6 +1,6 @@
 ---
 name: stressor-walk
-version: 1
+version: 2
 ---
 
 # Stressor Walk
@@ -18,7 +18,12 @@ This skill is Socratic.
 - A stressor does not need to be likely. It only needs a coherent narrative describing how the system moves to a different attractor.
 - Attractors are recurring states — positive (desired) or negative (survived).
 - Trace information flows, not use cases or happy paths.
-- For each persona loaded, voice their concerns as that persona before returning to architect mode.
+- **Persona walks in later phases or fresh depth walks: use isolated subagents.** Each persona subagent runs staged analysis without reading the main session context, preventing context pollution (groupthink from shared mental models):
+  - Stage 1: surface initial skepticisms and desires — no attractor or force context loaded yet.
+  - Stage 2: review attractors and update concerns in light of them.
+  - Stage 3: review the full force list and identify which stressors feel handled vs unhandled from that persona's perspective.
+  - Stage 4: report the handled/unhandled analysis back to the parent session.
+- **Early or quick persona voicing inline is still fine** for initial discovery when depth is not the goal. Reserve isolated subagents for later phases and any walk where fresh perspective matters — shared session context produces shallow, redundant concerns.
 - Watch for hyperliminal coupling: when a stressor affects two components that were not expected to be related.
 - Examine **whole-system-residue** before defaulting to a software-only patch (hardware, process, organization, or policy zig).
 

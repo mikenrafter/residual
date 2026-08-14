@@ -41,9 +41,9 @@ fn skills_and_skill_data_remind_whole_system() {
     let dir = TempDir::new().unwrap();
     assert!(run(&dir, &["init"]).status.success());
     for skill in ["stressor-walk", "fmea", "integrate"] {
-        let show = String::from_utf8_lossy(&run(&dir, &["skill-show", skill]).stdout).to_lowercase();
-        assert!(show.contains("whole-system"), "{skill} skill-show");
-        let out = run(&dir, &["skill-data", skill]);
+        let show = String::from_utf8_lossy(&run(&dir, &["skill", "show", skill]).stdout).to_lowercase();
+        assert!(show.contains("whole-system"), "{skill} skill show");
+        let out = run(&dir, &["skill", "data", skill]);
         let data = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)).to_lowercase();
         assert!(data.contains("whole-system"), "{skill} skill-data");
     }

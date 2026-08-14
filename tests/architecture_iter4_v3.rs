@@ -178,12 +178,6 @@ fn installer_check_install_subcommand() {
         "help should mention check-install, got: {}",
         nested_out
     );
-    let alias = run(&dir, &["skill-check", "--help"]);
-    assert!(
-        alias.status.success(),
-        "skill-check alias should remain: {}",
-        String::from_utf8_lossy(&alias.stderr)
-    );
 }
 
 #[test]
