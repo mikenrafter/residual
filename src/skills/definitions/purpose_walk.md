@@ -1,6 +1,6 @@
 ---
 name: purpose-walk
-version: 1
+version: 2
 ---
 
 # Purpose Walk
@@ -13,6 +13,9 @@ Socratically define the project's purposes until every purpose has feature-level
 This skill is Socratic.
 - **Gather freely**: read commands (`skill data`, `list`, etc.) run without asking.
 - **Act only with approval**: any modification — `residual add purpose`, `add term`, `add attractor` — requires explicit user sign-off before executing.
+
+## Bootstrap Guard
+Check `residual skill data purpose-walk` for a **Bootstrap Required** section. If 0 attractors exist, add one before defining purposes — purposes are contracts that keep the system in its attractor; without an attractor the contracts have no target. Propose the attractor to the user and get approval before `residual add attractor`, then return here to build purposes from its positive state.
 
 ## Rules
 - No probabilities. No risk framing.

@@ -101,6 +101,9 @@ pub fn build(cfg: &Config, skill_name: &str) -> Result<String> {
 
     let mut out = String::new();
     out.push_str(&format!("# Residual Context — {}\n\n", skill_name));
+    if let Some(bootstrap) = bootstrap_status_section(attractors.len(), stressors.len(), purposes.len()) {
+        out.push_str(&bootstrap);
+    }
     out.push_str(&verify_status_section(cfg)?);
     out.push_str(
         "## Fluent capture\n\
@@ -196,6 +199,53 @@ pub fn build(cfg: &Config, skill_name: &str) -> Result<String> {
     }
 
     Ok(out)
+}
+
+fn bootstrap_status_section(n_attractors: usize, n_stressors: usize, n_purposes: usize) -> Option<String> {
+    let mut issues: Vec<String> = Vec::new();
+    if n_attractors == 0 { issues.push("0 attractors".to_string()); }
+    if n_stressors == 0  { issues.push("0 stressors".to_string()); }
+    if n_purposes == 0   { issues.push("0 purposes".to_string()); }
+    if n_attractors > n_stressors && n_stressors > 0 {
+        issues.push(format!(
+            "{n_attractors} attractor(s) but only {n_stressors} stressor(s) — stress space underexplored"
+        ));
+    }
+
+    if issues.is_empty() {
+        return None;
+    }
+
+    let mut out = String::from("## Bootstrap Required\n\n");
+    out.push_str("Ledger is uninitialized or underspecified:\n");
+    for issue in &issues {
+        out.push_str(&format!("- {issue}\n"));
+    }
+    out.push_str(
+        "\n**Do not begin skill analysis until the three primitives exist.**\n\n\
+         **Attractor** — A recurring *system state*, not a mission statement. \
+         Describe two sides of the same coin: what the system does when healthy (`positive_state`) \
+         and what it looks like when broken (`negative_state`). \
+         One attractor per stable behavioral mode — do not bundle multiple concerns. \
+         If the description lists distinct goals joined by \"and\", it is probably several attractors.\n\n\
+         **Stressors** — Forces that push the system from the positive attractor toward the negative. \
+         Coherence matters, not likelihood. \
+         Archaeological source: `git log --stat --oneline | head -40` reveals wide-spanning commits \
+         (component coupling the original architecture was naive to) and recurring churn on the same files \
+         (rework the design did not anticipate). These stressors are already in the history.\n\n\
+         **Purposes** — Behavioral contracts that must hold for the attractor to remain stable. \
+         Each purpose is a feature or behavior that, if absent or broken, moves the system toward its \
+         negative attractor state.\n\n\
+         ### Bootstrapping steps (Socratic — propose each for approval before `residual add`)\n\n\
+         1. Ask the user to describe the core system capability. Separate the healthy state from the \
+         broken state — that is the attractor. Do not write a mission statement.\n\
+         2. Run `git log --stat --oneline | head -40` to surface architectural complexity signals.\n\
+         3. Present the proposed attractor (positive + negative state) for user approval before \
+         `residual add attractor`.\n\
+         4. Elicit stressors from archaeological evidence and user discussion; propose each before recording.\n\
+         5. Derive purposes from the attractor positive state; propose each before recording.\n\n",
+    );
+    Some(out)
 }
 
 /// Socratic verify guidance: strict → fix with operator first; else note and proceed.
@@ -323,6 +373,82 @@ mod tests {
             "expected N to reflect component+stressor count (2 or 3), got context: {}",
             &out[out.find("NKP").unwrap_or(0)..out.len().min(out.find("NKP").unwrap_or(0) + 80)]
         );
+    }
+
+    #[test]
+    fn bootstrap_required_when_ledger_empty() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_for(dir.path());
+        let out = build(&cfg, "naive-draft").unwrap();
+        assert!(out.contains("## Bootstrap Required"), "empty ledger must emit bootstrap section");
+        assert!(out.contains("0 purposes"), "must flag missing purposes");
+    }
+
+    #[test]
+    fn bootstrap_absent_when_ledger_populated() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_for(dir.path());
+        crate::storage::attractors::append(
+            dir.path(),
+            crate::structure::analysis::attractors::Attractor::new(
+                "A-01", "healthy system", "system runs", "system down",
+            ),
+        ).unwrap();
+        stressors::append(
+            dir.path(),
+            stressors::Stressor {
+                id: "S-01".into(),
+                shortname: "load".into(),
+                description: "high load".into(),
+                attractor_id: "A-01".into(),
+                naive_change: "none".into(),
+                outcomes: "system handles load".into(),
+                components: "api".into(),
+            },
+        ).unwrap();
+        crate::storage::purposes::append(
+            dir.path(),
+            crate::storage::purposes::Purpose {
+                id: "P-01".into(),
+                shortname: "serve".into(),
+                description: "serve requests".into(),
+                attractor_id: "A-01".into(),
+                naive_change: "request handling".into(),
+                outcomes: "system serves requests".into(),
+                components: "api".into(),
+            },
+        ).unwrap();
+        let out = build(&cfg, "naive-draft").unwrap();
+        assert!(!out.contains("## Bootstrap Required"), "populated ledger must not emit bootstrap section");
+    }
+
+    #[test]
+    fn bootstrap_present_when_attractors_exceed_stressors() {
+        let dir = tempdir().unwrap();
+        let cfg = cfg_for(dir.path());
+        for i in 1..=2 {
+            crate::storage::attractors::append(
+                dir.path(),
+                crate::structure::analysis::attractors::Attractor::new(
+                    format!("A-0{i}"), format!("state {i}"), "up", "down",
+                ),
+            ).unwrap();
+        }
+        stressors::append(
+            dir.path(),
+            stressors::Stressor {
+                id: "S-01".into(),
+                shortname: "load".into(),
+                description: "load".into(),
+                attractor_id: "A-01".into(),
+                naive_change: "none".into(),
+                outcomes: "system handles load".into(),
+                components: "api".into(),
+            },
+        ).unwrap();
+        let out = build(&cfg, "integrate").unwrap();
+        assert!(out.contains("## Bootstrap Required"), "attractors > stressors must emit bootstrap");
+        assert!(out.contains("underexplored"), "must flag underexplored stress space");
     }
 
     #[test]

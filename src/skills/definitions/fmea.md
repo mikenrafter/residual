@@ -1,6 +1,6 @@
 ---
 name: fmea
-version: 1
+version: 2
 ---
 
 # FMEA — Failure Mode and Effects Analysis
@@ -13,6 +13,9 @@ Walk each component through its failure modes once the architecture is stable. C
 This skill is Socratic.
 - **Gather freely**: read commands (`skill data`, `matrix show`, etc.) run without asking.
 - **Act only with approval**: any modification — recording findings to an iteration, `residual add stressor` — requires explicit user sign-off before executing.
+
+## Bootstrap Guard
+Check `residual skill data fmea` for a **Bootstrap Required** section. If present, **halt** — FMEA walks components through failure modes relative to attractors; without a populated ledger there are no components to walk and no attractors to assess impact against. Follow the bootstrapping steps before proceeding.
 
 ## Process
 For each component in the residual architecture:

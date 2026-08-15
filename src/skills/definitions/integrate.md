@@ -1,6 +1,6 @@
 ---
 name: integrate
-version: 1
+version: 2
 ---
 
 # Integrate Analysis
@@ -13,6 +13,9 @@ Use the NKP matrix to derive the residual architecture. Apply fusion, fission, a
 This skill is Socratic.
 - **Gather freely**: read commands (`skill data`, `matrix show`, `matrix fusion`, `matrix fission`, `matrix criticality`) run without asking.
 - **Act only with approval**: any modification — `residual add stressor`, `add iteration`, `matrix ri` — requires explicit user sign-off before executing.
+
+## Bootstrap Guard
+Check `residual skill data integrate` for a **Bootstrap Required** section. If present, **halt** — the NKP matrix is computed from stressors and components; an empty or underspecified ledger produces a degenerate matrix with nothing to fuse, fission, or compare. Follow the bootstrapping steps in the skill data output before running any matrix commands.
 
 ## Process
 1. Run `residual matrix show` — identify high-coupling components and hyperliminal pairs.

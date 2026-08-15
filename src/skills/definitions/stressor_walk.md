@@ -1,6 +1,6 @@
 ---
 name: stressor-walk
-version: 2
+version: 3
 ---
 
 # Stressor Walk
@@ -13,6 +13,9 @@ Socratically discover stressors and attractors by simulating the business enviro
 This skill is Socratic.
 - **Gather freely**: read commands (`skill data`, `list`, `matrix show`, etc.) run without asking.
 - **Act only with approval**: any modification — `residual add stressor`, `add attractor`, `add term`, `add persona` — requires explicit user sign-off before executing.
+
+## Bootstrap Guard
+Check `residual skill data stressor-walk` for a **Bootstrap Required** section. If 0 attractors exist, elicit one before recording any stressors — a stressor without an attractor is a complaint with no frame. If the ledger is otherwise empty, follow the full bootstrapping steps in the skill data output. This skill can build the ledger from scratch; bootstrap is not a blocker, but the attractor must come first.
 
 ## Rules
 - A stressor does not need to be likely. It only needs a coherent narrative describing how the system moves to a different attractor.

@@ -1,6 +1,6 @@
 ---
 name: naive-draft
-version: 1
+version: 2
 ---
 
 # Naive Draft
@@ -21,9 +21,18 @@ This skill is Socratic.
 - Do not import Clean Architecture, onion, or hexagonal patterns unless the user explicitly requests them.
 
 ## Phases
-1. **Discuss**: Explore the domain with the user. Surface candidate vertical slices and module boundaries. Present your analysis and invite correction. Do not proceed until the user confirms the slice boundaries.
-2. **Agree**: Draft the iteration notes and show them to the user. Wait for explicit approval before running `residual add iteration`.
-3. **Scaffold**: Propose each failing test before writing it. After the user agrees on the test suite shape, write tests first, then minimal implementation to green.
+
+### Phase 0 — Bootstrap guard
+Check `residual skill data naive-draft` for a **Bootstrap Required** section. If present, **halt here** — do not surface slices. Purposes are the anchors for every slice; slicing against an empty ledger produces architecture-by-gut. Follow the bootstrapping steps in the skill data output (attractor → stressors → purposes) and return to Phase 1 only after the user approves at least one attractor, one stressor, and one purpose.
+
+### Phase 1 — Discuss
+Explore the domain with the user. Surface candidate vertical slices and module boundaries **anchored to purposes** — each slice must map to at least one purpose. Present your analysis and invite correction. Do not proceed until the user confirms the slice boundaries.
+
+### Phase 2 — Agree
+Draft the iteration notes and show them to the user. Wait for explicit approval before running `residual add iteration`.
+
+### Phase 3 — Scaffold
+Propose each failing test before writing it. After the user agrees on the test suite shape, write tests first, then minimal implementation to green.
 
 ## Before Starting
 Run: `residual skill data naive-draft`

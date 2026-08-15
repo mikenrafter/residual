@@ -1,6 +1,6 @@
 ---
 name: atam
-version: 1
+version: 2
 ---
 
 # ATAM — Architecture Trade-off Analysis
@@ -13,6 +13,9 @@ Surface political, cost, and business stakeholder concerns against the candidate
 This skill is Socratic.
 - **Gather freely**: read commands (`skill data`, `list attractors`, `list personas`, etc.) run without asking.
 - **Act only with approval**: any modification — recording findings to an iteration, `residual add persona` — requires explicit user sign-off before executing.
+
+## Bootstrap Guard
+Check `residual skill data atam` for a **Bootstrap Required** section. If present, **halt** — ATAM voices personas against candidate architectures relative to attractors; without attractors, quality attribute scenarios have no stability target to trade against. Follow the bootstrapping steps before proceeding.
 
 ## Process
 1. Load all personas. Voice each persona's concerns about the current architecture.
