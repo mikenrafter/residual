@@ -6,4 +6,4 @@ target/
 .worktrees/
 .niri-workspace.yaml
 residual/.verify-stamp
-result/
+result
