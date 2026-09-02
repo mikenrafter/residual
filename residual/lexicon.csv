@@ -34,5 +34,3 @@ outsider,"an actor outside the residuality practice — audience, gatekeeper, ev
 defense-pitch,"a practiced communication artifact, refined through defense-strategy brainstorming and defense-progress history, used to advance residuality concerns in team or organizational communication",,outsider
 git-sidecar,an orphan git branch holding the full residual/ metadata tree decoupled from the working branch where code lives,,storage
 stealth-mode,config hosted one directory above the repo root so working-branch commits never touch residual configuration,,git-sidecar
-branch-mode-smoke-test,temporary term added to smoke-test the branch mode feature; will be reverted,,
-hand-edit-marker,added by manual branch-edit test,test,none

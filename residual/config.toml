@@ -1,0 +1,19 @@
+# residual v4 configuration
+format_version = "v4"
+
+[storage]
+change_detection = true
+git_sidecar_enabled = true
+git_sidecar_branch = "residual/metadata"
+git_sidecar_remote = "origin"
+config_host = "repo"
+
+[storage.git_sidecar]
+working_tree_policy = "warn"
+
+[verification]
+super_strict = true
+token_warn = 1000
+commit_msg_enforce = true
+walk_reminder_enabled = true
+walk_reminder_interval_days = 30
