@@ -12,7 +12,7 @@ verification-git-hook,Pre-commit hook install under Verification,actual,iter4-cl
 structure,EXTERNAL filter/sort/group API (default group=attractor),actual,iter4-cli-hub
 structure-analysis,NKP only — NOT ATAM/FMEA,actual,iter4-cli-hub
 structure-analysis-tag-scan,Tag scanning as suggestions not enforcement,actual,iter4-cli-hub
-structure-analysis-outsiders,Outsider audience framing and translated artifact routing,proposed,iter4-cli-hub
+structure-analysis-outsiders,Outsider audience framing and translated artifact routing,actual,iter4-cli-hub
 structure-analysis-force,Force = 1/2 of residue (purpose XOR stressor); naive_change + outcomes,actual,iter4-cli-hub
 structure-analysis-purposes,Purpose as Force specialization; naive_change + outcomes NOT traits,actual,iter4-cli-hub
 structure-analysis-stressors,Stressor as Force specialization; naive_change + outcomes NOT traits,actual,iter4-cli-hub
