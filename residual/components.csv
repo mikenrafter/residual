@@ -32,5 +32,5 @@ skills-defense-walk,Skill lens for rehearsing outsider-facing communication usin
 structure-defense-strategy,Brainstorming workspace for framing residuality concerns before they are pitched to outsiders,actual,iter4-cli-hub
 structure-defense-progress,Recorded outsider communications — wins losses and post-mortems,actual,iter4-cli-hub
 structure-defense-analysis,Meta-stressor/meta-attractor/meta-purpose ledger for residuality-inside-org friction,actual,iter4-cli-hub
-structure-defense-pitches,Practiced communication artifacts advancing residuality concerns in team/org communication,proposed,iter4-cli-hub
+structure-defense-pitches,Practiced communication artifacts advancing residuality concerns in team/org communication,actual,iter4-cli-hub
 storage-branch-sync,"Per-branch git-sidecar naming pattern, branch edit/save/merge commands, and post-commit mirroring of working-branch commits into the matching metadata branch",proposed,iter4-cli-hub
