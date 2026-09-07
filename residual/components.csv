@@ -28,7 +28,7 @@ storage-migration,Naive→v3; v3→v4; inline force components→residues.csv; i
 storage-git-sidecar,Orphan git branch holding full residual/ tree; parent-dir config (stealth-mode); verify resolves sidecar tip,actual,iter4-cli-hub
 storage-format,CSV round-trip for structure.analysis.* and structure.definition.*,actual,iter4-cli-hub
 skills-defense-personas,Simulated outsider persona voices rehearsing how residuality artifacts/pitches will land; scoped apart from skills-walk-personas,actual,iter4-cli-hub
-skills-defense-walk,Skill lens for rehearsing outsider-facing communication using the defense ledger,proposed,iter4-cli-hub
+skills-defense-walk,Skill lens for rehearsing outsider-facing communication using the defense ledger,actual,iter4-cli-hub
 structure-defense-strategy,Brainstorming workspace for framing residuality concerns before they are pitched to outsiders,proposed,iter4-cli-hub
 structure-defense-progress,Recorded outsider communications — wins losses and post-mortems,proposed,iter4-cli-hub
 structure-defense-analysis,Meta-stressor/meta-attractor/meta-purpose ledger for residuality-inside-org friction,proposed,iter4-cli-hub
