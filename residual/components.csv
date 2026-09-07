@@ -6,7 +6,7 @@ skills-walk-personas,Save/retrieve personas for stressor-walk. Verification enfo
 skills-research,Save/retrieve walk+persona research notes. Distinct from research-study,actual,iter4-cli-hub
 skills-phases,Owns skill-list skill-show skill-data and ATAM+FMEA prose,actual,iter4-cli-hub
 skills-installer,skill-install and skill check-install (skill-check alias OK),actual,iter4-cli-hub
-skills-guru,"Portable before/after/faq guidance snippets per topic (attractors, stressors, purposes, personas); phase skills call into it for recurring reminders instead of re-deriving them inline — keeps skills-phases' initial load lean",proposed,iter4-cli-hub
+skills-guru,"Portable before/after/faq guidance snippets per topic (attractors, stressors, purposes, personas); phase skills call into it for recurring reminders instead of re-deriving them inline — keeps skills-phases' initial load lean",actual,iter4-cli-hub
 verification,Criticality link+lexicon continuity one-way tags personas adequacy; reads policy from storage-config,actual,iter4-cli-hub
 verification-git-hook,Pre-commit hook install under Verification,actual,iter4-cli-hub
 structure,EXTERNAL filter/sort/group API (default group=attractor),actual,iter4-cli-hub
