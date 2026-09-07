@@ -1,8 +1,8 @@
 ---
 date: "2026-09-02"
 branch: tdd-implement/defense-ledger-proposed-components
-status: ready-for-red-agent
-notes: "R/G TDD plan — colocated tests, git sidecar, defense ledger, guru, walk reminders"
+status: complete
+notes: "R/G TDD complete — defense ledger, proposed→actual hygiene, walk reminders (persist+deferred). Next: A-19 landscape UX."
 ---
 
 # TDD Implement — Defense Ledger + Proposed Components
@@ -149,7 +149,7 @@ CLI: `residual migrate --sidecar`, `residual init --sidecar`
 
 ```bash
 residual verify all || exit 1
-residual verify walk-reminder --staged   # Phase 5; no-op until implemented
+residual verify walk-reminder --staged   # Phase 5; non-blocking (exit 0), prints when overdue
 ```
 
 ### CLI additions
@@ -280,16 +280,16 @@ Reminder copy from guru topic `walk-reminder`. Prompts for **both** purpose-walk
 
 ```
 ✅  0. Baseline commit + plan metadata commit
-⬜  1. Red agent — stub files + colocated failing tests (Phases 0–5)
-⬜  2. Parent red gate — failures match intended contract gaps
-⬜  3. Green — Phase 0
-⬜  4. Green — Phase 1 (+ migration + parent config)
-⬜  5. Green — Phase 2 (+ meta isolation)
-⬜  6. Green — Phase 3 (+ defense-walk)
-⬜  7. Green — Phase 4 (guru)
-⬜  8. Green — Phase 5 (walk reminders)
-⬜  9. Green — Phase 6 (hygiene)
-⬜ 10. Final verification
+✅  1. Red agent — stub files + colocated failing tests (Phases 0–5)
+✅  2. Parent red gate — failures match intended contract gaps
+✅  3. Green — Phase 0
+✅  4. Green — Phase 1 (+ migration + parent config)
+✅  5. Green — Phase 2 (+ meta isolation)
+✅  6. Green — Phase 3 (+ defense-walk)
+✅  7. Green — Phase 4 (guru)
+✅  8. Green — Phase 5 (walk reminders — hook + persist + deferred)
+✅  9. Green — Phase 6 (hygiene)
+✅ 10. Final verification
 ```
 
 ### Subagent launch template
