@@ -25,7 +25,7 @@ storage,Read write and mutate (not append-only),actual,iter4-cli-hub
 storage-config,THE config (v4 TOML): format_version + app + verify policy keys (super_strict token_warn),actual,iter4-cli-hub
 storage-sessions,Locks change-detection hash; --force or diff on drift,actual,iter4-cli-hub
 storage-migration,Naive→v3; v3→v4; inline force components→residues.csv; inline→git-sidecar branch lift,actual,iter4-cli-hub
-storage-git-sidecar,Orphan git branch holding full residual/ tree; parent-dir config (stealth-mode); verify resolves sidecar tip,proposed,iter4-cli-hub
+storage-git-sidecar,Orphan git branch holding full residual/ tree; parent-dir config (stealth-mode); verify resolves sidecar tip,actual,iter4-cli-hub
 storage-format,CSV round-trip for structure.analysis.* and structure.definition.*,actual,iter4-cli-hub
 skills-defense-personas,Simulated outsider persona voices rehearsing how residuality artifacts/pitches will land; scoped apart from skills-walk-personas,proposed,iter4-cli-hub
 skills-defense-walk,Skill lens for rehearsing outsider-facing communication using the defense ledger,proposed,iter4-cli-hub
