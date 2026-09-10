@@ -35,3 +35,4 @@ defense-pitch,"a practiced communication artifact, refined through defense-strat
 git-sidecar,an orphan git branch holding the full residual/ metadata tree decoupled from the working branch where code lives,,storage
 stealth-mode,config hosted one directory above the repo root so working-branch commits never touch residual configuration,,git-sidecar
 human-actor,"A human individual who acts as operator or is otherwise party to a force narrative; contrasted with agent, a model-backed actor.",tool,operator agent actor
+agent-actor,An actor backed by digital intelligence.,tool,operator skill hook human-actor
