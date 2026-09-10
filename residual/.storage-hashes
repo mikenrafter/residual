@@ -1,6 +1,6 @@
 # storage integrity change-detection snapshot
 .walk-review.toml=0738cb352d4ee712
-attractors.csv=dae83254a5768e06
+attractors.csv=af8b59259b02c418
 components.csv=f0aa10bfb0febede
 config.toml=missing
 iterations/1.md=dcf32757637f4854
