@@ -13,7 +13,7 @@ naive-architecture,the first-pass architecture produced before stressor analysis
 skill,a versioned agent-agnostic prompt document encoding a specific methodology step in the residuality workflow,tool,purpose-walk naive-draft stressor-walk integrate fmea atam
 residual-architecture,architecture that has considered many stressors and purposes; the post-exposure architecture under evaluation; contrasted with naive-architecture,architecture,residue naive-architecture criticality
 resilient-architecture,a residual-architecture that has reached criticality,architecture,residual-architecture criticality
-operator,human-actor or agent that runs residual commands and skill sessions; may work alone or with additional outside input; contrasted with prospect,tool,persona prospect skill user walk human-actor agent
+operator,human-actor or agent-actor that runs residual commands and skill sessions; may work alone or with additional outside input; contrasted with prospect,tool,persona prospect skill user walk human-actor agent-actor
 whole-system-residue,"a residue whose surviving change may land outside the software boundary — hardware, process, organization, or policy — when that change answers the stressor better than a software-only patch",architecture,residue stressor naive-architecture
 negative-residual,a residue whose content is a stressor; the negative side of residual analysis,nkp,residue stressor positive-residual
 positive-residual,a residue whose content is a purpose; the positive side of residual analysis,nkp,residue purpose negative-residual
@@ -24,7 +24,7 @@ user,a person or system that uses the application or service being architected; 
 ergodic boundary,"The boundary, defined per architecture iteration, between the ergodic core under architectural consideration and the non-ergodic torrent of the hyperliminal; force descriptions primarily beyond it concern architecture, while descriptions within it concern component dynamics.",,
 component dynamic,Behavior explained within an ergodic boundary by the operation and interaction of known components rather than by a force originating primarily beyond that boundary.,,
 architecture iteration,"A time-bounded candidate arrangement of components and boundaries against which forces, attractors, and residues are interpreted.",,
-actor,A human-actor or agent whose behavior matters to a force narrative; used when the distinction between them is irrelevant.,,human-actor agent
+actor,A definable entity whose behavior or properties are relevant to residual analysis.,,human-actor agent-actor
 meta-stressor,"a stressor whose target is the practice of residuality within an organization rather than the project under architecture — concerning management decisions, teammate bias, or other organizational friction against practicing residuality itself",,stressor
 meta-attractor,"a recurring state that meta-stressors push the residuality practice toward or away from, scoped to sustaining the practice itself rather than the project being architected",,attractor
 meta-purpose,"a behavioral contract for a meta-attractor; canonically, practicing residuality theory in a way that helps both the individual operator and the organization",,purpose
@@ -34,5 +34,5 @@ outsider,"an actor outside the residuality practice — audience, gatekeeper, ev
 defense-pitch,"a practiced communication artifact, refined through defense-strategy brainstorming and defense-progress history, used to advance residuality concerns in team or organizational communication",,outsider
 git-sidecar,an orphan git branch holding the full residual/ metadata tree decoupled from the working branch where code lives,,storage
 stealth-mode,config hosted one directory above the repo root so working-branch commits never touch residual configuration,,git-sidecar
-human-actor,"A human individual who acts as operator or is otherwise party to a force narrative; contrasted with agent, a model-backed actor.",tool,operator agent actor
+human-actor,An actor backed by human intelligence.,tool,operator agent-actor actor
 agent-actor,An actor backed by digital intelligence.,tool,operator skill hook human-actor
