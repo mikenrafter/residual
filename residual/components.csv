@@ -34,3 +34,4 @@ structure-defense-progress,Recorded outsider communications — wins losses and 
 structure-defense-analysis,Meta-stressor/meta-attractor/meta-purpose ledger for residuality-inside-org friction,actual,iter4-cli-hub
 structure-defense-pitches,Practiced communication artifacts advancing residuality concerns in team/org communication,actual,iter4-cli-hub
 storage-branch-sync,"Per-branch git-sidecar naming pattern, branch edit/save/merge commands, and post-commit mirroring of working-branch commits into the matching metadata branch",actual,iter4-cli-hub
+skill-hooks,"Adapter boundary for agent lifecycle and periodic-turn hooks; detects capabilities, maps events, deduplicates prompts, and calls skills-guru.",proposed,iter5-agent-hooks
