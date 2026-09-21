@@ -25,7 +25,10 @@ import { mountForms, regenerateStagedCommands } from "./forms";
 import { mountImportModal } from "./import-modal";
 import { mountExportScript } from "./export-script";
 import { mountMatrixView } from "./matrix-view";
+import { mountNkpGraph } from "./nkp-graph";
 import type { PendingState } from "./model";
+// @ts-ignore The browser loads D3 directly from the same ESM endpoint as slaughter.pro.
+import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm";
 
 const snapshotElement = document.getElementById("residual-snapshot");
 const rawSnapshot: RawLandscapeSnapshot = snapshotElement
@@ -51,11 +54,13 @@ const table = container.querySelector<HTMLTableElement>("table.matrix");
 
 if (table) {
   const matrixView = mountMatrixView(container as HTMLElement);
+  const nkpGraph = mountNkpGraph(container as HTMLElement, getState, d3);
 
   const onChange = (): void => {
     regenerateStagedCommands(container as HTMLElement, getState);
     matrixMount.syncNewRows();
     matrixView.recomputeFusionFission();
+    nkpGraph.sync();
   };
 
   const matrixMount = mountMatrix(table, getState, setState, { onChange });

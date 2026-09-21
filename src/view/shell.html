@@ -94,6 +94,35 @@
         border-left: none;
         border-right: none;
       }
+      section[data-view="nkp-graph"] { min-height: 26rem; }
+      .nkp-graph { width: 100%; min-height: 22rem; overflow: hidden; }
+      .nkp-graph-svg { display: block; width: 100%; min-height: 22rem; }
+      .nkp-edge { stroke: var(--line); }
+      .nkp-edge-coupling { stroke: var(--coupled); }
+      .nkp-edge-fusion { stroke: var(--warn); }
+      .nkp-edge-attractor { stroke: var(--muted); }
+      .nkp-node { cursor: grab; }
+      .nkp-node:active { cursor: grabbing; }
+      .nkp-node-dot { fill: var(--accent); stroke: var(--bg); stroke-width: 2px; }
+      .nkp-node-dot.status-proposed { fill: var(--coupled); }
+      .nkp-node-attractor .nkp-node-dot { fill: var(--muted); }
+      .nkp-fission-ring { stroke: var(--warn); stroke-width: 1.5px; }
+      .nkp-node-label { fill: var(--ink); font: 11px var(--mono); pointer-events: none; }
+      .nkp-graph-empty { color: var(--muted); }
+      .nkp-graph-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem 1rem;
+        margin: -0.35rem 0 0.75rem;
+        font: 12.5px/1.4 var(--sans);
+        color: var(--muted);
+      }
+      .nkp-graph-controls input[type="checkbox"] { width: auto; margin: 0; }
+      @media (max-width: 700px) {
+        section[data-view="nkp-graph"] { padding-inline: 0.5rem; }
+        .nkp-graph { min-height: 18rem; overflow-x: auto; }
+        .nkp-graph-svg { min-width: 40rem; min-height: 18rem; }
+      }
       section h2 {
         margin: 0 0 0.75rem;
         font: 600 0.78rem/1.2 var(--mono);
@@ -378,6 +407,14 @@
       <section data-view="matrix">
         <h2>Residue matrix</h2>
         <div class="matrix-scroll">{{MATRIX}}</div>
+      </section>
+
+      <section data-view="nkp-graph">
+        <h2>Live NKP graph</h2>
+        <div class="nkp-graph-controls">
+          <label><input type="checkbox" data-hide-filtered-graph-toggle checked /> hide filtered items</label>
+        </div>
+        <div class="nkp-graph" data-nkp-graph></div>
       </section>
 
       {{DEFENSE_RECORDS}}
