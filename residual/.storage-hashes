@@ -1,7 +1,7 @@
 # storage integrity change-detection snapshot
 .walk-review.toml=0738cb352d4ee712
 attractors.csv=5194bf2475f6d06a
-components.csv=7e9bcd191d32335f
+components.csv=b1a3c00ba1f1e34f
 config.toml=missing
 iterations/1.md=dcf32757637f4854
 iterations/2.md=df62931d5da549bc
@@ -13,5 +13,5 @@ lexicon.csv=ed2f87b9da1e7d23
 personas/agent.md=8b0135fe35258d31
 personas/architect.md=c43ffc1c5fda1a2a
 purposes.csv=fc3412e656f49215
-residues.csv=388667ff402b9721
+residues.csv=31d3f283128d6610
 stressors.csv=b9a2aaa92afe2410

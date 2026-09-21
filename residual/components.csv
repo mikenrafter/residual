@@ -35,3 +35,4 @@ structure-defense-analysis,Meta-stressor/meta-attractor/meta-purpose ledger for 
 structure-defense-pitches,Practiced communication artifacts advancing residuality concerns in team/org communication,actual,iter4-cli-hub
 storage-branch-sync,"Per-branch git-sidecar naming pattern, branch edit/save/merge commands, and post-commit mirroring of working-branch commits into the matching metadata branch",actual,iter4-cli-hub
 skill-hooks,"Adapter boundary for agent lifecycle and periodic-turn hooks: `residual hook pre-compaction/post-compaction/periodic-turn` implements the ledger-continuity prompts and cadence-gated skills-guru suggestions. Per-agent capability detection and config registration (e.g. into an agent's own hook settings) is a follow-up, not yet built.",actual,iter5-agent-hooks
+view-nkp-graph,"Live force-directed NKP graph in residual view: component coupling edges, attractor links, hex lattice layout, and matrix-filter sync",actual,iter4-cli-hub
