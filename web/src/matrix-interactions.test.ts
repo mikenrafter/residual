@@ -3,6 +3,7 @@ import { addForceRow, toggleComponent, updateForceField } from "./actions";
 import type { PendingState, SnapshotAttractor, SnapshotComponent, SnapshotForce } from "./model";
 import { mount } from "./matrix-interactions";
 import { attractorOptions, computeInvalidMarks } from "./render-decisions";
+import { attractorColorForId } from "./nkp-graph";
 
 // ---------------------------------------------------------------------------
 // Fixtures — fully implemented (not under test): a minimal PendingState and a
@@ -369,6 +370,14 @@ describe("mount — right-click context menu adds a row above/below", () => {
     expect(getState().addedForces[0]?.kind).toBe("stressor");
     const newRow = anchor.nextElementSibling;
     expect(newRow?.getAttribute("data-force-kind")).toBe("stressor");
+    expect(newRow?.getAttribute("data-force-kind-glyph")).toBe("stressor");
+    expect(newRow?.querySelector(".force-kind-glyph")?.classList.contains("force-kind-stressor")).toBe(true);
+    expect(newRow?.classList.contains("force-attractor-tint")).toBe(true);
+    const attractorId = newRow?.getAttribute("data-attractor-id") ?? "";
+    expect((newRow as HTMLElement | null)?.style.getPropertyValue("--force-attractor-color")).toBe(
+      attractorColorForId(attractorId),
+    );
+    expect(newRow?.querySelector("td[data-residue-cell] .force-kind-glyph")).toBeNull();
   });
 
   test("the newly-inserted row starts open in edit mode: force-detail is not hidden and shows input/select fields, not read-only text", () => {
@@ -458,6 +467,27 @@ describe("mount — editing an existing row's fields via the Edit button", () =>
     expect(buttons).toContain("Edit");
     expect(buttons).not.toContain("OK");
     expect(dl?.textContent).toContain("queue backs up even under moderate load");
+  });
+
+  test("changing an existing force's attractor updates its tint", () => {
+    const state = baseState();
+    const { table } = mountFixture(state);
+    const row = table.querySelector<HTMLTableRowElement>('tr.force-row[data-force-id="S-01"]');
+    const th = row?.querySelector("th.sticky-col");
+    if (!row || !th) throw new Error("force row not found");
+    const editButton = Array.from(th.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Edit");
+    if (!(editButton instanceof HTMLElement)) throw new Error("edit button not found");
+    editButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    const select = th.querySelector("select");
+    if (!(select instanceof HTMLSelectElement)) throw new Error("attractor select not found");
+    select.value = "A-02";
+    const okButton = Array.from(th.querySelectorAll("button")).find((button) => button.textContent?.trim() === "OK");
+    if (!(okButton instanceof HTMLElement)) throw new Error("OK button not found");
+    okButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    expect(row.getAttribute("data-attractor-id")).toBe("A-02");
+    expect(row.style.getPropertyValue("--force-attractor-color")).toBe(attractorColorForId("A-02"));
   });
 
   test("clicking Cancel discards input changes, restores the original dl values, and does not mutate state", () => {

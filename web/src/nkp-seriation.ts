@@ -543,7 +543,7 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
     diagonalSelection.select("rect")
       .attr("width", CELL - 1)
       .attr("height", CELL - 1)
-      .attr("fill-opacity", (item: SeriationComponent) => intensity(item.k, model.maxK) * (item.focused ? 1 : 0.4));
+      .attr("fill-opacity", (item: SeriationComponent) => intensity(item.k, model.maxK) * (item.focused ? 1 : 0.3));
     b.diagonal = diagonalSelection;
 
     const rowHeaders = b.rowHeadersLayer

@@ -154,6 +154,11 @@
       .landscape-tabs label:has(input:checked) { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--ink); }
       .landscape-tabs label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
       .landscape-hint { font-size: 11.5px; color: var(--muted); margin-left: auto; }
+      .ledger-tabs { display: flex; gap: 0.35rem; margin: 0.75rem 0; }
+      .ledger-tabs button[aria-selected="true"] { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+      .ledger-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      .ledger-panel-help { margin: 0.5rem 0 0.75rem; color: var(--muted); font-size: 12px; line-height: 1.45; }
+      [data-ledger-panel][hidden], [data-modify-panel][hidden] { display: none; }
       .landscape-stage { width: 100%; min-width: 0; }
       .landscape-viewport {
         position: relative;
@@ -231,7 +236,8 @@
       .landscape-tip ul { margin: 0.35rem 0 0; padding-left: 1rem; }
 
       /* bundle view (web/src/nkp-bundle.ts) */
-      .nkp-bundle-edge { fill: none; stroke: var(--muted); transition: stroke-opacity 120ms; }
+      .nkp-bundle-edge { fill: none; stroke: var(--muted); transition: stroke-opacity 120ms, opacity 120ms; }
+      .nkp-bundle-edge.dim { opacity: var(--selection-dim-opacity); }
       .nkp-bundle-edge.fusion { stroke: var(--warn); stroke-dasharray: 3 3; }
       .nkp-bundle-svg.hovering .nkp-bundle-edge { stroke-opacity: 0.04 !important; }
       .nkp-bundle-svg.hovering .nkp-bundle-edge.hl-a { stroke: var(--accent); stroke-opacity: 0.95 !important; }
@@ -257,7 +263,10 @@
       /* heatmap view (web/src/nkp-seriation.ts) */
       .nkp-seriation-frame { fill: none; stroke: var(--line); }
       .nkp-seriation-heat { fill: var(--coupled); }
-      .nkp-seriation-heat.is-faded { fill: var(--muted); }
+      /* A colour swap alone reads as barely different once fill-opacity is
+         low (a faint gold cell and a faint grey cell look about the same);
+         pair it with a real opacity drop so focused vs. not is unambiguous. */
+      .nkp-seriation-heat.is-faded { fill: var(--muted); opacity: 0.3; }
       .nkp-seriation-diag { fill: var(--accent); }
       .nkp-seriation-count { fill: var(--ink); font: 9px var(--mono); text-anchor: middle; dominant-baseline: central; pointer-events: none; }
       .nkp-seriation-count-strong { fill: var(--bg); font-weight: 600; }
@@ -265,9 +274,15 @@
       .nkp-seriation-header { cursor: pointer; }
       .nkp-seriation-hit { fill: transparent; }
       .nkp-seriation-label { fill: var(--muted); font: 10.5px var(--mono); dominant-baseline: central; }
+      /* Column labels are rotated -60deg around their own anchor point.
+         Centering the baseline there (as row labels want) puts half the
+         rotated glyph below the anchor, sinking it toward the grid; anchor
+         on the alphabetic baseline instead so the whole label swings clear
+         of the grid above the pivot. */
+      g.nkp-seriation-label-anchor[data-header-axis="col"] text { dominant-baseline: alphabetic; }
       .nkp-seriation-label.is-proposed { font-style: italic; }
       .nkp-seriation-label.is-fission { fill: var(--warn); }
-      .nkp-seriation-label.is-faded { opacity: 0.5; }
+      .nkp-seriation-label.is-faded { opacity: 0.3; }
       .nkp-seriation-header.is-active .nkp-seriation-label { fill: var(--ink); font-weight: 600; }
       .nkp-seriation-header.selected .nkp-seriation-label { fill: var(--ink); font-weight: 600; }
       .nkp-seriation-header.connected .nkp-seriation-label { fill: var(--ink); }
@@ -420,6 +435,25 @@
       }
       .status-dot.status-deprecated { background: var(--warn); }
       .status-dot.status-other { background: var(--muted); }
+      .component-status-glyph, .force-kind-glyph {
+        display: inline-block;
+        width: 0.52rem;
+        height: 0.52rem;
+        margin-right: 0.4rem;
+        vertical-align: -0.02rem;
+        box-sizing: border-box;
+        flex: none;
+      }
+      .status-shape-circle, .force-kind-purpose { border-radius: 50%; }
+      .status-shape-circle, .status-shape-square { background: var(--muted); }
+      .status-shape-other {
+        width: 0.6rem;
+        height: 0.45rem;
+        border: 1px solid var(--muted);
+        border-radius: 0.1rem;
+      }
+      .force-kind-stressor { transform: rotate(45deg) scale(0.78); background: var(--coupled); }
+      .force-kind-purpose { background: var(--coupled); }
       .force-accordion-toggle {
         background: transparent;
         border: none;
@@ -472,10 +506,17 @@
       }
       .force-detail dd { margin: 0; }
       table.matrix tbody tr.force-row[hidden] { display: none; }
+      table.matrix tbody tr.force-attractor-tint > th,
+      table.matrix tbody tr.force-attractor-tint > td {
+        background: color-mix(in srgb, var(--force-attractor-color) 10%, var(--surface));
+      }
       [data-residue-cell][data-coupled="1"] {
         background: color-mix(in srgb, var(--coupled) 28%, transparent);
         color: var(--coupled);
         font-weight: 700;
+      }
+      table.matrix tbody tr.force-attractor-tint > td[data-residue-cell][data-coupled="1"] {
+        background: color-mix(in srgb, var(--coupled) 28%, var(--force-attractor-color) 10%);
       }
       th[data-fission="1"], td[data-fission="1"] {
         outline: 2px solid var(--warn);
@@ -579,6 +620,9 @@
       <h1>residual</h1>
       <p>Read-only force landscape. Stage <code>residual add …</code> commands here; run them yourself. Nothing on this page mutates the ledger.</p>
     </header>
+    {{PAGE_LEDGER_TABS}}
+    <main>
+      {{IMPLEMENTATION_PANEL_OPEN}}
     <div class="view-toolbar" data-view-toolbar>
       <input
         type="search"
@@ -594,7 +638,6 @@
         <output data-threshold-value>1</output>
       </label>
     </div>
-    <main>
       <details class="card" data-view="matrix">
         <summary><h2>NKP matrix</h2><span class="card-hint">forces × components residue ledger; edit couplings in place</span></summary>
         <div class="card-body">
@@ -640,16 +683,20 @@
             <div class="landscape-viewport" data-landscape></div>
             <aside class="landscape-sidebar" data-landscape-sidebar></aside>
           </div>
+          <p class="ledger-panel-help">Directly connected entities share a force–component membership edge or a force–attractor assignment. Connected entities are the transitive closure: every entity reachable along those direct relations. With multiple selections, connected entities are the union of their reachable sets.</p>
         </div>
       </details>
 
-      {{DEFENSE_RECORDS}}
+      {{IMPLEMENTATION_PANEL_CLOSE}}
+      {{DEFENSE_PANEL}}
 
       <details class="card" data-view="modify">
         <summary><h2>Modify</h2><span class="card-hint">stage residual commands, copy or import them</span></summary>
         <div class="card-body">
           <section>
             <h3>Stage adds</h3>
+            {{MODIFY_LEDGER_TABS}}
+            {{IMPLEMENTATION_FORM_PANEL_OPEN}}
             <div class="generators">
               <form data-command-generator="stressor">
                 <fieldset>
@@ -712,8 +759,9 @@
                 </fieldset>
               </form>
               <p data-component-form-error></p>
-              {{DEFENSE_FORMS}}
             </div>
+            {{IMPLEMENTATION_FORM_PANEL_CLOSE}}
+            {{DEFENSE_FORMS}}
           </section>
 
           <section data-copy-commands>

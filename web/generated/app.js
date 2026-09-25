@@ -454,6 +454,295 @@ function attractorOptions(state) {
   return all.map((a) => ({ id: a.id, name: a.name })).sort((a, b) => a.name.localeCompare(b.name));
 }
 
+// src/nkp-graph.ts
+var DEFAULT_MIN_COUPLING_STRENGTH = 2;
+function effectiveState(state) {
+  const components = [...state.baseComponents, ...state.addedComponents].map((component) => ({
+    ...component,
+    ...state.updatedComponents[component.name]
+  }));
+  const attractors = [...state.baseAttractors, ...state.addedAttractors].map((attractor) => ({
+    ...attractor,
+    ...state.updatedAttractors[attractor.id]
+  }));
+  const baseForces = state.baseForces.filter((force) => state.removedForces?.[force.id] === undefined).map((force) => ({ ...force, ...state.updatedForces[force.id], key: force.id }));
+  const addedForces = state.addedForces.map((force) => ({
+    ...force,
+    ...state.updatedForces[force.tempId],
+    key: force.tempId
+  }));
+  return { components, attractors, forces: [...baseForces, ...addedForces] };
+}
+function pairKey(left, right) {
+  return [left, right].sort().join("\x00");
+}
+function edgeMetrics(count) {
+  return { width: 1 + count * 0.5 };
+}
+function forceLabel(force) {
+  return force.shortname || force.description || force.key;
+}
+function dominantAttractor(forces, componentName) {
+  const counts = new Map;
+  for (const force of forces) {
+    if (!force.components.includes(componentName))
+      continue;
+    counts.set(force.attractorId, (counts.get(force.attractorId) ?? 0) + 1);
+  }
+  return [...counts].sort(([leftId, leftCount], [rightId, rightCount]) => rightCount - leftCount || leftId.localeCompare(rightId))[0]?.[0];
+}
+function applyMinCouplingStrength(edges, minCouplingStrength) {
+  return edges.filter((edge) => edge.type === "attractor" || edge.count >= minCouplingStrength);
+}
+function applyTopNCouplings(edges, topN, direction) {
+  if (topN === undefined)
+    return edges;
+  const tiers = [...new Set(edges.filter((edge) => edge.type === "coupling").map((edge) => edge.count))];
+  tiers.sort((left, right) => direction === "weakest" ? left - right : right - left);
+  const keptTiers = new Set(tiers.slice(0, Math.max(0, topN)));
+  return edges.filter((edge) => edge.type !== "coupling" || keptTiers.has(edge.count));
+}
+function applyAttractorRelevance(nodes, edges, topNCouplings) {
+  if (topNCouplings === undefined)
+    return { nodes, edges };
+  const couplingComponentIds = new Set;
+  for (const edge of edges) {
+    if (edge.type !== "coupling")
+      continue;
+    couplingComponentIds.add(edge.source);
+    couplingComponentIds.add(edge.target);
+  }
+  const relevantEdges = edges.filter((edge) => edge.type !== "attractor" || couplingComponentIds.has(edge.target));
+  const relevantAttractorIds = new Set(relevantEdges.filter((edge) => edge.type === "attractor").map((edge) => edge.source));
+  return {
+    nodes: nodes.filter((item) => item.type !== "attractor" || relevantAttractorIds.has(item.id)),
+    edges: relevantEdges
+  };
+}
+function dropUnlinkedComponents(nodes, edges) {
+  const linkedIds = new Set;
+  for (const edge of edges) {
+    linkedIds.add(edge.source);
+    linkedIds.add(edge.target);
+  }
+  return nodes.filter((item) => item.type !== "component" || linkedIds.has(item.id));
+}
+function buildNkpGraphModel(state, options = {}) {
+  const { components, attractors, forces } = effectiveState(state);
+  const colors = attractorColors(state);
+  const visible = options.visibleForceIds;
+  const hasFocusFilter = visible !== undefined;
+  const isVisibleForce = (force) => !hasFocusFilter || visible.has(force.key);
+  const isVisibleComponent = (name) => options.visibleComponentNames === undefined || options.visibleComponentNames.has(name);
+  const componentForces = new Map(components.map((component) => [component.name, []]));
+  for (const force of forces) {
+    for (const name of new Set(force.components))
+      componentForces.get(name)?.push(force);
+  }
+  const nodes = components.map((component) => {
+    const attached = componentForces.get(component.name) ?? [];
+    const focused = (attached.some(isVisibleForce) || !hasFocusFilter) && isVisibleComponent(component.name);
+    const fissionCandidate = attached.length > (options.fissionThreshold ?? Number.POSITIVE_INFINITY);
+    const dominantAttractorId = dominantAttractor(forces, component.name);
+    return {
+      id: `component:${component.name}`,
+      type: "component",
+      label: component.name,
+      status: component.status,
+      tooltip: [component.name, component.description, `Status: ${component.status}`, `Architecture set: ${component.architectureSet}`].join(`
+`),
+      focused,
+      opacity: focused ? 1 : 0.5,
+      labelVisible: focused,
+      revealLabelOnHover: !focused,
+      shape: component.status === "actual" ? "circle" : "square",
+      color: dominantAttractorId === undefined ? "var(--muted)" : mutedAttractorColor(colors.get(dominantAttractorId) ?? "var(--muted)"),
+      ...dominantAttractorId ? { dominantAttractorId } : {},
+      fissionCandidate,
+      ...fissionCandidate ? { ringStyle: "dotted" } : {}
+    };
+  });
+  for (const attractor of attractors) {
+    const attached = forces.filter((force) => force.attractorId === attractor.id);
+    const focused = attached.some(isVisibleForce) || !hasFocusFilter;
+    nodes.push({
+      id: `attractor:${attractor.id}`,
+      type: "attractor",
+      label: attractor.name,
+      tooltip: [attractor.name, attractor.description, `Positive: ${attractor.positiveState}`, `Negative: ${attractor.negativeState}`].join(`
+`),
+      focused,
+      opacity: focused ? 0.7 : 0.5,
+      labelVisible: focused,
+      revealLabelOnHover: !focused
+    });
+  }
+  const edges = [];
+  const couplingGroups = new Map;
+  for (const force of forces) {
+    const names = [...new Set(force.components)].filter((name) => componentForces.has(name)).sort();
+    for (let left = 0;left < names.length; left += 1) {
+      for (let right = left + 1;right < names.length; right += 1) {
+        const source = `component:${names[left]}`;
+        const target = `component:${names[right]}`;
+        const key = pairKey(source, target);
+        const group = couplingGroups.get(key) ?? { source, target, forces: [] };
+        group.forces.push(force);
+        couplingGroups.set(key, group);
+      }
+    }
+  }
+  for (const [key, group] of couplingGroups) {
+    const count = group.forces.length;
+    const stressors = group.forces.map(forceLabel);
+    const focused = group.forces.some(isVisibleForce) && isVisibleComponent(group.source.slice("component:".length)) && isVisibleComponent(group.target.slice("component:".length));
+    edges.push({
+      id: `coupling:${key}`,
+      source: group.source,
+      target: group.target,
+      type: "coupling",
+      count,
+      stressors,
+      forceKeys: group.forces.map((force) => force.key),
+      tooltip: `Shared residual forces (${count}): ${stressors.join(", ")}`,
+      ...edgeMetrics(count),
+      lineStyle: "solid",
+      focused,
+      opacity: focused ? 1 : 0.5
+    });
+  }
+  const vectorGroups = new Map;
+  for (const component of components) {
+    const vector = (componentForces.get(component.name) ?? []).map((force) => force.key).sort();
+    if (vector.length === 0)
+      continue;
+    const key = vector.join("\x00");
+    vectorGroups.set(key, [...vectorGroups.get(key) ?? [], component.name]);
+  }
+  for (const [vectorKey, names] of vectorGroups) {
+    const vectorForces = forces.filter((force) => vectorKey.split("\x00").includes(force.key));
+    for (let left = 0;left < names.length; left += 1) {
+      for (let right = left + 1;right < names.length; right += 1) {
+        const source = `component:${names[left]}`;
+        const target = `component:${names[right]}`;
+        const count = vectorForces.length;
+        const stressors = vectorForces.map(forceLabel);
+        const focused = vectorForces.some(isVisibleForce) && isVisibleComponent(names[left] ?? "") && isVisibleComponent(names[right] ?? "");
+        edges.push({
+          id: `fusion:${pairKey(source, target)}`,
+          source,
+          target,
+          type: "fusion",
+          count,
+          stressors,
+          forceKeys: vectorForces.map((force) => force.key),
+          tooltip: `Fusion candidate: identical coupling vector (${stressors.join(", ")})`,
+          ...edgeMetrics(count),
+          lineStyle: "dotted",
+          focused,
+          opacity: focused ? 0.8 : 0.5
+        });
+      }
+    }
+  }
+  for (const attractor of attractors) {
+    const relevant = forces.filter((force) => force.attractorId === attractor.id);
+    for (const component of components) {
+      const shared = relevant.filter((force) => force.components.includes(component.name));
+      if (shared.length === 0)
+        continue;
+      const stressors = shared.map(forceLabel);
+      const focused = shared.some(isVisibleForce) && isVisibleComponent(component.name);
+      edges.push({
+        id: `attractor:${attractor.id}:${component.name}`,
+        source: `attractor:${attractor.id}`,
+        target: `component:${component.name}`,
+        type: "attractor",
+        count: shared.length,
+        stressors,
+        forceKeys: shared.map((force) => force.key),
+        tooltip: `${attractor.name} forces: ${stressors.join(", ")}`,
+        ...edgeMetrics(shared.length),
+        lineStyle: "solid",
+        focused,
+        opacity: focused ? 0.6 : 0.5
+      });
+    }
+  }
+  const minCouplingStrength = options.minCouplingStrength ?? DEFAULT_MIN_COUPLING_STRENGTH;
+  const strengthFiltered = applyMinCouplingStrength(edges, minCouplingStrength);
+  const topNFiltered = applyTopNCouplings(strengthFiltered, options.topNCouplings, options.topNDirection ?? "strongest");
+  const { nodes: relevantNodes, edges: visibleEdges } = applyAttractorRelevance(nodes, topNFiltered, options.topNCouplings);
+  if (options.hideFiltered) {
+    const visibleNodeIds = new Set(relevantNodes.filter((item) => item.type === "attractor" || item.focused).map((item) => item.id));
+    const finalNodes = relevantNodes.filter((item) => visibleNodeIds.has(item.id));
+    const finalEdges = visibleEdges.filter((item) => item.focused);
+    return {
+      nodes: dropUnlinkedComponents(finalNodes, finalEdges),
+      edges: finalEdges
+    };
+  }
+  return {
+    nodes: dropUnlinkedComponents(relevantNodes, visibleEdges),
+    edges: visibleEdges
+  };
+}
+function attractorColorForId(id) {
+  let hash = 2166136261;
+  for (let index = 0;index < id.length; index += 1) {
+    hash ^= id.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  const unsigned = hash >>> 0;
+  const hue = unsigned % 360;
+  const saturation = 55 + (unsigned >>> 9) % 31;
+  const lightness = 42 + (unsigned >>> 16) % 31;
+  return `hsl(${hue} ${saturation}% ${lightness}%)`;
+}
+function mutedAttractorColor(color) {
+  return `color-mix(in srgb, ${color} 58%, var(--surface))`;
+}
+function attractorColors(state) {
+  const { attractors, forces } = effectiveState(state);
+  const ids = [...new Set([...attractors.map((attractor) => attractor.id), ...forces.map((force) => force.attractorId)])].sort();
+  return new Map(ids.map((id) => [id, attractorColorForId(id)]));
+}
+
+// src/matrix-visuals.ts
+function decorateForceRow(row, kind, attractorId) {
+  row.classList.add("force-attractor-tint");
+  row.setAttribute("data-force-kind", kind);
+  row.setAttribute("data-force-kind-glyph", kind);
+  row.setAttribute("data-attractor-id", attractorId);
+  row.setAttribute("data-force-attractor-tint", "true");
+  row.style.setProperty("--force-attractor-color", attractorColorForId(attractorId));
+  const label = row.querySelector(".force-accordion-toggle") ?? row.querySelector("th.sticky-col");
+  if (label === null)
+    return;
+  label.setAttribute("data-force-kind-glyph", kind);
+  let glyph = label.querySelector(".force-kind-glyph");
+  if (glyph === null) {
+    glyph = document.createElement("span");
+    glyph.className = "force-kind-glyph";
+    glyph.setAttribute("aria-hidden", "true");
+    const detail = label.querySelector(".force-detail");
+    label.insertBefore(glyph, detail);
+  }
+  glyph.className = `force-kind-glyph force-kind-${kind}`;
+}
+function decorateComponentHeader(header, status) {
+  const shape = status === "actual" ? "circle" : status === "proposed" ? "square" : "other";
+  header.setAttribute("data-status", status);
+  header.setAttribute("data-component-status-shape", status);
+  let glyph = header.querySelector(".component-status-glyph");
+  if (glyph === null) {
+    glyph = document.createElement("span");
+    glyph.setAttribute("aria-hidden", "true");
+    header.prepend(glyph);
+  }
+  glyph.className = `component-status-glyph status-shape-${shape}`;
+}
+
 // src/matrix-interactions.ts
 function getEffectiveForceValues(state, forceKey) {
   const update = state.updatedForces[forceKey];
@@ -617,6 +906,11 @@ function mount(table, getState, setState, options) {
         }
       }
       setState(next);
+      const row = detail.closest("tr.force-row");
+      if (row instanceof HTMLTableRowElement) {
+        const kind = row.getAttribute("data-force-kind") === "purpose" ? "purpose" : "stressor";
+        decorateForceRow(row, kind, getEffectiveForceValues(next, forceKey).attractorId);
+      }
       renderReadOnly(detail, forceKey);
       applyInvalidMarks();
       options?.onChange?.();
@@ -635,7 +929,15 @@ function mount(table, getState, setState, options) {
   }
   function wireLiveField(el, eventName, forceKey, field) {
     el.addEventListener(eventName, () => {
-      setState(updateForceField(getState(), forceKey, field, el.value));
+      const next = updateForceField(getState(), forceKey, field, el.value);
+      setState(next);
+      if (field === "attractorId") {
+        const row = table.querySelector(`tr.force-row[data-force-id="${CSS.escape(forceKey)}"]`);
+        if (row !== null) {
+          const kind = row.getAttribute("data-force-kind") === "purpose" ? "purpose" : "stressor";
+          decorateForceRow(row, kind, el.value);
+        }
+      }
       applyInvalidMarks();
       options?.onChange?.();
     });
@@ -667,6 +969,7 @@ function mount(table, getState, setState, options) {
       const nextKind = kindSelect.value === "purpose" ? "purpose" : "stressor";
       setState(setAddedForceKind(getState(), tempId, nextKind));
       tr.setAttribute("data-force-kind", nextKind);
+      decorateForceRow(tr, nextKind, getEffectiveForceValues(getState(), tempId).attractorId);
       applyInvalidMarks();
       options?.onChange?.();
     });
@@ -690,6 +993,7 @@ function mount(table, getState, setState, options) {
     detail.appendChild(editor);
     th.appendChild(detail);
     tr.appendChild(th);
+    decorateForceRow(tr, kind, values.attractorId);
     for (const component of components) {
       tr.appendChild(createResidueCell(tempId, component.name));
     }
@@ -963,7 +1267,7 @@ function mountForms(container, getState, setState, options) {
       errorEl.textContent = "";
     form.querySelector('[name="name"]')?.removeAttribute("aria-invalid");
   }
-  function insertComponentColumn(name) {
+  function insertComponentColumn(name, status) {
     const table = container.querySelector("table.matrix");
     if (table === null)
       return;
@@ -973,6 +1277,7 @@ function mountForms(container, getState, setState, options) {
       th.className = "sticky-row";
       th.setAttribute("data-component", name);
       th.textContent = name;
+      decorateComponentHeader(th, status);
       const cornerRight = headerRow.querySelector("th.sticky-col-right");
       if (cornerRight !== null) {
         headerRow.insertBefore(th, cornerRight);
@@ -1023,7 +1328,7 @@ function mountForms(container, getState, setState, options) {
           architectureSet: readInput(form, "architecture_set")
         });
         setState(next);
-        insertComponentColumn(name);
+        insertComponentColumn(name, readInput(form, "status") === "proposed" ? "proposed" : "actual");
         clearComponentFormError(form);
         form.reset();
         regenerate();
@@ -2238,259 +2543,6 @@ function activateSort(container, th) {
   sortMatrixBy(container, key, next);
 }
 
-// src/nkp-graph.ts
-var DEFAULT_MIN_COUPLING_STRENGTH = 2;
-function effectiveState(state) {
-  const components = [...state.baseComponents, ...state.addedComponents].map((component) => ({
-    ...component,
-    ...state.updatedComponents[component.name]
-  }));
-  const attractors = [...state.baseAttractors, ...state.addedAttractors].map((attractor) => ({
-    ...attractor,
-    ...state.updatedAttractors[attractor.id]
-  }));
-  const baseForces = state.baseForces.filter((force) => state.removedForces?.[force.id] === undefined).map((force) => ({ ...force, ...state.updatedForces[force.id], key: force.id }));
-  const addedForces = state.addedForces.map((force) => ({
-    ...force,
-    ...state.updatedForces[force.tempId],
-    key: force.tempId
-  }));
-  return { components, attractors, forces: [...baseForces, ...addedForces] };
-}
-function pairKey(left, right) {
-  return [left, right].sort().join("\x00");
-}
-function edgeMetrics(count) {
-  return { width: 1 + count * 0.5 };
-}
-function forceLabel(force) {
-  return force.shortname || force.description || force.key;
-}
-function dominantAttractor(forces, componentName) {
-  const counts = new Map;
-  for (const force of forces) {
-    if (!force.components.includes(componentName))
-      continue;
-    counts.set(force.attractorId, (counts.get(force.attractorId) ?? 0) + 1);
-  }
-  return [...counts].sort(([leftId, leftCount], [rightId, rightCount]) => rightCount - leftCount || leftId.localeCompare(rightId))[0]?.[0];
-}
-function applyMinCouplingStrength(edges, minCouplingStrength) {
-  return edges.filter((edge) => edge.type === "attractor" || edge.count >= minCouplingStrength);
-}
-function applyTopNCouplings(edges, topN, direction) {
-  if (topN === undefined)
-    return edges;
-  const tiers = [...new Set(edges.filter((edge) => edge.type === "coupling").map((edge) => edge.count))];
-  tiers.sort((left, right) => direction === "weakest" ? left - right : right - left);
-  const keptTiers = new Set(tiers.slice(0, Math.max(0, topN)));
-  return edges.filter((edge) => edge.type !== "coupling" || keptTiers.has(edge.count));
-}
-function applyAttractorRelevance(nodes, edges, topNCouplings) {
-  if (topNCouplings === undefined)
-    return { nodes, edges };
-  const couplingComponentIds = new Set;
-  for (const edge of edges) {
-    if (edge.type !== "coupling")
-      continue;
-    couplingComponentIds.add(edge.source);
-    couplingComponentIds.add(edge.target);
-  }
-  const relevantEdges = edges.filter((edge) => edge.type !== "attractor" || couplingComponentIds.has(edge.target));
-  const relevantAttractorIds = new Set(relevantEdges.filter((edge) => edge.type === "attractor").map((edge) => edge.source));
-  return {
-    nodes: nodes.filter((item) => item.type !== "attractor" || relevantAttractorIds.has(item.id)),
-    edges: relevantEdges
-  };
-}
-function dropUnlinkedComponents(nodes, edges) {
-  const linkedIds = new Set;
-  for (const edge of edges) {
-    linkedIds.add(edge.source);
-    linkedIds.add(edge.target);
-  }
-  return nodes.filter((item) => item.type !== "component" || linkedIds.has(item.id));
-}
-function buildNkpGraphModel(state, options = {}) {
-  const { components, attractors, forces } = effectiveState(state);
-  const colors = attractorColors(state);
-  const visible = options.visibleForceIds;
-  const hasFocusFilter = visible !== undefined;
-  const isVisibleForce = (force) => !hasFocusFilter || visible.has(force.key);
-  const isVisibleComponent = (name) => options.visibleComponentNames === undefined || options.visibleComponentNames.has(name);
-  const componentForces = new Map(components.map((component) => [component.name, []]));
-  for (const force of forces) {
-    for (const name of new Set(force.components))
-      componentForces.get(name)?.push(force);
-  }
-  const nodes = components.map((component) => {
-    const attached = componentForces.get(component.name) ?? [];
-    const focused = (attached.some(isVisibleForce) || !hasFocusFilter) && isVisibleComponent(component.name);
-    const fissionCandidate = attached.length > (options.fissionThreshold ?? Number.POSITIVE_INFINITY);
-    const dominantAttractorId = dominantAttractor(forces, component.name);
-    return {
-      id: `component:${component.name}`,
-      type: "component",
-      label: component.name,
-      status: component.status,
-      tooltip: [component.name, component.description, `Status: ${component.status}`, `Architecture set: ${component.architectureSet}`].join(`
-`),
-      focused,
-      opacity: focused ? 1 : 0.5,
-      labelVisible: focused,
-      revealLabelOnHover: !focused,
-      shape: component.status === "actual" ? "circle" : "square",
-      color: dominantAttractorId === undefined ? "var(--muted)" : mutedAttractorColor(colors.get(dominantAttractorId) ?? "var(--muted)"),
-      ...dominantAttractorId ? { dominantAttractorId } : {},
-      fissionCandidate,
-      ...fissionCandidate ? { ringStyle: "dotted" } : {}
-    };
-  });
-  for (const attractor of attractors) {
-    const attached = forces.filter((force) => force.attractorId === attractor.id);
-    const focused = attached.some(isVisibleForce) || !hasFocusFilter;
-    nodes.push({
-      id: `attractor:${attractor.id}`,
-      type: "attractor",
-      label: attractor.name,
-      tooltip: [attractor.name, attractor.description, `Positive: ${attractor.positiveState}`, `Negative: ${attractor.negativeState}`].join(`
-`),
-      focused,
-      opacity: focused ? 0.7 : 0.5,
-      labelVisible: focused,
-      revealLabelOnHover: !focused
-    });
-  }
-  const edges = [];
-  const couplingGroups = new Map;
-  for (const force of forces) {
-    const names = [...new Set(force.components)].filter((name) => componentForces.has(name)).sort();
-    for (let left = 0;left < names.length; left += 1) {
-      for (let right = left + 1;right < names.length; right += 1) {
-        const source = `component:${names[left]}`;
-        const target = `component:${names[right]}`;
-        const key = pairKey(source, target);
-        const group = couplingGroups.get(key) ?? { source, target, forces: [] };
-        group.forces.push(force);
-        couplingGroups.set(key, group);
-      }
-    }
-  }
-  for (const [key, group] of couplingGroups) {
-    const count = group.forces.length;
-    const stressors = group.forces.map(forceLabel);
-    const focused = group.forces.some(isVisibleForce) && isVisibleComponent(group.source.slice("component:".length)) && isVisibleComponent(group.target.slice("component:".length));
-    edges.push({
-      id: `coupling:${key}`,
-      source: group.source,
-      target: group.target,
-      type: "coupling",
-      count,
-      stressors,
-      forceKeys: group.forces.map((force) => force.key),
-      tooltip: `Shared residual forces (${count}): ${stressors.join(", ")}`,
-      ...edgeMetrics(count),
-      lineStyle: "solid",
-      focused,
-      opacity: focused ? 1 : 0.5
-    });
-  }
-  const vectorGroups = new Map;
-  for (const component of components) {
-    const vector = (componentForces.get(component.name) ?? []).map((force) => force.key).sort();
-    if (vector.length === 0)
-      continue;
-    const key = vector.join("\x00");
-    vectorGroups.set(key, [...vectorGroups.get(key) ?? [], component.name]);
-  }
-  for (const [vectorKey, names] of vectorGroups) {
-    const vectorForces = forces.filter((force) => vectorKey.split("\x00").includes(force.key));
-    for (let left = 0;left < names.length; left += 1) {
-      for (let right = left + 1;right < names.length; right += 1) {
-        const source = `component:${names[left]}`;
-        const target = `component:${names[right]}`;
-        const count = vectorForces.length;
-        const stressors = vectorForces.map(forceLabel);
-        const focused = vectorForces.some(isVisibleForce) && isVisibleComponent(names[left] ?? "") && isVisibleComponent(names[right] ?? "");
-        edges.push({
-          id: `fusion:${pairKey(source, target)}`,
-          source,
-          target,
-          type: "fusion",
-          count,
-          stressors,
-          forceKeys: vectorForces.map((force) => force.key),
-          tooltip: `Fusion candidate: identical coupling vector (${stressors.join(", ")})`,
-          ...edgeMetrics(count),
-          lineStyle: "dotted",
-          focused,
-          opacity: focused ? 0.8 : 0.5
-        });
-      }
-    }
-  }
-  for (const attractor of attractors) {
-    const relevant = forces.filter((force) => force.attractorId === attractor.id);
-    for (const component of components) {
-      const shared = relevant.filter((force) => force.components.includes(component.name));
-      if (shared.length === 0)
-        continue;
-      const stressors = shared.map(forceLabel);
-      const focused = shared.some(isVisibleForce) && isVisibleComponent(component.name);
-      edges.push({
-        id: `attractor:${attractor.id}:${component.name}`,
-        source: `attractor:${attractor.id}`,
-        target: `component:${component.name}`,
-        type: "attractor",
-        count: shared.length,
-        stressors,
-        forceKeys: shared.map((force) => force.key),
-        tooltip: `${attractor.name} forces: ${stressors.join(", ")}`,
-        ...edgeMetrics(shared.length),
-        lineStyle: "solid",
-        focused,
-        opacity: focused ? 0.6 : 0.5
-      });
-    }
-  }
-  const minCouplingStrength = options.minCouplingStrength ?? DEFAULT_MIN_COUPLING_STRENGTH;
-  const strengthFiltered = applyMinCouplingStrength(edges, minCouplingStrength);
-  const topNFiltered = applyTopNCouplings(strengthFiltered, options.topNCouplings, options.topNDirection ?? "strongest");
-  const { nodes: relevantNodes, edges: visibleEdges } = applyAttractorRelevance(nodes, topNFiltered, options.topNCouplings);
-  if (options.hideFiltered) {
-    const visibleNodeIds = new Set(relevantNodes.filter((item) => item.type === "attractor" || item.focused).map((item) => item.id));
-    const finalNodes = relevantNodes.filter((item) => visibleNodeIds.has(item.id));
-    const finalEdges = visibleEdges.filter((item) => item.focused);
-    return {
-      nodes: dropUnlinkedComponents(finalNodes, finalEdges),
-      edges: finalEdges
-    };
-  }
-  return {
-    nodes: dropUnlinkedComponents(relevantNodes, visibleEdges),
-    edges: visibleEdges
-  };
-}
-function attractorColorForId(id) {
-  let hash = 2166136261;
-  for (let index = 0;index < id.length; index += 1) {
-    hash ^= id.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  const unsigned = hash >>> 0;
-  const hue = unsigned % 360;
-  const lightness = 58 + (unsigned >>> 9) % 3 * 5;
-  return `hsl(${hue} 62% ${lightness}%)`;
-}
-function mutedAttractorColor(color) {
-  return `color-mix(in srgb, ${color} 58%, var(--surface))`;
-}
-function attractorColors(state) {
-  const { attractors, forces } = effectiveState(state);
-  const ids = [...new Set([...attractors.map((attractor) => attractor.id), ...forces.map((force) => force.attractorId)])].sort();
-  return new Map(ids.map((id) => [id, attractorColorForId(id)]));
-}
-
 // src/landscape-dom.ts
 function renderLegend(host, title, entries, extras = []) {
   const legend = document.createElement("div");
@@ -2837,6 +2889,7 @@ function createBundleView(ctx) {
     built.labelsGroup.selectAll(".nkp-bundle-leaf").classed("selected", (node) => isSelected(node.data.id)).classed("connected", (node) => isConnected(node.data.id)).classed("dim", (node) => dim(node.data.id)).attr("opacity", (node) => dim(node.data.id) ? 0 : 1);
     built.groupsG.selectAll(".nkp-bundle-group").classed("selected", (d) => isSelected(d.group.id)).classed("connected", (d) => isConnected(d.group.id)).classed("dim", (d) => dim(d.group.id));
     built.labelsGroup.selectAll(".nkp-bundle-group-label").attr("opacity", (d) => dim(d.group.id) ? 0 : 1);
+    built.edgesG.selectAll("path.nkp-bundle-edge").classed("dim", (item) => dim(item.edge.source) && dim(item.edge.target));
   }
   function update(state, rawOptions = {}) {
     const options = rawOptions;
@@ -3404,7 +3457,7 @@ function createHeatmapView(ctx) {
       return g;
     }).attr("transform", (item) => `translate(${(indexByName.get(item.name) ?? 0) * CELL},${(indexByName.get(item.name) ?? 0) * CELL})`).attr("data-diagonal-index", (item) => String(indexByName.get(item.name) ?? 0));
     diagonalSelection.attr("aria-label", (item) => componentLines(item).join(". ")).attr("tabindex", 0);
-    diagonalSelection.select("rect").attr("width", CELL - 1).attr("height", CELL - 1).attr("fill-opacity", (item) => intensity(item.k, model.maxK) * (item.focused ? 1 : 0.4));
+    diagonalSelection.select("rect").attr("width", CELL - 1).attr("height", CELL - 1).attr("fill-opacity", (item) => intensity(item.k, model.maxK) * (item.focused ? 1 : 0.3));
     b.diagonal = diagonalSelection;
     const rowHeaders = b.rowHeadersLayer.selectAll("g.nkp-seriation-header.row").data(model.components, (item) => item.name).join((enter) => {
       const g = enter.append("g").attr("class", "nkp-seriation-header row");
@@ -4062,7 +4115,7 @@ var DEFAULT_CANVAS_HEIGHT = 600;
 var REGIONS_LATTICE_CELL_SIZE = 40;
 var REGIONS_MIN_NODE_DISTANCE = 32;
 var REGIONS_COMPONENT_COLLISION_RADIUS = 30;
-var REGIONS_FORCE_COLLISION_RADIUS = 9;
+var REGIONS_FORCE_COLLISION_RADIUS = REGIONS_MIN_NODE_DISTANCE / 2;
 var FORCE_NODE_SCALE = 1.3;
 var FORCE_DIAMOND_HALF_DIAGONAL = 5 * FORCE_NODE_SCALE;
 var FORCE_CIRCLE_RADIUS = 4 * FORCE_NODE_SCALE;
@@ -4176,6 +4229,7 @@ function createRegionsView(ctx) {
   let byId = new Map;
   let links = [];
   let bundles = [];
+  let currentTransform = d3.zoomIdentity;
   let regionSel;
   let fusionSel;
   let bundleTrunkSel;
@@ -4410,7 +4464,15 @@ function createRegionsView(ctx) {
   function positionLabels() {
     if (!built)
       return;
-    const bounds = { x: 8, y: 8, width: Math.max(0, built.width - 16), height: Math.max(0, built.height - 16) };
+    const screenLeft = 8;
+    const screenTop = 8;
+    const screenRight = Math.max(screenLeft, built.width - 8);
+    const screenBottom = Math.max(screenTop, built.height - 8);
+    const left = currentTransform.invertX(screenLeft);
+    const top = currentTransform.invertY(screenTop);
+    const right = currentTransform.invertX(screenRight);
+    const bottom = currentTransform.invertY(screenBottom);
+    const bounds = { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
     componentLabelSel?.attr("x", (node) => projectLabelAnchor({ x: node.x ?? 0, y: (node.y ?? 0) + (node.type === "component" && node.fissionCandidate ? -19 : -13) }, bounds).x).attr("y", (node) => projectLabelAnchor({ x: node.x ?? 0, y: (node.y ?? 0) + (node.type === "component" && node.fissionCandidate ? -19 : -13) }, bounds).y);
     forceLabelSel?.attr("x", (node) => projectLabelAnchor({ x: node.x ?? 0, y: (node.y ?? 0) - 9 }, bounds).x).attr("y", (node) => projectLabelAnchor({ x: node.x ?? 0, y: (node.y ?? 0) - 9 }, bounds).y);
     regionLabelSel?.each(function(group) {
@@ -4418,9 +4480,9 @@ function createRegionsView(ctx) {
       const center = centroid2(points);
       if (!center)
         return;
-      const top = Math.min(...points.map((point) => point.y));
+      const top2 = Math.min(...points.map((point) => point.y));
       const preferredRegion = convexHull(points);
-      const anchor = projectLabelAnchor({ x: center.x, y: top - REGION_PADDING - 4 }, bounds, preferredRegion.length >= 3 ? preferredRegion : []);
+      const anchor = projectLabelAnchor({ x: center.x, y: top2 - REGION_PADDING - 4 }, bounds, preferredRegion.length >= 3 ? preferredRegion : []);
       d3.select(this).attr("x", anchor.x).attr("y", anchor.y);
     });
     tickCount += 1;
@@ -4438,9 +4500,9 @@ function createRegionsView(ctx) {
       const center = centroid2(points);
       if (!center)
         return -9999;
-      const top = Math.min(...points.map((point) => point.y));
+      const top2 = Math.min(...points.map((point) => point.y));
       const preferredRegion = convexHull(points);
-      const anchor = projectLabelAnchor({ x: center.x, y: top - REGION_PADDING - 4 + (labelShiftByKey.get(`attractor:${group.attractorId}`) ?? 0) }, bounds, preferredRegion.length >= 3 ? preferredRegion : []);
+      const anchor = projectLabelAnchor({ x: center.x, y: top2 - REGION_PADDING - 4 + (labelShiftByKey.get(`attractor:${group.attractorId}`) ?? 0) }, bounds, preferredRegion.length >= 3 ? preferredRegion : []);
       return anchor.y;
     });
   }
@@ -4467,7 +4529,10 @@ function createRegionsView(ctx) {
     const edgesG = content.append("g").attr("class", "nkp-hyper-edges");
     const nodesG = content.append("g").attr("class", "nkp-hyper-nodes");
     const labelsGroup = svg.append("g").attr("class", "landscape-labels");
-    zoom.on("zoom.labels", (event) => labelsGroup.attr("transform", event.transform));
+    zoom.on("zoom.labels", (event) => {
+      currentTransform = event.transform;
+      labelsGroup.attr("transform", event.transform);
+    });
     svg.on("dblclick", () => ctx.onClear());
     const sim = d3.forceSimulation([]).force("link", d3.forceLink([]).id((item) => item.id).distance(60).strength(0.18)).force("charge", d3.forceManyBody().strength((item) => item.type === "component" ? -650 : -130)).force("x", d3.forceX(width / 2).strength(0.05)).force("y", d3.forceY(height / 2).strength(0.05)).force("collision", d3.forceCollide().radius((item) => item.type === "component" ? REGIONS_COMPONENT_COLLISION_RADIUS : REGIONS_FORCE_COLLISION_RADIUS)).force("lattice", latticeForce).force("cohesion", createAttractorCohesionForce()).force("interaction", createForceInteractionForce()).on("tick", tick).on("end", () => {
       recomputeLabelNudges(true);
@@ -5288,6 +5353,66 @@ function mountLandscape(container, getState, d3) {
   };
 }
 
+// src/ledger-panels.ts
+var NOOP_HANDLE = { destroy: () => {} };
+function mountLedgerPanels(container) {
+  const pageTabs = Array.from(container.querySelectorAll("[data-page-ledger-tab]"));
+  const modifyTabs = Array.from(container.querySelectorAll("[data-modify-ledger-switch]"));
+  const ledgerPanels = Array.from(container.querySelectorAll("[data-ledger-panel]"));
+  const modifyPanels = Array.from(container.querySelectorAll("[data-modify-panel]"));
+  if (pageTabs.length === 0 && modifyTabs.length === 0 && ledgerPanels.length === 0 && modifyPanels.length === 0) {
+    return NOOP_HANDLE;
+  }
+  const initiallySelected = pageTabs.find((tab) => tab.getAttribute("aria-selected") === "true")?.dataset.pageLedgerTab;
+  let active = initiallySelected === "defense" ? "defense" : "implementation";
+  const update = (next) => {
+    if (next !== "implementation" && next !== "defense")
+      return;
+    const changed = next !== active;
+    active = next;
+    for (const tab of pageTabs) {
+      const selected = tab.dataset.pageLedgerTab === active;
+      tab.setAttribute("aria-selected", String(selected));
+      tab.classList.toggle("is-active", selected);
+    }
+    for (const tab of modifyTabs) {
+      const selected = tab.dataset.modifyLedgerSwitch === active;
+      tab.setAttribute("aria-selected", String(selected));
+      tab.setAttribute("aria-pressed", String(selected));
+      tab.classList.toggle("is-active", selected);
+    }
+    for (const panel of ledgerPanels) {
+      panel.hidden = panel.dataset.ledgerPanel !== active;
+    }
+    for (const panel of modifyPanels) {
+      panel.hidden = panel.dataset.modifyPanel !== active;
+    }
+    if (changed && active === "implementation") {
+      const eventTarget = container.querySelector('[data-ledger-panel="implementation"]') ?? container;
+      eventTarget.dispatchEvent(new CustomEvent("landscape-panel-visible", { bubbles: true }));
+    }
+  };
+  const onClick = (event) => {
+    const target = event.target;
+    if (!(target instanceof Element))
+      return;
+    const pageTab = target.closest("[data-page-ledger-tab]");
+    if (pageTab && container.contains(pageTab)) {
+      update(pageTab.dataset.pageLedgerTab);
+      return;
+    }
+    const modifyTab = target.closest("[data-modify-ledger-switch]");
+    if (modifyTab && container.contains(modifyTab)) {
+      update(modifyTab.dataset.modifyLedgerSwitch);
+    }
+  };
+  container.addEventListener("click", onClick);
+  update(active);
+  return {
+    destroy: () => container.removeEventListener("click", onClick)
+  };
+}
+
 // src/main.ts
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm";
 var snapshotElement = document.getElementById("residual-snapshot");
@@ -5298,6 +5423,7 @@ var setState = (next) => {
   state = next;
 };
 var container = document.body;
+mountLedgerPanels(container);
 var table = container.querySelector("table.matrix");
 if (table) {
   const matrixView = mountMatrixView(container);

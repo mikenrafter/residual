@@ -525,6 +525,13 @@ export function createBundleView(ctx: BundleViewCtx): BundleViewHandle {
       .classed("dim", (d: any) => dim(d.group.id));
     built.labelsGroup.selectAll(".nkp-bundle-group-label")
       .attr("opacity", (d: any) => dim(d.group.id) ? 0 : 1);
+    // Edges connect two leaves but were never dimmed by selection, so a
+    // selected component never actually stood out from the rest of the
+    // couplings drawn at full weight around it (the regions/hypergraph view
+    // dims its bundle edges the same way; this brings the bundle view to
+    // parity with it).
+    built.edgesG.selectAll("path.nkp-bundle-edge")
+      .classed("dim", (item: any) => dim(item.edge.source) && dim(item.edge.target));
   }
 
   function update(state: PendingState, rawOptions: Record<string, unknown> = {}): void {

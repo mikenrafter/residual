@@ -4,7 +4,9 @@
 
 use dioxus::prelude::*;
 
-use crate::view::snapshot::{ForceKind, LandscapeSnapshot, SnapshotComponent, SnapshotForce, SnapshotResidue};
+use crate::view::snapshot::{
+    ForceKind, LandscapeSnapshot, SnapshotComponent, SnapshotForce, SnapshotResidue,
+};
 
 pub(crate) fn force_kind_attr(kind: ForceKind) -> &'static str {
     match kind {
@@ -22,18 +24,6 @@ pub(crate) fn force_label(force: &SnapshotForce) -> String {
     format!("{prefix}-{}", force.shortname)
 }
 
-/// Bucket an open-ended status string into the small set of known lifecycle
-/// stages the UI styles distinctly; anything else falls back to "other" but
-/// keeps its raw text in the tooltip.
-pub(crate) fn status_bucket(status: &str) -> &'static str {
-    match status {
-        "proposed" => "proposed",
-        "actual" => "actual",
-        "deprecated" => "deprecated",
-        _ => "other",
-    }
-}
-
 pub(crate) fn status_tooltip(status: &str) -> String {
     match status {
         "proposed" => "proposed — staged in the ledger, not yet built".to_string(),
@@ -41,6 +31,20 @@ pub(crate) fn status_tooltip(status: &str) -> String {
         "deprecated" => "deprecated — superseded, scheduled for removal".to_string(),
         other => format!("{other} — non-standard status"),
     }
+}
+
+/// Stable categorical tint for a force's attractor. Keep in sync with
+/// `attractorColorForId` in `web/src/nkp-graph.ts` (FNV-1a over UTF-16 code
+/// units, then hue/lightness derived from the unsigned hash).
+fn attractor_color_for_id(id: &str) -> String {
+    let mut hash = 2_166_136_261_u32;
+    for unit in id.encode_utf16() {
+        hash ^= u32::from(unit);
+        hash = hash.wrapping_mul(16_777_619);
+    }
+    let hue = hash % 360;
+    let lightness = 58 + ((hash >> 9) % 3) * 5;
+    format!("hsl({hue} 62% {lightness}%)")
 }
 
 pub(crate) fn row_total(force_id: &str, residues: &[SnapshotResidue]) -> usize {
@@ -84,7 +88,8 @@ struct HeaderCol<'a> {
     status: &'a str,
     architecture_set: &'a str,
     tooltip: String,
-    bucket: &'static str,
+    shape: &'static str,
+    legacy_actual_hook: &'static str,
 }
 
 /// Precomputed per-(force, component) coupling cell data.
@@ -100,6 +105,7 @@ struct ForceRow<'a> {
     kind: &'static str,
     arch: String,
     attractor_id: &'a str,
+    attractor_color: String,
     search: String,
     total: usize,
     label: String,
@@ -134,7 +140,16 @@ pub fn render_matrix(snapshot: &LandscapeSnapshot) -> String {
             status: &component.status,
             architecture_set: &component.architecture_set,
             tooltip: status_tooltip(&component.status),
-            bucket: status_bucket(&component.status),
+            shape: match component.status.as_str() {
+                "actual" => "circle",
+                "proposed" => "square",
+                _ => "other",
+            },
+            legacy_actual_hook: if component.status == "actual" {
+                "status-dot status-actual"
+            } else {
+                ""
+            },
         })
         .collect();
 
@@ -142,7 +157,8 @@ pub fn render_matrix(snapshot: &LandscapeSnapshot) -> String {
         .iter()
         .map(|force| {
             let kind = force_kind_attr(force.kind);
-            let arch = architecture_sets_for_force(&force.id, &snapshot.components, &snapshot.residues);
+            let arch =
+                architecture_sets_for_force(&force.id, &snapshot.components, &snapshot.residues);
             let search = format!(
                 "{} {} {} {} {}",
                 force.id, force.shortname, kind, force.attractor_id, arch
@@ -178,6 +194,7 @@ pub fn render_matrix(snapshot: &LandscapeSnapshot) -> String {
                 kind,
                 arch,
                 attractor_id: &force.attractor_id,
+                attractor_color: attractor_color_for_id(&force.attractor_id),
                 search,
                 total,
                 label,
@@ -216,12 +233,16 @@ pub fn render_matrix(snapshot: &LandscapeSnapshot) -> String {
                             class: "sticky-row",
                             "data-component": "{col.name}",
                             "data-status": "{col.status}",
+                            "data-component-status-shape": "{col.status}",
                             "data-architecture-set": "{col.architecture_set}",
                             "data-sort-key": "component:{col.name}",
                             title: "{col.tooltip}",
                             tabindex: "0",
                             role: "button",
-                            span { class: "status-dot status-{col.bucket}" }
+                            span {
+                                class: "component-status-glyph status-shape-{col.shape} {col.legacy_actual_hook}",
+                                "aria-hidden": "true"
+                            }
                             "{col.name}"
                         }
                     }
@@ -235,11 +256,14 @@ pub fn render_matrix(snapshot: &LandscapeSnapshot) -> String {
             tbody {
                 for row in force_rows.iter() {
                     tr {
-                        class: "force-row",
+                        class: "force-row force-attractor-tint",
                         "data-force-id": "{row.id}",
                         "data-force-kind": "{row.kind}",
+                        "data-force-kind-glyph": "{row.kind}",
                         "data-architecture-set": "{row.arch}",
                         "data-attractor-id": "{row.attractor_id}",
+                        "data-force-attractor-tint": "true",
+                        style: "--force-attractor-color: {row.attractor_color};",
                         "data-search": "{row.search}",
                         "data-row-total": "{row.total}",
                         th {
@@ -248,8 +272,13 @@ pub fn render_matrix(snapshot: &LandscapeSnapshot) -> String {
                             button {
                                 r#type: "button",
                                 class: "force-accordion-toggle",
+                                "data-force-kind-glyph": "{row.kind}",
                                 "data-accordion-toggle": "true",
                                 "aria-expanded": "false",
+                                span {
+                                    class: "force-kind-glyph force-kind-{row.kind}",
+                                    "aria-hidden": "true"
+                                }
                                 "{row.label}"
                             }
                             div {
@@ -307,4 +336,14 @@ pub fn render_matrix(snapshot: &LandscapeSnapshot) -> String {
     };
 
     dioxus_ssr::render_element(element)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::attractor_color_for_id;
+
+    #[test]
+    fn attractor_color_uses_the_stable_client_palette() {
+        assert_eq!(attractor_color_for_id("A-01"), "hsl(352 62% 68%)");
+    }
 }

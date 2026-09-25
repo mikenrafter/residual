@@ -17,6 +17,7 @@
 import { addAttractorOption, addComponentColumn, addForceRow, updateForceField } from "./actions";
 import { toCommandLines, type PendingState } from "./model";
 import { visibleComponents } from "./render-decisions";
+import { decorateComponentHeader } from "./matrix-visuals";
 
 /** Options controlling side effects mountForms() triggers beyond the DOM/state update itself. */
 export interface MountFormsOptions {
@@ -170,7 +171,7 @@ export function mountForms(
     form.querySelector<HTMLInputElement>('[name="name"]')?.removeAttribute("aria-invalid");
   }
 
-  function insertComponentColumn(name: string): void {
+  function insertComponentColumn(name: string, status: string): void {
     const table = container.querySelector("table.matrix");
     if (table === null) return;
 
@@ -180,6 +181,7 @@ export function mountForms(
       th.className = "sticky-row";
       th.setAttribute("data-component", name);
       th.textContent = name;
+      decorateComponentHeader(th, status);
       const cornerRight = headerRow.querySelector("th.sticky-col-right");
       if (cornerRight !== null) {
         headerRow.insertBefore(th, cornerRight);
@@ -232,7 +234,7 @@ export function mountForms(
           architectureSet: readInput(form, "architecture_set"),
         });
         setState(next);
-        insertComponentColumn(name);
+        insertComponentColumn(name, readInput(form, "status") === "proposed" ? "proposed" : "actual");
         clearComponentFormError(form);
         form.reset();
         regenerate();

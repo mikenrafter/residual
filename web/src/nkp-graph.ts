@@ -378,7 +378,15 @@ export function attractorColor(index: number): string {
   return `hsl(${hue} 62% ${lightness}%)`;
 }
 
-/** Stable categorical colour derived only from an attractor id. */
+/**
+ * Stable categorical colour derived only from an attractor id. Hue alone
+ * isn't enough to keep an arbitrary, growing set of ids visually distinct:
+ * two independently-hashed hues land within a few degrees of each other
+ * often enough to look like duplicates, and the old fixed 62% saturation with
+ * a 3-step lightness ramp gave near-hue colours nowhere else to differ. Every
+ * channel now comes from a disjoint slice of the hash so two ids need to
+ * collide on hue, saturation, and lightness simultaneously to be confused.
+ */
 export function attractorColorForId(id: string): string {
   let hash = 2166136261;
   for (let index = 0; index < id.length; index += 1) {
@@ -387,8 +395,9 @@ export function attractorColorForId(id: string): string {
   }
   const unsigned = hash >>> 0;
   const hue = unsigned % 360;
-  const lightness = 58 + ((unsigned >>> 9) % 3) * 5;
-  return `hsl(${hue} 62% ${lightness}%)`;
+  const saturation = 55 + ((unsigned >>> 9) % 31);
+  const lightness = 42 + ((unsigned >>> 16) % 31);
+  return `hsl(${hue} ${saturation}% ${lightness}%)`;
 }
 
 /** A component fill that keeps its attractor hue without competing with force glyphs. */

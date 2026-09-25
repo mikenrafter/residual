@@ -73,6 +73,7 @@
 import { addForceRow, removeForce, setAddedForceKind, toggleComponent, updateForceField } from "./actions";
 import type { PendingState } from "./model";
 import { attractorOptions, computeInvalidMarks } from "./render-decisions";
+import { decorateForceRow } from "./matrix-visuals";
 
 /** Options controlling side effects mount() triggers beyond the DOM/state update itself. */
 export interface MountOptions {
@@ -301,6 +302,11 @@ export function mount(
         }
       }
       setState(next);
+      const row = detail.closest("tr.force-row");
+      if (row instanceof HTMLTableRowElement) {
+        const kind = row.getAttribute("data-force-kind") === "purpose" ? "purpose" : "stressor";
+        decorateForceRow(row, kind, getEffectiveForceValues(next, forceKey).attractorId);
+      }
       renderReadOnly(detail, forceKey);
       applyInvalidMarks();
       options?.onChange?.();
@@ -334,7 +340,15 @@ export function mount(
     field: EditableField,
   ): void {
     el.addEventListener(eventName, () => {
-      setState(updateForceField(getState(), forceKey, field, el.value));
+      const next = updateForceField(getState(), forceKey, field, el.value);
+      setState(next);
+      if (field === "attractorId") {
+        const row = table.querySelector<HTMLTableRowElement>(`tr.force-row[data-force-id="${CSS.escape(forceKey)}"]`);
+        if (row !== null) {
+          const kind = row.getAttribute("data-force-kind") === "purpose" ? "purpose" : "stressor";
+          decorateForceRow(row, kind, el.value);
+        }
+      }
       applyInvalidMarks();
       options?.onChange?.();
     });
@@ -372,6 +386,7 @@ export function mount(
       const nextKind = kindSelect.value === "purpose" ? "purpose" : "stressor";
       setState(setAddedForceKind(getState(), tempId, nextKind));
       tr.setAttribute("data-force-kind", nextKind);
+      decorateForceRow(tr, nextKind, getEffectiveForceValues(getState(), tempId).attractorId);
       applyInvalidMarks();
       options?.onChange?.();
     });
@@ -405,6 +420,7 @@ export function mount(
     detail.appendChild(editor);
     th.appendChild(detail);
     tr.appendChild(th);
+    decorateForceRow(tr, kind, values.attractorId);
 
     for (const component of components) {
       tr.appendChild(createResidueCell(tempId, component.name));

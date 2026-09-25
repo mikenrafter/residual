@@ -26,6 +26,7 @@ import { mountImportModal } from "./import-modal";
 import { mountExportScript } from "./export-script";
 import { mountMatrixView } from "./matrix-view";
 import { mountLandscape } from "./nkp-landscape";
+import { mountLedgerPanels } from "./ledger-panels";
 import type { PendingState } from "./model";
 // @ts-ignore The browser loads D3 directly from the same ESM endpoint as slaughter.pro.
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm";
@@ -50,6 +51,7 @@ const setState = (next: PendingState): void => {
 // value init — see matrix-view.ts — could never find `[data-threshold-input]`
 // to update it).
 const container = document.body;
+mountLedgerPanels(container as HTMLElement);
 const table = container.querySelector<HTMLTableElement>("table.matrix");
 
 if (table) {

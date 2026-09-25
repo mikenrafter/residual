@@ -5,6 +5,7 @@
 use anyhow::Result;
 
 use crate::view::components::defense::{render_defense_forms, render_defense_records};
+use crate::view::components::ledger::{render_modify_ledger_tabs, render_page_ledger_tabs};
 use crate::view::components::matrix::render_matrix;
 use crate::view::snapshot::LandscapeSnapshot;
 
@@ -19,6 +20,13 @@ pub const SNAPSHOT_ELEMENT_ID: &str = "residual-snapshot";
 const MATRIX_PLACEHOLDER: &str = "{{MATRIX}}";
 const DEFENSE_FORMS_PLACEHOLDER: &str = "{{DEFENSE_FORMS}}";
 const DEFENSE_RECORDS_PLACEHOLDER: &str = "{{DEFENSE_RECORDS}}";
+const PAGE_LEDGER_TABS_PLACEHOLDER: &str = "{{PAGE_LEDGER_TABS}}";
+const IMPLEMENTATION_PANEL_OPEN_PLACEHOLDER: &str = "{{IMPLEMENTATION_PANEL_OPEN}}";
+const IMPLEMENTATION_PANEL_CLOSE_PLACEHOLDER: &str = "{{IMPLEMENTATION_PANEL_CLOSE}}";
+const DEFENSE_PANEL_PLACEHOLDER: &str = "{{DEFENSE_PANEL}}";
+const MODIFY_LEDGER_TABS_PLACEHOLDER: &str = "{{MODIFY_LEDGER_TABS}}";
+const IMPLEMENTATION_FORM_PANEL_OPEN_PLACEHOLDER: &str = "{{IMPLEMENTATION_FORM_PANEL_OPEN}}";
+const IMPLEMENTATION_FORM_PANEL_CLOSE_PLACEHOLDER: &str = "{{IMPLEMENTATION_FORM_PANEL_CLOSE}}";
 
 /// Token in [`TEMPLATE`] replaced by the compiled client-side bundle.
 const APP_JS_PLACEHOLDER: &str = "{{APP_JS}}";
@@ -42,12 +50,58 @@ pub fn render_landscape_html(snapshot: &LandscapeSnapshot) -> Result<String> {
         Some(defense) => render_defense_forms(defense),
         None => String::new(),
     };
+    let has_defense = snapshot.defense.is_some();
+    let page_ledger_tabs = has_defense
+        .then(render_page_ledger_tabs)
+        .unwrap_or_default();
+    let implementation_panel_open = if has_defense {
+        r#"<section id="implementation-ledger-panel" data-ledger-panel="implementation">"#
+            .to_string()
+    } else {
+        String::new()
+    };
+    let implementation_panel_close = if has_defense { "</section>" } else { "" };
+    let defense_panel = if has_defense {
+        format!(
+            r#"<section id="defense-ledger-panel" data-ledger-panel="defense" hidden>{defense_records}</section>"#
+        )
+    } else {
+        String::new()
+    };
+    let modify_ledger_tabs = has_defense
+        .then(render_modify_ledger_tabs)
+        .unwrap_or_default();
+    let implementation_form_panel_open = if has_defense {
+        r#"<div data-modify-panel="implementation">"#.to_string()
+    } else {
+        String::new()
+    };
+    let implementation_form_panel_close = if has_defense { "</div>" } else { "" };
 
     let html = TEMPLATE
         .replace(SNAPSHOT_PLACEHOLDER, &json)
         .replace(MATRIX_PLACEHOLDER, &matrix)
-        .replace(DEFENSE_RECORDS_PLACEHOLDER, &defense_records)
+        .replace(DEFENSE_RECORDS_PLACEHOLDER, "")
         .replace(DEFENSE_FORMS_PLACEHOLDER, &defense_forms)
+        .replace(PAGE_LEDGER_TABS_PLACEHOLDER, &page_ledger_tabs)
+        .replace(
+            IMPLEMENTATION_PANEL_OPEN_PLACEHOLDER,
+            &implementation_panel_open,
+        )
+        .replace(
+            IMPLEMENTATION_PANEL_CLOSE_PLACEHOLDER,
+            implementation_panel_close,
+        )
+        .replace(DEFENSE_PANEL_PLACEHOLDER, &defense_panel)
+        .replace(MODIFY_LEDGER_TABS_PLACEHOLDER, &modify_ledger_tabs)
+        .replace(
+            IMPLEMENTATION_FORM_PANEL_OPEN_PLACEHOLDER,
+            &implementation_form_panel_open,
+        )
+        .replace(
+            IMPLEMENTATION_FORM_PANEL_CLOSE_PLACEHOLDER,
+            implementation_form_panel_close,
+        )
         .replace(APP_JS_PLACEHOLDER, APP_JS);
     Ok(html)
 }
@@ -88,12 +142,18 @@ mod tests {
             out.contains(r#"<script id="residual-snapshot" type="application/json">"#),
             "snapshot must be embedded as an application/json script block"
         );
-        assert!(out.contains("S-01"), "embedded snapshot must carry force ids");
-        assert!(out.contains("queue-overload"), "shortnames must be embedded");
+        assert!(
+            out.contains("S-01"),
+            "embedded snapshot must carry force ids"
+        );
+        assert!(
+            out.contains("queue-overload"),
+            "shortnames must be embedded"
+        );
 
         let json = extract_snapshot_json(&out).expect("snapshot json must be extractable");
-        let parsed: LandscapeSnapshot =
-            serde_json::from_str(json).expect("embedded snapshot must be valid LandscapeSnapshot json");
+        let parsed: LandscapeSnapshot = serde_json::from_str(json)
+            .expect("embedded snapshot must be valid LandscapeSnapshot json");
         assert_eq!(parsed.stressors.len(), 1);
         assert_eq!(parsed.stressors[0].id, "S-01");
     }
@@ -148,7 +208,9 @@ mod tests {
             "force detail must be present but collapsed by default"
         );
         assert!(
-            out.contains("queue overload") && out.contains("add retry") && out.contains("requests drain"),
+            out.contains("queue overload")
+                && out.contains("add retry")
+                && out.contains("requests drain"),
             "force detail must carry description/naive_change/outcomes"
         );
     }
@@ -185,7 +247,10 @@ mod tests {
     fn html_matrix_carries_sticky_hooks() {
         let out = html(false);
         assert!(out.contains("sticky-col"), "leftmost column must be sticky");
-        assert!(out.contains("sticky-col-right"), "rightmost column must be sticky");
+        assert!(
+            out.contains("sticky-col-right"),
+            "rightmost column must be sticky"
+        );
         assert!(out.contains("sticky-row"), "header row must be sticky");
         assert!(out.contains("<tfoot>"), "footer row exists to be sticky");
     }
@@ -297,7 +362,10 @@ mod tests {
     #[test]
     fn html_contains_residue_matrix_with_cell_data_attributes() {
         let out = html(false);
-        assert!(out.contains(r#"data-view="matrix""#), "matrix view is missing");
+        assert!(
+            out.contains(r#"data-view="matrix""#),
+            "matrix view is missing"
+        );
         assert!(
             out.contains("data-residue-cell"),
             "matrix cells must be tagged data-residue-cell"
@@ -375,7 +443,13 @@ mod tests {
                 "defense staging form for {target} must be absent without --defense"
             );
         }
-        for needle in ["MS-01", "MA-01", "MP-01", "hostile-auditor", "alpha-strategy"] {
+        for needle in [
+            "MS-01",
+            "MA-01",
+            "MP-01",
+            "hostile-auditor",
+            "alpha-strategy",
+        ] {
             assert!(
                 !out.contains(needle),
                 "defense record {needle} leaked into a non-defense landscape"
@@ -400,9 +474,18 @@ mod tests {
                 "defense staging form for {target} must be present with --defense"
             );
         }
-        assert!(out.contains("MS-01"), "meta-stressor must render with --defense");
-        assert!(out.contains("MA-01"), "meta-attractor must render with --defense");
-        assert!(out.contains("MP-01"), "meta-purpose must render with --defense");
+        assert!(
+            out.contains("MS-01"),
+            "meta-stressor must render with --defense"
+        );
+        assert!(
+            out.contains("MA-01"),
+            "meta-attractor must render with --defense"
+        );
+        assert!(
+            out.contains("MP-01"),
+            "meta-purpose must render with --defense"
+        );
         assert!(
             out.contains("hostile-auditor"),
             "defense persona must render with --defense"
@@ -436,26 +519,59 @@ mod tests {
             );
         }
 
-        let implementation = out.find(r#"data-ledger-panel="implementation""#).expect("implementation panel");
-        let defense = out.find(r#"data-ledger-panel="defense""#).expect("defense panel");
+        let implementation = out
+            .find(r#"data-ledger-panel="implementation""#)
+            .expect("implementation panel");
+        let defense = out
+            .find(r#"data-ledger-panel="defense""#)
+            .expect("defense panel");
         let tabs = out.find("data-page-ledger-tabs").expect("page ledger tabs");
         let toolbar = out.find("data-view-toolbar").expect("main toolbar");
         let matrix = out.find(r#"data-view="matrix""#).expect("matrix card");
-        let landscape = out.find(r#"data-view="landscape""#).expect("landscape card");
+        let landscape = out
+            .find(r#"data-view="landscape""#)
+            .expect("landscape card");
         let defense_record = out.find("MS-01").expect("defense record");
-        assert!(tabs < implementation, "the ledger switch belongs at page top before its panels");
-        assert!(toolbar > implementation && toolbar < defense, "main toolbar belongs to implementation panel");
-        assert!(matrix > implementation && matrix < defense, "matrix belongs to implementation panel");
-        assert!(landscape > implementation && landscape < defense, "landscape belongs to implementation panel");
-        assert!(defense_record > defense, "defense records belong to defense panel");
+        assert!(
+            tabs < implementation,
+            "the ledger switch belongs at page top before its panels"
+        );
+        assert!(
+            toolbar > implementation && toolbar < defense,
+            "main toolbar belongs to implementation panel"
+        );
+        assert!(
+            matrix > implementation && matrix < defense,
+            "matrix belongs to implementation panel"
+        );
+        assert!(
+            landscape > implementation && landscape < defense,
+            "landscape belongs to implementation panel"
+        );
+        assert!(
+            defense_record > defense,
+            "defense records belong to defense panel"
+        );
 
-        let copy = out.find("data-copy-commands").expect("shared copy/import surface");
-        assert!(copy > out.find(r#"data-modify-panel="defense""#).unwrap(), "shared copy/import follows both form panels");
+        let copy = out
+            .find("data-copy-commands")
+            .expect("shared copy/import surface");
+        assert!(
+            copy > out.find(r#"data-modify-panel="defense""#).unwrap(),
+            "shared copy/import follows both form panels"
+        );
     }
 
     #[test]
     fn default_page_has_no_implementation_defense_tab_markup() {
         let out = html(false);
+        let markup = out
+            .split("</style>")
+            .nth(1)
+            .expect("page body after embedded styles")
+            .split(r#"<script type="module">"#)
+            .next()
+            .expect("page body markup before embedded application script");
         for marker in [
             "data-page-ledger-tabs",
             "data-page-ledger-tab",
@@ -463,7 +579,10 @@ mod tests {
             "data-modify-ledger-switch",
             "data-modify-panel",
         ] {
-            assert!(!out.contains(marker), "{marker} must be absent without --defense");
+            assert!(
+                !markup.contains(marker),
+                "{marker} must be absent without --defense"
+            );
         }
     }
 
@@ -473,7 +592,8 @@ mod tests {
         let defense_source = std::fs::read_to_string(root.join("src/view/components/defense.rs"))
             .expect("defense component source");
         assert!(
-            !defense_source.contains("dangerous_inner_html") && !defense_source.contains("push_str("),
+            !defense_source.contains("dangerous_inner_html")
+                && !defense_source.contains("push_str("),
             "defense records must render as nested Dioxus components"
         );
 
@@ -484,9 +604,16 @@ mod tests {
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "rs"))
             .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
             .find(|source| source.contains("data-page-ledger-tabs"));
-        let page_source = page_source.expect("the page/tab/panel structure must live in a Dioxus component");
-        assert!(page_source.contains("rsx!"), "the page component must use Dioxus markup");
-        assert!(!page_source.contains("dangerous_inner_html"), "page rendering must not splice unsafe HTML");
+        let page_source =
+            page_source.expect("the page/tab/panel structure must live in a Dioxus component");
+        assert!(
+            page_source.contains("rsx!"),
+            "the page component must use Dioxus markup"
+        );
+        assert!(
+            !page_source.contains("dangerous_inner_html"),
+            "page rendering must not splice unsafe HTML"
+        );
     }
 
     /// Ledger text must not be able to close the embedded script block.

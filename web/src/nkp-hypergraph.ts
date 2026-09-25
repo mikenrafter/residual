@@ -381,7 +381,14 @@ const DEFAULT_CANVAS_HEIGHT = 600;
 export const REGIONS_LATTICE_CELL_SIZE = 40;
 export const REGIONS_MIN_NODE_DISTANCE = 32;
 export const REGIONS_COMPONENT_COLLISION_RADIUS = 30;
-export const REGIONS_FORCE_COLLISION_RADIUS = 9;
+/**
+ * Half of REGIONS_MIN_NODE_DISTANCE: forceCollide resolves overlaps every
+ * tick (unlike the lattice force, which only relaxes toward a snapshot taken
+ * at sparse events), so it is what actually keeps two force nodes apart
+ * against sustained intra-attractor attraction. It has to match the
+ * tessellation's minimum distance or that minimum is only nominal.
+ */
+export const REGIONS_FORCE_COLLISION_RADIUS = REGIONS_MIN_NODE_DISTANCE / 2;
 
 /** 1.3x the original glyph sizes (diamond half-diagonal 5 -> 6.5, circle r 4 -> 5.2). */
 export const FORCE_NODE_SCALE = 1.3;
@@ -627,6 +634,9 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   let byId = new Map<string, SimNode>();
   let links: SimLink[] = [];
   let bundles: RenderBundle[] = [];
+  /** Current pan/zoom, kept in sync so label bounds can be projected into the
+   * viewport actually on screen instead of the pre-zoom/pre-pan viewport. */
+  let currentTransform: { invertX: (x: number) => number; invertY: (y: number) => number } = d3.zoomIdentity;
   let regionSel: any;
   let fusionSel: any;
   let bundleTrunkSel: any;
@@ -902,7 +912,19 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
 
   function positionLabels(): void {
     if (!built) return;
-    const bounds = { x: 8, y: 8, width: Math.max(0, built.width - 16), height: Math.max(0, built.height - 16) };
+    // Node/label coordinates live in model space; the screen viewport moves
+    // under them as the user pans/zooms. Invert the on-screen padded box
+    // through the live transform so "visible" tracks the actual viewport
+    // instead of the viewport at load time (identity transform).
+    const screenLeft = 8;
+    const screenTop = 8;
+    const screenRight = Math.max(screenLeft, built.width - 8);
+    const screenBottom = Math.max(screenTop, built.height - 8);
+    const left = currentTransform.invertX(screenLeft);
+    const top = currentTransform.invertY(screenTop);
+    const right = currentTransform.invertX(screenRight);
+    const bottom = currentTransform.invertY(screenBottom);
+    const bounds = { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
     componentLabelSel
       ?.attr("x", (node: SimNode) => projectLabelAnchor({ x: node.x ?? 0, y: (node.y ?? 0) + (node.type === "component" && node.fissionCandidate ? -19 : -13) }, bounds).x)
       .attr("y", (node: SimNode) => projectLabelAnchor({ x: node.x ?? 0, y: (node.y ?? 0) + (node.type === "component" && node.fissionCandidate ? -19 : -13) }, bounds).y);
@@ -977,7 +999,10 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     const edgesG = content.append("g").attr("class", "nkp-hyper-edges");
     const nodesG = content.append("g").attr("class", "nkp-hyper-nodes");
     const labelsGroup = svg.append("g").attr("class", "landscape-labels");
-    zoom.on("zoom.labels", (event: { transform: unknown }) => labelsGroup.attr("transform", event.transform));
+    zoom.on("zoom.labels", (event: { transform: typeof currentTransform }) => {
+      currentTransform = event.transform;
+      labelsGroup.attr("transform", event.transform);
+    });
     svg.on("dblclick", () => ctx.onClear());
 
     const sim = d3.forceSimulation([])

@@ -452,6 +452,8 @@ describe("mountForms — component form submit", () => {
     expect(table.querySelectorAll("thead th").length).toBe(theadRowBefore + 1);
     const newHeader = table.querySelector('thead th[data-component="queue"]');
     expect(newHeader).not.toBeNull();
+    expect(newHeader?.getAttribute("data-component-status-shape")).toBe("proposed");
+    expect(newHeader?.querySelector(".component-status-glyph")?.classList.contains("status-shape-square")).toBe(true);
 
     const bodyRowsAfter = table.querySelectorAll("tbody tr.force-row");
     expect(bodyRowsAfter.length).toBe(bodyRowsBefore); // no new rows, only a new column
