@@ -525,6 +525,46 @@ describe("createBundleView (persistent view handle, Phase 3)", () => {
     expect(authDbEdge?.classList.contains("dim")).toBe(false);
   });
 
+  test("setSelection with a force and its partial-transitive connected set lights peer leaves and the coupling edge", () => {
+    // When landscape passes highlightConnectedKeys for a selected force, the
+    // force's own components land in `connected` and the edge between them
+    // must get positive lit/connected treatment — not merely escape dimming
+    // because one leaf happened to be selected.
+    const { ctx, host } = makeCtx();
+    const handle = bundleViewModule.createBundleView?.(ctx);
+    handle?.update(fixtureState, {});
+    const forceKey = `force:${authCache1.id}`;
+    handle?.setSelection(
+      new Set([forceKey]),
+      new Set([forceKey, "attractor:A-01", "component:auth", "component:cache"]),
+    );
+
+    const auth = leafFor(host, "auth");
+    const cache = leafFor(host, "cache");
+    const db = leafFor(host, "db");
+    expect(auth?.classList.contains("connected") || auth?.closest(".connected") !== null).toBe(true);
+    expect(cache?.classList.contains("connected") || cache?.closest(".connected") !== null).toBe(true);
+    expect(auth?.classList.contains("dim")).toBe(false);
+    expect(cache?.classList.contains("dim")).toBe(false);
+    expect(db?.classList.contains("dim")).toBe(true);
+
+    const edgeDatum = (el: SVGPathElement): { edge: { source: string; target: string } } =>
+      d3.select(el).datum() as { edge: { source: string; target: string } };
+    const edges = [...host.querySelectorAll<SVGPathElement>("path.nkp-bundle-edge")];
+    const authCacheEdge = edges.find((el) => {
+      const { edge } = edgeDatum(el);
+      return (edge.source === "component:auth" && edge.target === "component:cache")
+        || (edge.source === "component:cache" && edge.target === "component:auth");
+    });
+    expect(authCacheEdge).toBeDefined();
+    expect(authCacheEdge?.classList.contains("dim")).toBe(false);
+    // Positive connected/lit marking on the coupling itself (regions uses is-lit;
+    // bundle should mark the edge connected or is-lit so focus is visible).
+    expect(
+      authCacheEdge?.classList.contains("connected") || authCacheEdge?.classList.contains("is-lit"),
+    ).toBe(true);
+  });
+
   test("focus leaves labels persistently visible only for selected and connected entities", () => {
     const { ctx, host } = makeCtx();
     const handle = bundleViewModule.createBundleView?.(ctx);

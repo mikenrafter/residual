@@ -462,6 +462,71 @@ describe("createHeatmapView (persistent view handle, Phase 3)", () => {
         .some((el) => el.classList.contains("mirror-dim"));
       expect(stillDimmed).toBe(false);
     });
+
+    test("clearing selection resets the canonical half so a later engagement can pin the opposite half", () => {
+      const { ctx, host } = makeCtx();
+      const handle = heatmapModule.createHeatmapView?.(ctx);
+      handle?.update(blocks, options);
+      const cells = () => [...host.querySelectorAll<HTMLElement>("[data-cell-row][data-cell-col]")];
+      const upperCell = cells().find((el) => Number(el.dataset.cellCol) > Number(el.dataset.cellRow))!;
+      const lowerCell = cells().find((el) => Number(el.dataset.cellCol) < Number(el.dataset.cellRow))!;
+
+      upperCell.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      upperCell.dispatchEvent(new MouseEvent("mouseleave", { bubbles: true }));
+      expect(cells().filter((el) => Number(el.dataset.cellCol) < Number(el.dataset.cellRow))
+        .every((el) => el.classList.contains("mirror-dim"))).toBe(true);
+
+      handle?.setSelection(new Set(), new Set());
+      lowerCell.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      lowerCell.dispatchEvent(new MouseEvent("mouseleave", { bubbles: true }));
+      expect(cells().filter((el) => Number(el.dataset.cellCol) > Number(el.dataset.cellRow))
+        .every((el) => el.classList.contains("mirror-dim"))).toBe(true);
+      expect(cells().filter((el) => Number(el.dataset.cellCol) < Number(el.dataset.cellRow))
+        .some((el) => el.classList.contains("mirror-dim"))).toBe(false);
+    });
+
+    test("while a half is canonical, interacting with the unfocused half remaps to the focused counterpart", () => {
+      const { ctx, host, toggled } = makeCtx();
+      const handle = heatmapModule.createHeatmapView?.(ctx);
+      handle?.update(blocks, options);
+
+      const all = () => [...host.querySelectorAll<HTMLElement>("[data-cell-row][data-cell-col]")];
+      const upperCell = all().find((el) => Number(el.dataset.cellCol) > Number(el.dataset.cellRow));
+      expect(upperCell).toBeDefined();
+      const upperRow = Number(upperCell!.dataset.cellRow);
+      const upperCol = Number(upperCell!.dataset.cellCol);
+      const lowerCell = host.querySelector<HTMLElement>(
+        `[data-cell-row="${upperCol}"][data-cell-col="${upperRow}"]`,
+      );
+      expect(lowerCell).not.toBeNull();
+
+      upperCell?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      upperCell?.dispatchEvent(new MouseEvent("mouseleave", { bubbles: true }));
+      const expectedForces = [...toggled].sort();
+      toggled.length = 0;
+
+      // Clicking the lower mirror must not flip the canonical half, and must
+      // toggle the same forces as the upper (j,i) counterpart.
+      lowerCell?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      lowerCell?.dispatchEvent(new MouseEvent("mouseleave", { bubbles: true }));
+      expect([...toggled].sort()).toEqual(expectedForces);
+
+      const lower = all().filter((el) => Number(el.dataset.cellCol) < Number(el.dataset.cellRow));
+      const upper = all().filter((el) => Number(el.dataset.cellCol) > Number(el.dataset.cellRow));
+      expect(lower.every((el) => el.classList.contains("mirror-dim"))).toBe(true);
+      expect(upper.some((el) => el.classList.contains("mirror-dim"))).toBe(false);
+
+      // Hover on the unfocused half remaps header bands to the focused (swapped) cell.
+      lowerCell?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+      const rowActive = [...host.querySelectorAll<HTMLElement>('[data-header-axis="row"]')]
+        .find((el) => el.classList.contains("is-active"));
+      const colActive = [...host.querySelectorAll<HTMLElement>('[data-header-axis="col"]')]
+        .find((el) => el.classList.contains("is-active"));
+      expect(rowActive?.getAttribute("data-header-index")).toBe(String(upperRow));
+      expect(colActive?.getAttribute("data-header-index")).toBe(String(upperCol));
+      // Unfocused half stays mirror-dim while the canonical half is pinned.
+      expect(lower.every((el) => el.classList.contains("mirror-dim"))).toBe(true);
+    });
   });
 
   test("destroy removes the drawing from the host", () => {

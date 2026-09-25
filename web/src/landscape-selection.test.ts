@@ -22,6 +22,12 @@ type SelectionModule = {
   entityDetail?: (state: PendingState, key: EntityKey) => EntityDetail | undefined;
   connectedKeys?: (state: PendingState, selected: Iterable<EntityKey>) => Set<EntityKey>;
   directlyConnectedKeys?: (state: PendingState, selected: Iterable<EntityKey>) => Set<EntityKey>;
+  /**
+   * Partial-transitive highlight set used by landscape views (regions / bundle /
+   * heatmap) and hover. Wider than directlyConnectedKeys (siblings / shared
+   * attractor membership), narrower than connectedKeys' full closure.
+   */
+  highlightConnectedKeys?: (state: PendingState, selected: Iterable<EntityKey>) => Set<EntityKey>;
   toggleSelection?: (current: ReadonlySet<EntityKey>, key: EntityKey) => Set<EntityKey>;
   HOVER_DIM_OPACITY?: number;
   SELECTION_DIM_OPACITY?: number;
@@ -254,6 +260,71 @@ describe("directlyConnectedKeys", () => {
 
   test("an empty selection connects to nothing", () => {
     expect(mod.directlyConnectedKeys?.(state(), [])).toEqual(new Set());
+  });
+});
+
+/**
+ * Partial-transitive highlight set — landscape views (regions / bundle / heatmap)
+ * and hover must use highlightConnectedKeys (not directlyConnectedKeys). Call
+ * sites will swap in the green phase.
+ */
+describe("highlightConnectedKeys", () => {
+  test("selecting a force includes its attractor, own components, and sibling forces — not siblings' extra components", () => {
+    const s01 = mod.highlightConnectedKeys?.(state(), ["force:S-01"]);
+    expect(s01).toBeDefined();
+    expect([...(s01 ?? [])].sort()).toEqual(
+      ["force:S-01", "attractor:A-01", "component:auth", "component:cache", "force:S-02"].sort(),
+    );
+    expect(s01?.has("force:P-01")).toBe(false);
+    expect(s01?.has("component:db")).toBe(false);
+
+    const s02 = mod.highlightConnectedKeys?.(state(), ["force:S-02"]);
+    expect([...(s02 ?? [])].sort()).toEqual(
+      ["force:S-02", "attractor:A-01", "component:auth", "force:S-01"].sort(),
+    );
+    expect(s02?.has("component:cache")).toBe(false);
+  });
+
+  test("selecting an attractor includes all its forces and every component those forces touch", () => {
+    const a01 = mod.highlightConnectedKeys?.(state(), ["attractor:A-01"]);
+    expect([...(a01 ?? [])].sort()).toEqual(
+      ["attractor:A-01", "force:S-01", "force:S-02", "component:auth", "component:cache"].sort(),
+    );
+
+    const a02 = mod.highlightConnectedKeys?.(state(), ["attractor:A-02"]);
+    expect([...(a02 ?? [])].sort()).toEqual(
+      ["attractor:A-02", "force:P-01", "component:cache", "component:db"].sort(),
+    );
+  });
+
+  test("selecting a component includes forces that touch it and those forces' attractors — not sibling forces or other components", () => {
+    const auth = mod.highlightConnectedKeys?.(state(), ["component:auth"]);
+    expect([...(auth ?? [])].sort()).toEqual(
+      ["component:auth", "force:S-01", "force:S-02", "attractor:A-01"].sort(),
+    );
+    expect(auth?.has("component:cache")).toBe(false);
+
+    const cache = mod.highlightConnectedKeys?.(state(), ["component:cache"]);
+    expect([...(cache ?? [])].sort()).toEqual(
+      ["component:cache", "force:S-01", "attractor:A-01", "force:P-01", "attractor:A-02"].sort(),
+    );
+    expect(cache?.has("force:S-02")).toBe(false);
+    expect(cache?.has("component:auth")).toBe(false);
+    expect(cache?.has("component:db")).toBe(false);
+  });
+
+  test("an empty selection highlights nothing", () => {
+    expect(mod.highlightConnectedKeys?.(state(), [])).toEqual(new Set());
+  });
+
+  test("multiple selected seeds union their partial-transitive sets", () => {
+    const result = mod.highlightConnectedKeys?.(state(), ["force:S-01", "force:P-01"]);
+    expect([...(result ?? [])].sort()).toEqual(
+      [
+        "force:S-01", "attractor:A-01", "component:auth", "component:cache", "force:S-02",
+        "force:P-01", "attractor:A-02", "component:db",
+      ].sort(),
+    );
   });
 });
 

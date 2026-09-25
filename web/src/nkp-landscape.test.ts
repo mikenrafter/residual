@@ -44,6 +44,7 @@ function fixture(open: boolean): void {
         <label data-landscape-for="heatmap" data-test="counts"></label>
         <label data-landscape-for="regions" data-test="focus"></label>
         <label data-landscape-for="regions" data-test="lock"><input type="checkbox" data-regions-lock-toggle /></label>
+        <label data-landscape-for="regions" data-test="keep-sim"><input type="checkbox" data-regions-keep-simulating-toggle /></label>
         <button type="button" data-landscape-reset-view>reset view</button>
         <button type="button" data-landscape-deselect-all>deselect all</button>
       </div>
@@ -244,10 +245,24 @@ describe("rendered-page integration", () => {
     expect(shell).toContain("data-regions-lock-toggle");
   });
 
+  test("the landscape fixture exposes a regions keep-simulating checkbox", () => {
+    fixture(true);
+    const toggle = document.querySelector<HTMLInputElement>("[data-regions-keep-simulating-toggle]");
+    expect(toggle).not.toBeNull();
+    expect(toggle?.checked).toBe(false);
+    const label = toggle?.closest<HTMLElement>("[data-landscape-for]");
+    expect(label?.getAttribute("data-landscape-for")).toBe("regions");
+  });
+
   test("defines connected and directly connected in the visible in-app help", async () => {
     const shell = await Bun.file("../src/view/shell.html").text();
     expect(shell).toMatch(/directly connected[\s\S]{0,500}force[^<]*component|force[^<]*component[\s\S]{0,500}directly connected/i);
     expect(shell).toMatch(/connected[\s\S]{0,500}(?:transitive|reachable|path)/i);
+  });
+
+  test("in-app help describes the partial-transitive highlight set used by landscape views", async () => {
+    const shell = await Bun.file("../src/view/shell.html").text();
+    expect(shell).toMatch(/partial[\s-]?transitive|highlightConnected|sibling forces|own components/i);
   });
 
   test("the focused detail card is fixed bottom-right on desktop and returns to document flow on mobile", async () => {

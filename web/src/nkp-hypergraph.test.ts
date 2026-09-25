@@ -53,7 +53,12 @@ interface ViewHandle {
    * `tick` accepts an optional iteration count (mirrors d3-force's own
    * simulation.tick(iterations?)), used by the core-containment/collision
    * tests below to settle physics over several steps at once. */
-  simulation?: { nodes: () => SimNodeSnapshot[]; tick: (iterations?: number) => void };
+  simulation?: {
+    nodes: () => SimNodeSnapshot[];
+    tick: (iterations?: number) => void;
+    alpha?: () => number;
+    alphaTarget?: (value?: number) => number;
+  };
   /** Test-only hook (not yet implemented): drives a node drag programmatically
    * instead of through real pointer events, running the same clamp-to-core-
    * boundary logic the real "drag" event handler uses. */
@@ -112,6 +117,10 @@ type RegionsViewModule = {
     nodes: { type: string; attractorId?: string; x?: number; y?: number }[],
     padding: number,
   ) => GroupCircleLike[];
+  // --- cohesion / settle (red-phase contracts) ---
+  createAttractorCohesionForce?: (strength?: number) => unknown;
+  ATTRACTOR_COHESION_STRENGTH?: number;
+  INITIAL_SETTLE_TICKS?: number;
 };
 
 let regionsModule: RegionsViewModule = {};
@@ -1001,6 +1010,18 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     expect(Number(boundary?.getAttribute("r"))).toBeCloseTo(expectedRadius, 5);
   });
 
+  test("core boundary circle has an explicit visible stroke", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const boundary = host.querySelector("[data-core-boundary]");
+    expect(boundary).not.toBeNull();
+    expect(boundary?.classList.contains("nkp-hyper-core-boundary")).toBe(true);
+    const stroke = boundary?.getAttribute("stroke") ?? "";
+    expect(stroke.length).toBeGreaterThan(0);
+    expect(stroke).not.toBe("none");
+  });
+
   test("draws a horizontal dividing line across the core zone boundary", () => {
     const { ctx, host } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
@@ -1151,5 +1172,85 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     expect(svg?.classList.contains("nkp-hyper-selecting")).toBe(false);
     const regions = [...host.querySelectorAll("g.nkp-hyper-region")];
     expect(regions.every((el) => el.classList.contains("is-lit"))).toBe(true);
+  });
+
+  test("ATTRACTOR_COHESION_STRENGTH defaults near 0.1 (about 1/3 of the old 0.3)", () => {
+    const strength = regionsModule.ATTRACTOR_COHESION_STRENGTH;
+    expect(typeof strength).toBe("number");
+    expect(strength!).toBeGreaterThanOrEqual(0.08);
+    expect(strength!).toBeLessThanOrEqual(0.12);
+  });
+
+  test("at initial seed, distinct attractors' force centroids sit outside the core and occupy distinct angular sectors", () => {
+    const multi = state({
+      baseAttractors: [
+        ...attractors,
+        { id: "A-03", name: "throughput", description: "", positiveState: "", negativeState: "" },
+      ],
+      baseComponents: ["auth", "cache", "database"].map((name) => component(name)),
+      baseForces: [
+        force("S-01", "A-01", ["auth"]),
+        force("S-02", "A-02", ["cache"]),
+        force("S-03", "A-03", ["database"]),
+      ],
+    });
+    const { ctx } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(multi, options);
+    // First update only — no manual ticks — so we see the seeded layout.
+    const nodes = handle?.simulation?.nodes() ?? [];
+    const componentCount = nodes.filter((n) => n.type === "component").length;
+    const radius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
+    const center = { x: 400, y: 300 };
+    const byAttractor = new Map<string, { x: number; y: number }[]>();
+    for (const node of nodes) {
+      if (node.type !== "force" || !node.attractorId) continue;
+      const list = byAttractor.get(node.attractorId) ?? [];
+      list.push({ x: node.x ?? 0, y: node.y ?? 0 });
+      byAttractor.set(node.attractorId, list);
+    }
+    expect(byAttractor.size).toBe(3);
+    const angles: number[] = [];
+    for (const points of byAttractor.values()) {
+      const cx = points.reduce((sum, p) => sum + p.x, 0) / points.length;
+      const cy = points.reduce((sum, p) => sum + p.y, 0) / points.length;
+      const dist = Math.hypot(cx - center.x, cy - center.y);
+      expect(dist).toBeGreaterThan(radius * 0.95);
+      angles.push(Math.atan2(cy - center.y, cx - center.x));
+    }
+    angles.sort((a, b) => a - b);
+    const deltas: number[] = [];
+    for (let i = 0; i < angles.length; i += 1) {
+      let delta = angles[(i + 1) % angles.length]! - angles[i]!;
+      if (delta <= 0) delta += Math.PI * 2;
+      deltas.push(delta);
+    }
+    // Fail if every attractor piles into the same ~30° wedge (max gap ≈ 330°+).
+    const maxDelta = Math.max(...deltas);
+    expect(maxDelta).toBeLessThan((330 * Math.PI) / 180);
+    // Consecutive sectors should be roughly even for 3 attractors (~120° ± generous).
+    const expected = (2 * Math.PI) / 3;
+    for (const delta of deltas) {
+      expect(delta).toBeGreaterThan(expected * 0.35);
+      expect(delta).toBeLessThan(expected * 1.65);
+    }
+  });
+
+  test("INITIAL_SETTLE_TICKS is exported and at least 50", () => {
+    expect(typeof regionsModule.INITIAL_SETTLE_TICKS).toBe("number");
+    expect(regionsModule.INITIAL_SETTLE_TICKS!).toBeGreaterThanOrEqual(50);
+  });
+
+  test("keepSimulating:true holds alphaTarget above zero; false (default) cools to stop", () => {
+    const { ctx } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), { ...options, keepSimulating: true });
+    expect(handle?.simulation?.alphaTarget?.()).toBeGreaterThan(0);
+
+    handle?.update(state(), { ...options, keepSimulating: false });
+    expect(handle?.simulation?.alphaTarget?.() ?? 0).toBe(0);
+
+    handle?.update(state(), options);
+    expect(handle?.simulation?.alphaTarget?.() ?? 0).toBe(0);
   });
 });
