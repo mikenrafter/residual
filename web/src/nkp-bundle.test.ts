@@ -485,6 +485,46 @@ describe("createBundleView (persistent view handle, Phase 3)", () => {
     expect(db?.classList.contains("connected") || db?.closest(".connected") !== null).toBe(false);
   });
 
+  test("setSelection dims a bundle edge whose components are both outside selection/connection", () => {
+    const { ctx, host } = makeCtx();
+    const handle = bundleViewModule.createBundleView?.(ctx);
+    // Extend the base fixture with a fourth component ("queue") coupled only
+    // to "db", so a db<->queue edge exists that never touches the auth/cache
+    // pair used for selection below.
+    const dbQueue1 = force("A-01", ["db", "queue"], "dq1");
+    const dbQueue2 = force("A-01", ["db", "queue"], "dq2");
+    const dimFixture = state(
+      [authCache1, authCache2, authDb1, authDb2, dbQueue1, dbQueue2],
+      [component("auth"), component("cache"), component("db"), component("queue")],
+      [a1],
+    );
+    handle?.update(dimFixture, {});
+    handle?.setSelection(new Set(["component:auth"]), new Set(["component:auth", "component:cache"]));
+
+    const edgeDatum = (el: SVGPathElement): { edge: { source: string; target: string } } =>
+      d3.select(el).datum() as { edge: { source: string; target: string } };
+    const edges = [...host.querySelectorAll<SVGPathElement>("path.nkp-bundle-edge")];
+    const touches = (el: SVGPathElement, a: string, b: string): boolean => {
+      const { edge } = edgeDatum(el);
+      return (edge.source === a && edge.target === b) || (edge.source === b && edge.target === a);
+    };
+
+    // db<->queue: neither endpoint is selected ("auth") or connected ("cache").
+    const dbQueueEdge = edges.find((el) => touches(el, "component:db", "component:queue"));
+    expect(dbQueueEdge).toBeDefined();
+    expect(dbQueueEdge?.classList.contains("dim")).toBe(true);
+
+    // auth<->cache: both endpoints are selected/connected.
+    const authCacheEdge = edges.find((el) => touches(el, "component:auth", "component:cache"));
+    expect(authCacheEdge).toBeDefined();
+    expect(authCacheEdge?.classList.contains("dim")).toBe(false);
+
+    // auth<->db: one endpoint (auth) is selected.
+    const authDbEdge = edges.find((el) => touches(el, "component:auth", "component:db"));
+    expect(authDbEdge).toBeDefined();
+    expect(authDbEdge?.classList.contains("dim")).toBe(false);
+  });
+
   test("focus leaves labels persistently visible only for selected and connected entities", () => {
     const { ctx, host } = makeCtx();
     const handle = bundleViewModule.createBundleView?.(ctx);

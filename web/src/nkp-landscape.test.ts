@@ -40,7 +40,7 @@ function fixture(open: boolean): void {
         <input type="radio" name="landscape-view" value="regions" data-landscape-view-input />
         <label data-test="shared"><input type="checkbox" data-hide-filtered-graph-toggle checked /></label>
         <label data-landscape-for="bundle heatmap" data-test="strength"></label>
-        <label data-landscape-for="bundle" data-test="tension"></label>
+        <label data-landscape-for="bundle regions" data-test="tension"><input type="range" data-bundle-tension-input min="0" max="100" value="85" /></label>
         <label data-landscape-for="heatmap" data-test="counts"></label>
         <label data-landscape-for="regions" data-test="focus"></label>
         <label data-landscape-for="regions" data-test="lock"><input type="checkbox" data-regions-lock-toggle /></label>
@@ -157,7 +157,28 @@ describe("landscape controls", () => {
 
     await pickView("regions");
     expect([hidden("shared"), hidden("strength"), hidden("tension"), hidden("counts"), hidden("focus")])
-      .toEqual([false, true, true, true, false]);
+      .toEqual([false, true, false, true, false]);
+    handle.destroy();
+  });
+
+  test("the bundling slider actually affects the regions view's bundle geometry", async () => {
+    const { state } = selectionFixture();
+    const handle = mountLandscape(document.body, () => state, d3);
+    await pickView("regions");
+    handle.sync();
+    const host = document.querySelector("[data-landscape]")!;
+    const trunkPath = () => host.querySelector("path.nkp-hyper-bundle-trunk")?.getAttribute("d");
+    const tensionInput = document.querySelector<HTMLInputElement>("[data-bundle-tension-input]");
+    expect(tensionInput).not.toBeNull();
+    if (tensionInput) tensionInput.value = "100";
+    handle.sync();
+    const tight = trunkPath();
+    if (tensionInput) tensionInput.value = "0";
+    handle.sync();
+    const loose = trunkPath();
+    expect(tight).toBeTruthy();
+    expect(loose).toBeTruthy();
+    expect(tight).not.toBe(loose);
     handle.destroy();
   });
 

@@ -18,7 +18,12 @@ interface Box {
 }
 
 type GeometryModule = {
-  branchGeometry?: (from: Point, to: Point[], splitFraction?: number) => { trunk: string; branches: string[]; width: number };
+  branchGeometry?: (
+    from: Point,
+    to: Point[],
+    splitFraction?: number,
+    tension?: number,
+  ) => { trunk: string; branches: string[]; width: number };
   nudgeLabels?: (boxes: Box[], maxShift?: number) => number[];
   tessellateNodes?: (
     nodes: { id: string; x: number; y: number; fx?: number; fy?: number }[],
@@ -111,6 +116,39 @@ describe("branchGeometry", () => {
     const { trunk, branches } = mod.branchGeometry!(from, to);
     const numbers = [trunk, ...branches].flatMap((path) => (path.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number));
     for (const value of numbers) expect(Math.abs(value)).toBeLessThanOrEqual(400);
+  });
+
+  test("tension defaults to 1 and reproduces the exact previous (fully bundled) geometry", () => {
+    const from = { x: 0, y: 0 };
+    const targets = [{ x: 50, y: 50 }, { x: 100, y: -50 }, { x: 20, y: 80 }];
+    const implicit = mod.branchGeometry?.(from, targets, 0.6);
+    const explicit = mod.branchGeometry?.(from, targets, 0.6, 1);
+    expect(explicit).toEqual(implicit);
+  });
+
+  test("tension 0 collapses the trunk to a zero-length stub at the source, loosening the branches", () => {
+    const from = { x: 0, y: 0 };
+    const targets = [{ x: 50, y: 50 }, { x: 100, y: -50 }, { x: 20, y: 80 }];
+    const bundled = mod.branchGeometry?.(from, targets, 0.6, 1);
+    const loose = mod.branchGeometry?.(from, targets, 0.6, 0);
+    expect(loose?.trunk).not.toBe(bundled?.trunk);
+    expect(loose?.trunk).toContain("M 0,0"); // trunk starts and ends at `from` when the split point collapses onto it
+  });
+
+  test("tension interpolates continuously between 0 and 1", () => {
+    const from = { x: 0, y: 0 };
+    const targets = [{ x: 50, y: 50 }, { x: 100, y: -50 }];
+    const low = mod.branchGeometry?.(from, targets, 0.6, 0.25);
+    const mid = mod.branchGeometry?.(from, targets, 0.6, 0.5);
+    const high = mod.branchGeometry?.(from, targets, 0.6, 0.75);
+    expect(low?.trunk).not.toBe(mid?.trunk);
+    expect(mid?.trunk).not.toBe(high?.trunk);
+  });
+
+  test("tension has no effect on a single-target bundle (no shared split point to loosen)", () => {
+    const from = { x: 0, y: 0 };
+    const target = [{ x: 10, y: 10 }];
+    expect(mod.branchGeometry?.(from, target, 0.6, 0)).toEqual(mod.branchGeometry?.(from, target, 0.6, 1));
   });
 });
 

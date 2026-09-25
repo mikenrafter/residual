@@ -387,6 +387,26 @@ describe("createHeatmapView (persistent view handle, Phase 3)", () => {
     expect(allText.length).toBe(labelText.length);
   });
 
+  test("diagonal fill-opacity fades to 0.3x (not the old 0.4x) once its component is unfocused", () => {
+    const { ctx, host } = makeCtx();
+    const handle = heatmapModule.createHeatmapView?.(ctx);
+    // Only S-01/S-02 (A-01, touching a/c) stay visible; b/d (A-02) are
+    // unfocused but still rendered since hideFiltered is left off.
+    handle?.update(blocks, { ...options, visibleForceIds: new Set(["S-01", "S-02"]) });
+
+    const intensity = (value: number, max: number): number => (max <= 0 ? 0 : 0.18 + 0.82 * (value / max));
+    // b's k is unaffected by the filter (hideFiltered off counts every base
+    // force): S-03, S-04, S-05 => k=3, which also happens to be maxK.
+    const bRect = host.querySelector(`[data-diagonal-index="${indexOf("b")}"] rect`);
+    expect(bRect).not.toBeNull();
+    expect(Number(bRect?.getAttribute("fill-opacity"))).toBeCloseTo(intensity(3, 3) * 0.3, 5);
+
+    // a stays focused (S-01 touches it) at k=2, multiplier 1.
+    const aRect = host.querySelector(`[data-diagonal-index="${indexOf("a")}"] rect`);
+    expect(aRect).not.toBeNull();
+    expect(Number(aRect?.getAttribute("fill-opacity"))).toBeCloseTo(intensity(2, 3) * 1, 5);
+  });
+
   describe("heatmap mirror half", () => {
     test("hovering an upper-triangle cell dims every lower-triangle cell, never the diagonal", () => {
       const { ctx, host } = makeCtx();

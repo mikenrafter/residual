@@ -469,6 +469,27 @@ describe("attractor palette", () => {
     expect(graphModule.attractorColors?.(state({ baseAttractors: [adaptability, resilience] })).get("A-01")).toBe(before);
   });
 
+  test("30 distinct ids get 30 distinct colours (hue-only collisions would fail this)", () => {
+    const ids = Array.from({ length: 30 }, (_, index) => `A-${index}`);
+    const colours = ids.map((id) => graphModule.attractorColorForId?.(id));
+    expect(new Set(colours).size).toBe(30);
+  });
+
+  test("saturation and lightness vary across ids, not just hue", () => {
+    // Regression guard: the old implementation hard-coded saturation to a
+    // constant 62% and lightness to only 3 discrete values, so many ids
+    // ended up visually near-identical even with different hues.
+    const ids = Array.from({ length: 10 }, (_, index) => `A-${index}`);
+    const parsed = ids.map((id) => {
+      const colour = graphModule.attractorColorForId?.(id) ?? "";
+      const match = /^hsl\((\d+(?:\.\d+)?) (\d+(?:\.\d+)?)% (\d+(?:\.\d+)?)%\)$/.exec(colour);
+      expect(match).not.toBeNull();
+      return { saturation: Number(match?.[2]), lightness: Number(match?.[3]) };
+    });
+    expect(new Set(parsed.map((item) => item.saturation)).size).toBeGreaterThan(1);
+    expect(new Set(parsed.map((item) => item.lightness)).size).toBeGreaterThan(1);
+  });
+
   test("shared dominant-attractor logic uses the full state and is filter-stable", () => {
     expect(graphModule.dominantAttractorForComponent).toBeFunction();
     expect(graphModule.dominantAttractorForComponent?.(state(), "cache")).toBe("A-01");

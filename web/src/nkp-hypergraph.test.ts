@@ -2,6 +2,8 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import * as d3 from "d3";
 import type { PendingState, SnapshotAttractor, SnapshotComponent, SnapshotForce } from "./model";
 import {
+  REGIONS_FORCE_COLLISION_RADIUS,
+  REGIONS_MIN_NODE_DISTANCE,
   buildNkpHypergraphModel,
   centroid,
   convexHull,
@@ -29,6 +31,17 @@ interface ViewCtx {
   onToggle: (key: string) => void;
   onClear: () => void;
 }
+interface SimNodeSnapshot {
+  id: string;
+  type: string;
+  attractorId?: string;
+  x?: number;
+  y?: number;
+  vx?: number;
+  vy?: number;
+  fx?: number | null;
+  fy?: number | null;
+}
 interface ViewHandle {
   update: (state: PendingState, options?: Record<string, unknown>) => void;
   setSelection: (selected: ReadonlySet<string>, connected: ReadonlySet<string>) => void;
@@ -36,14 +49,22 @@ interface ViewHandle {
   destroy: () => void;
   /** Test-only hook (not part of the Phase 1 plan's fixed handle contract):
    * the live d3 force simulation, so incremental-update/no-clamping tests
-   * can inspect and step physics directly instead of guessing at timing. */
-  simulation?: { nodes: () => { id: string; x?: number; y?: number }[]; tick: () => void };
+   * can inspect and step physics directly instead of guessing at timing.
+   * `tick` accepts an optional iteration count (mirrors d3-force's own
+   * simulation.tick(iterations?)), used by the core-containment/collision
+   * tests below to settle physics over several steps at once. */
+  simulation?: { nodes: () => SimNodeSnapshot[]; tick: (iterations?: number) => void };
 }
 interface SimNodeLike { id: string; type: string; attractorId?: string; componentIds?: string[]; x?: number; y?: number }
 interface RegionLock {
   attractorId: string;
   anchor: { x: number; y: number };
   offsets: Map<string, { x: number; y: number }>;
+}
+interface GroupCircleLike {
+  attractorId: string;
+  center: { x: number; y: number };
+  radius: number;
 }
 type RegionsViewModule = {
   createRegionsView?: (ctx: ViewCtx) => ViewHandle;
@@ -59,6 +80,25 @@ type RegionsViewModule = {
   applyRegionLock?: (lock: RegionLock, nodes: SimNodeLike[]) => void;
   moveRegionLock?: (lock: RegionLock, anchor: { x: number; y: number }) => RegionLock;
   editRegionForceOffset?: (lock: RegionLock, forceId: string, point: { x: number; y: number }) => RegionLock;
+  // --- core zone (not yet implemented) ---
+  CORE_ZONE_BASE_RADIUS?: number;
+  CORE_ZONE_RADIUS_PER_COMPONENT?: number;
+  coreZoneRadius?: (componentCount: number) => number;
+  clampToCore?: (
+    point: { x: number; y: number },
+    center: { x: number; y: number },
+    radius: number,
+  ) => { x: number; y: number };
+  attractorCoreDistance?: (
+    nodes: { id: string; type: string; attractorId?: string; x?: number; y?: number }[],
+    attractorId: string,
+    center: { x: number; y: number },
+  ) => number;
+  // --- attractor-group collision (not yet implemented) ---
+  attractorGroupCircles?: (
+    nodes: { type: string; attractorId?: string; x?: number; y?: number }[],
+    padding: number,
+  ) => GroupCircleLike[];
 };
 
 let regionsModule: RegionsViewModule = {};
@@ -194,6 +234,13 @@ describe("buildNkpHypergraphModel", () => {
       .sort();
     expect(candidates).toEqual(["component:auth", "component:cache", "component:database"]);
   });
+
+  test("every force node precedes every component node, so attractors seed before components", () => {
+    const model = buildNkpHypergraphModel(state());
+    const firstComponentIndex = model.nodes.findIndex((item) => item.type === "component");
+    const lastForceIndex = model.nodes.map((item) => item.type).lastIndexOf("force");
+    expect(firstComponentIndex).toBeGreaterThan(lastForceIndex);
+  });
 });
 
 describe("focus component", () => {
@@ -298,6 +345,116 @@ describe("regions constants (Phase 4)", () => {
   test("forceNodeOpacity: purpose 0.75, stressor 1", () => {
     expect(regionsModule.forceNodeOpacity?.("purpose")).toBe(0.75);
     expect(regionsModule.forceNodeOpacity?.("stressor")).toBe(1);
+  });
+
+  test("REGIONS_FORCE_COLLISION_RADIUS is half of REGIONS_MIN_NODE_DISTANCE", () => {
+    expect(REGIONS_FORCE_COLLISION_RADIUS).toBe(REGIONS_MIN_NODE_DISTANCE / 2);
+    expect(REGIONS_FORCE_COLLISION_RADIUS).toBeLessThan(REGIONS_MIN_NODE_DISTANCE);
+    // Sanity: two colliding force nodes (each pushed apart by their own
+    // collision radius) should end up exactly REGIONS_MIN_NODE_DISTANCE apart.
+    expect(REGIONS_FORCE_COLLISION_RADIUS * 2).toBe(REGIONS_MIN_NODE_DISTANCE);
+  });
+});
+
+describe("core zone geometry (not yet implemented)", () => {
+  test("CORE_ZONE_BASE_RADIUS and CORE_ZONE_RADIUS_PER_COMPONENT are tunable finite positive constants", () => {
+    expect(typeof regionsModule.CORE_ZONE_BASE_RADIUS).toBe("number");
+    expect(Number.isFinite(regionsModule.CORE_ZONE_BASE_RADIUS)).toBe(true);
+    expect(regionsModule.CORE_ZONE_BASE_RADIUS ?? -1).toBeGreaterThan(0);
+    expect(typeof regionsModule.CORE_ZONE_RADIUS_PER_COMPONENT).toBe("number");
+    expect(Number.isFinite(regionsModule.CORE_ZONE_RADIUS_PER_COMPONENT)).toBe(true);
+    expect(regionsModule.CORE_ZONE_RADIUS_PER_COMPONENT ?? -1).toBeGreaterThan(0);
+  });
+
+  test("coreZoneRadius(0) is a finite positive base radius", () => {
+    const base = regionsModule.coreZoneRadius?.(0);
+    expect(typeof base).toBe("number");
+    expect(Number.isFinite(base)).toBe(true);
+    expect(base ?? -1).toBeGreaterThan(0);
+  });
+
+  test("coreZoneRadius grows (non-decreasing, then strictly increasing) with component count", () => {
+    const r0 = regionsModule.coreZoneRadius?.(0) ?? 0;
+    const r1 = regionsModule.coreZoneRadius?.(1) ?? 0;
+    const r4 = regionsModule.coreZoneRadius?.(4) ?? 0;
+    const r16 = regionsModule.coreZoneRadius?.(16) ?? 0;
+    expect(r1).toBeGreaterThanOrEqual(r0);
+    expect(r4).toBeGreaterThan(r1);
+    expect(r16).toBeGreaterThan(r4);
+  });
+
+  test("coreZoneRadius grows like sqrt(componentCount), not linearly", () => {
+    const r1 = regionsModule.coreZoneRadius?.(1) ?? 0;
+    const r4 = regionsModule.coreZoneRadius?.(4) ?? 0;
+    const r16 = regionsModule.coreZoneRadius?.(16) ?? 0;
+    const growth1 = r4 - r1; // sqrt(4)-sqrt(1) = 1
+    const growth2 = r16 - r4; // sqrt(16)-sqrt(4) = 2
+    const ratio = growth2 / growth1;
+    // Linear scaling would give exactly (16-4)/(4-1) = 4; no/constant scaling
+    // would give a ratio near 1. sqrt scaling gives exactly 2 regardless of
+    // the tunable base/coefficient, so loose bounds still discriminate.
+    expect(ratio).toBeGreaterThan(1.5);
+    expect(ratio).toBeLessThan(2.7);
+  });
+
+  test("clampToCore leaves a point already inside the circle unchanged", () => {
+    const point = { x: 5, y: 5 };
+    expect(regionsModule.clampToCore?.(point, { x: 0, y: 0 }, 40)).toEqual(point);
+  });
+
+  test("clampToCore pulls an outside point onto the boundary along the same direction from center", () => {
+    const clamped = regionsModule.clampToCore?.({ x: 100, y: 0 }, { x: 0, y: 0 }, 40);
+    expect(clamped?.x).toBeCloseTo(40, 5);
+    expect(clamped?.y).toBeCloseTo(0, 5);
+  });
+
+  test("clampToCore works relative to an arbitrary, non-origin center", () => {
+    const clamped = regionsModule.clampToCore?.({ x: 110, y: 10 }, { x: 10, y: 10 }, 40);
+    expect(clamped?.x).toBeCloseTo(50, 5);
+    expect(clamped?.y).toBeCloseTo(10, 5);
+  });
+
+  test("attractorCoreDistance measures distance to the closest force member of an attractor", () => {
+    const nodes = [
+      { id: "force:S-01", type: "force", attractorId: "A-01", x: 100, y: 0 },
+      { id: "force:S-02", type: "force", attractorId: "A-01", x: 10, y: 0 }, // closest
+      { id: "component:auth", type: "component", attractorId: "A-01", x: 1, y: 0 }, // ignored: not a force
+    ];
+    expect(regionsModule.attractorCoreDistance?.(nodes, "A-01", { x: 0, y: 0 })).toBeCloseTo(10, 5);
+  });
+
+  test("attractorCoreDistance ignores component-type nodes even when closer than any force member", () => {
+    const nodes = [
+      { id: "component:auth", type: "component", attractorId: "A-02", x: 1, y: 0 },
+      { id: "force:P-01", type: "force", attractorId: "A-02", x: 50, y: 0 },
+    ];
+    expect(regionsModule.attractorCoreDistance?.(nodes, "A-02", { x: 0, y: 0 })).toBeCloseTo(50, 5);
+  });
+
+  test("attractorCoreDistance is Infinity when the attractor has no force members", () => {
+    const nodes = [
+      { id: "force:S-01", type: "force", attractorId: "A-01", x: 10, y: 0 },
+    ];
+    expect(regionsModule.attractorCoreDistance?.(nodes, "A-99", { x: 0, y: 0 })).toBe(Infinity);
+    expect(regionsModule.attractorCoreDistance?.([], "A-01", { x: 0, y: 0 })).toBe(Infinity);
+  });
+});
+
+describe("attractorGroupCircles (not yet implemented)", () => {
+  test("summarizes each attractor's force nodes as a padded bounding circle, ignoring component nodes", () => {
+    const nodes = [
+      { type: "force", attractorId: "A-01", x: 0, y: 0 },
+      { type: "force", attractorId: "A-01", x: 10, y: 0 },
+      { type: "force", attractorId: "A-02", x: 100, y: 100 },
+      { type: "component", attractorId: undefined, x: 5, y: 5 }, // ignored
+    ];
+    const circles = regionsModule.attractorGroupCircles?.(nodes, 10) ?? [];
+    expect(circles).toHaveLength(2);
+    const a1 = circles.find((c) => c.attractorId === "A-01")!;
+    expect(a1).toBeDefined();
+    expect(a1.center.x).toBeCloseTo(5, 5);
+    expect(a1.center.y).toBeCloseTo(0, 5);
+    expect(a1.radius).toBeCloseTo(15, 5); // farthest member is 5 away from centroid, + 10 padding
   });
 });
 
@@ -633,11 +790,263 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     expect(Math.abs(after?.y ?? 0)).toBeGreaterThan(5000);
   });
 
+  test("label projection tracks the live pan/zoom transform, not the load-time one", () => {
+    // Ideally this drives a real ctrl+wheel zoom gesture and asserts the
+    // off-screen label's clamped position moves to match the new viewport.
+    // That path was investigated and found unreliable in this project's
+    // happy-dom version: happy-dom's WheelEvent constructor silently drops
+    // `ctrlKey`/`metaKey` from its init dict (confirmed by probing
+    // `new WheelEvent("wheel", { ctrlKey: true }).ctrlKey`, which reads back
+    // `undefined`), so landscape-dom's zoom filter (`ctrlKey || metaKey`)
+    // never passes and d3-zoom's wheel handler never runs. Forcing `ctrlKey`
+    // via `Object.defineProperty` after construction *does* make the filter
+    // pass, but then trips a second happy-dom gap: d3-zoom's wheel handler
+    // calls `d3.pointer`, which needs `SVGPoint.matrixTransform` — not
+    // implemented in happy-dom — so the handler throws internally (that
+    // throw is swallowed by the DOM dispatch algorithm per spec, so it never
+    // surfaces as a test failure, but the transform still never changes).
+    // Either way, a real zoom cannot be driven end-to-end here, so this is
+    // scaled back to the more modest contract the task allows: dispatching
+    // ctrl/plain wheel events on the svg must not throw, and the label for a
+    // node placed far off-screen must keep finite (non-NaN/Infinity) x/y
+    // attributes across it — guarding against the transform-inversion math
+    // blowing up, which is the concrete regression risk of this change.
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const svg = host.querySelector<SVGSVGElement>("svg");
+    expect(svg).not.toBeNull();
+    expect(svg?.getAttribute("class")).toContain("nkp-hyper");
+
+    const node = handle?.simulation?.nodes().find((item) => item.id === "force:S-01");
+    expect(node).toBeDefined();
+    if (node) { node.x = -5000; node.y = -5000; }
+
+    // update() ends with a synchronous `tick()` call (positionLabels included),
+    // so re-running it repaints the label for the moved node without needing
+    // the simulation's own async timer to fire. `simulation.tick()` would NOT
+    // do this: d3-force's manual tick() only advances physics, it never
+    // dispatches the "tick" event the render loop listens on.
+    handle?.update(state(), options);
+    const forceLabel = (): SVGTextElement | undefined =>
+      [...host.querySelectorAll<SVGTextElement>("text.nkp-hyper-force-label")]
+        .find((el) => el.textContent === "s-01-name");
+    const before = forceLabel();
+    expect(before).toBeDefined();
+    expect(Number.isFinite(Number(before?.getAttribute("x")))).toBe(true);
+    expect(Number.isFinite(Number(before?.getAttribute("y")))).toBe(true);
+
+    // A plain wheel is not a zoom gesture per landscape-dom's filter
+    // (ctrlKey/metaKey required) — confirm it's a safe no-op first.
+    const plainWheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, ctrlKey: false, deltaY: 1 });
+    expect(() => svg?.dispatchEvent(plainWheel)).not.toThrow();
+
+    // A ctrl+wheel dispatch (the real zoom gesture, environment limitations
+    // notwithstanding per the note above) must still be safe to fire.
+    const zoomWheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, ctrlKey: true, deltaY: -240 });
+    expect(() => svg?.dispatchEvent(zoomWheel)).not.toThrow();
+
+    // Re-render once more so positionLabels() recomputes its clipping box
+    // against whatever transform is current, and confirm the label is still
+    // sane (finite, not NaN/Infinity) rather than crashing or corrupting.
+    handle?.update(state(), options);
+    const after = forceLabel();
+    expect(after).toBeDefined();
+    expect(Number.isFinite(Number(after?.getAttribute("x")))).toBe(true);
+    expect(Number.isFinite(Number(after?.getAttribute("y")))).toBe(true);
+  });
+
   test("destroy removes the drawing from the host", () => {
     const { ctx, host } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options);
     handle?.destroy();
     expect(host.querySelector("svg")).toBeNull();
+  });
+
+  // --- core zone (not yet implemented) ---
+
+  test("newly seeded force nodes spawn outside the core zone and component nodes spawn inside it", () => {
+    const { ctx } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options); // first update: every node is a newcomer
+    const allNodes = handle?.simulation?.nodes() ?? [];
+    const componentCount = allNodes.filter((n: any) => n.type === "component").length;
+    const radius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
+    const center = { x: 400, y: 300 };
+    for (const node of allNodes) {
+      const distance = Math.hypot((node.x ?? 0) - center.x, (node.y ?? 0) - center.y);
+      if (node.type === "force") expect(distance).toBeGreaterThanOrEqual(radius - 0.01);
+      if (node.type === "component") expect(distance).toBeLessThanOrEqual(radius + 0.01);
+    }
+  });
+
+  test("core containment: a component node pushed outside the core zone is pulled back inside it after a tick", () => {
+    const { ctx } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const allNodes = handle?.simulation?.nodes() ?? [];
+    const componentNode = allNodes.find((n: any) => n.type === "component");
+    expect(componentNode).toBeDefined();
+    if (componentNode) {
+      componentNode.x = 100000;
+      componentNode.y = -100000;
+      componentNode.vx = 0;
+      componentNode.vy = 0;
+    }
+    handle?.simulation?.tick();
+    const after = handle?.simulation?.nodes().find((n: any) => n.id === componentNode?.id);
+    const componentCount = allNodes.filter((n: any) => n.type === "component").length;
+    const radius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
+    const distance = Math.hypot((after?.x ?? 0) - 400, (after?.y ?? 0) - 300);
+    expect(distance).toBeLessThanOrEqual(radius + 0.5);
+  });
+
+  test("core exclusion: an attractor group touching the core zone gets pinned instead of pulled deeper in", () => {
+    const { ctx } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options); // options does not set lockRegions — must work with the manual lock toggle off
+    const allNodes = handle?.simulation?.nodes() ?? [];
+    const forceNode = allNodes.find((n: any) => n.id === "force:S-01");
+    expect(forceNode).toBeDefined();
+    if (forceNode) { forceNode.x = 400; forceNode.y = 300; forceNode.vx = 0; forceNode.vy = 0; } // dead center
+    handle?.simulation?.tick();
+    const after = handle?.simulation?.nodes().find((n: any) => n.id === "force:S-01");
+    expect(after?.x).toBeCloseTo(400, 0);
+    expect(after?.y).toBeCloseTo(300, 0);
+    expect(typeof after?.fx).toBe("number"); // pinned
+  });
+
+  test("core exclusion lock releases once the group is moved back outside the zone", () => {
+    const { ctx } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const forceNode = handle?.simulation?.nodes().find((n: any) => n.id === "force:S-01");
+    if (forceNode) { forceNode.x = 400; forceNode.y = 300; forceNode.vx = 0; forceNode.vy = 0; }
+    handle?.simulation?.tick(); // now pinned (per the test above)
+    const pinned = handle?.simulation?.nodes().find((n: any) => n.id === "force:S-01");
+    // Precondition, not just setup: must actually be pinned here, otherwise
+    // "unpinned" below is true vacuously (e.g. because exclusion was never
+    // implemented at all) rather than because the release logic fired.
+    expect(typeof pinned?.fx).toBe("number");
+    if (pinned) { pinned.x = 5000; pinned.y = 5000; }
+    handle?.simulation?.tick();
+    const after = handle?.simulation?.nodes().find((n: any) => n.id === "force:S-01");
+    expect(after?.fx == null).toBe(true); // unpinned again since it's now far from the core zone
+  });
+
+  test("draws a dashed circle marking the core zone boundary, sized to the current component count", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const boundary = host.querySelector("[data-core-boundary]");
+    expect(boundary).not.toBeNull();
+    expect(boundary?.getAttribute("cx")).toBe("400");
+    expect(boundary?.getAttribute("cy")).toBe("300");
+    const componentCount = handle?.simulation?.nodes().filter((n: any) => n.type === "component").length ?? 0;
+    const expectedRadius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
+    expect(Number(boundary?.getAttribute("r"))).toBeCloseTo(expectedRadius, 5);
+  });
+
+  // --- bundling tension (Feature 2, not yet implemented) ---
+
+  // Two independent handles (rather than one handle updated twice with ticks
+  // in between) so the comparison isolates the `tension` option itself: node
+  // seeding is deterministic (seedPosition only depends on id hashes and
+  // attractor membership, never on tension), and update() draws once from
+  // those seeded positions without ever advancing the physics clock — jsdom
+  // never fires d3's internal timer on its own, so nothing here moves unless
+  // simulation.tick() is called explicitly, which this test deliberately
+  // never does. That keeps both trees at identical node positions, so any
+  // difference in the drawn trunk path can only come from `tension`.
+  test("the tension option changes how tightly bundle trunks converge", () => {
+    const tight = makeCtx();
+    const tightHandle = regionsModule.createRegionsView?.(tight.ctx);
+    tightHandle?.update(state(), { ...options, tension: 1 });
+    const tightPath = tight.host.querySelector("path.nkp-hyper-bundle-trunk")?.getAttribute("d");
+
+    const loose = makeCtx();
+    const looseHandle = regionsModule.createRegionsView?.(loose.ctx);
+    looseHandle?.update(state(), { ...options, tension: 0 });
+    const loosePath = loose.host.querySelector("path.nkp-hyper-bundle-trunk")?.getAttribute("d");
+
+    expect(tightPath).toBeTruthy();
+    expect(loosePath).toBeTruthy();
+    expect(tightPath).not.toBe(loosePath);
+  });
+
+  // --- attractor-region collision (Feature 3, not yet implemented) ---
+
+  test("region collision: registers a dedicated attractor-region collision force on the simulation", () => {
+    // The generic charge force already pushes any two coincident nodes apart
+    // (d3-force jitters zero-distance pairs), so a plain "did the groups move
+    // apart" assertion would pass even without this feature — it must not be
+    // the only check. Asserting the named force is actually registered is
+    // what makes this genuinely red until the feature exists.
+    const { ctx } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const sim = handle?.simulation as unknown as { force?: (name: string) => unknown } | undefined;
+    expect(typeof sim?.force).toBe("function");
+    expect(sim?.force?.("regionCollision")).toBeDefined();
+  });
+
+  test("region collision: two overlapping attractor group circles no longer overlap after ticking", () => {
+    const { ctx } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options); // state() has attractors A-01 (S-01,S-02) and A-02 (P-01)
+    const allNodes = handle?.simulation?.nodes() ?? [];
+    for (const node of allNodes) {
+      if (node.type === "force" && (node.attractorId === "A-01" || node.attractorId === "A-02")) {
+        node.x = 400; node.y = 300; node.vx = 0; node.vy = 0;
+      }
+    }
+    const circlesOverlap = (): boolean => {
+      const circles = regionsModule.attractorGroupCircles?.(allNodes, 8) ?? [];
+      const c1 = circles.find((c: any) => c.attractorId === "A-01");
+      const c2 = circles.find((c: any) => c.attractorId === "A-02");
+      if (!c1 || !c2) return true; // feature missing: treat as still overlapping
+      const distance = Math.hypot(c1.center.x - c2.center.x, c1.center.y - c2.center.y);
+      return distance < c1.radius + c2.radius;
+    };
+    expect(circlesOverlap()).toBe(true);
+    handle?.simulation?.tick(30);
+    expect(circlesOverlap()).toBe(false);
+  });
+
+  // --- selection-focus opacity parity with hover (Feature 4, not yet implemented) ---
+
+  test("an active selection marks the svg with the same state class hover uses for lit/dim styling", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    handle?.setSelection(new Set(["component:auth"]), new Set(["component:auth"]));
+    const svg = host.querySelector("svg");
+    expect(svg?.classList.contains("nkp-hyper-selecting")).toBe(true);
+  });
+
+  test("selection marks focused bundle trunks/branches, regions, and region labels with is-lit instead of a separate dim-only class", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    handle?.setSelection(new Set(["attractor:A-01"]), new Set(["attractor:A-01"]));
+    const regions = [...host.querySelectorAll("g.nkp-hyper-region")];
+    const litRegions = regions.filter((el) => el.classList.contains("is-lit"));
+    const nonLitRegions = regions.filter((el) => !el.classList.contains("is-lit"));
+    expect(litRegions.length).toBeGreaterThan(0);
+    expect(nonLitRegions.length).toBeGreaterThan(0);
+    expect(host.querySelectorAll(".nkp-hyper-region.dim, .nkp-hyper-bundle-trunk.dim, .nkp-hyper-bundle-branch.dim, .nkp-hyper-region-label.dim").length).toBe(0);
+  });
+
+  test("clearing the selection removes the selecting state and returns every region/trunk/branch to lit", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    handle?.setSelection(new Set(["attractor:A-01"]), new Set(["attractor:A-01"]));
+    handle?.setSelection(new Set(), new Set());
+    const svg = host.querySelector("svg");
+    expect(svg?.classList.contains("nkp-hyper-selecting")).toBe(false);
+    const regions = [...host.querySelectorAll("g.nkp-hyper-region")];
+    expect(regions.every((el) => el.classList.contains("is-lit"))).toBe(true);
   });
 });
