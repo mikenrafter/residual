@@ -300,24 +300,19 @@
       .nkp-node-label { fill: var(--ink); font: 11px var(--mono); pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
       .nkp-hyper-bundle-trunk,
       .nkp-hyper-bundle-branch { fill: none; stroke-linecap: round; }
+      .nkp-hyper-bundle { isolation: isolate; transition: opacity 120ms; }
       .nkp-hyper-force-dot { stroke: var(--bg); stroke-width: 1px; }
       .nkp-hyper-force-label { font-size: 10.5px; }
       .nkp-hyper-region-label { font: 600 11px var(--mono); pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
       .nkp-hyper-region,
-      .nkp-hyper-bundle-trunk,
-      .nkp-hyper-bundle-branch,
       .nkp-hyper-node,
       .nkp-hyper-region-label { transition: opacity 120ms; }
       .nkp-hyper.names-hidden .nkp-hyper-region-label { opacity: 0 !important; }
       .nkp-hyper-hovering .nkp-hyper-node:not(.is-lit) { opacity: 0.12; }
-      .nkp-hyper-hovering .nkp-hyper-bundle-trunk:not(.is-lit),
-      .nkp-hyper-hovering .nkp-hyper-bundle-branch:not(.is-lit),
-      .nkp-hyper-selecting .nkp-hyper-bundle-trunk:not(.is-lit),
-      .nkp-hyper-selecting .nkp-hyper-bundle-branch:not(.is-lit) { stroke-opacity: 0.04; }
-      .nkp-hyper-hovering .nkp-hyper-bundle-trunk.is-lit,
-      .nkp-hyper-hovering .nkp-hyper-bundle-branch.is-lit,
-      .nkp-hyper-selecting .nkp-hyper-bundle-trunk.is-lit,
-      .nkp-hyper-selecting .nkp-hyper-bundle-branch.is-lit { stroke-opacity: 0.9; }
+      .nkp-hyper-hovering .nkp-hyper-bundle:not(.is-lit),
+      .nkp-hyper-selecting .nkp-hyper-bundle:not(.is-lit) { opacity: 0.04; }
+      .nkp-hyper-hovering .nkp-hyper-bundle.is-lit,
+      .nkp-hyper-selecting .nkp-hyper-bundle.is-lit { opacity: 0.9; }
       .nkp-hyper-hovering .nkp-hyper-region:not(.is-lit),
       .nkp-hyper-selecting .nkp-hyper-region:not(.is-lit) { opacity: 0.03; }
       .nkp-hyper-hovering .nkp-hyper-region.is-lit,

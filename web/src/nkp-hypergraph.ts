@@ -344,11 +344,11 @@ export const REGIONS_COMPONENT_MIN_DISTANCE = 60;
  * with many components doesn't blow up the core radius proportionally.
  */
 export const CORE_ZONE_BASE_RADIUS = REGIONS_COMPONENT_MIN_DISTANCE; // 60
-export const CORE_ZONE_RADIUS_PER_COMPONENT = 8;
+export const CORE_ZONE_RADIUS_PER_COMPONENT = REGIONS_COMPONENT_MIN_DISTANCE / 3; // 20
 
 export function coreZoneRadius(componentCount: number): number {
-  const count = Math.max(0, componentCount);
-  return CORE_ZONE_BASE_RADIUS + CORE_ZONE_RADIUS_PER_COMPONENT * Math.sqrt(count);
+  const count = Math.max(1, componentCount);
+  return CORE_ZONE_BASE_RADIUS + CORE_ZONE_RADIUS_PER_COMPONENT * Math.sqrt(12 * count - 3);
 }
 
 /**
@@ -370,6 +370,22 @@ export function clampToCore(point: Point, center: Point, radius: number): Point 
   const dy = point.y - center.y;
   const distance = Math.hypot(dx, dy);
   if (distance <= radius) return point;
+  if (distance === 0) return { x: center.x + radius, y: center.y };
+  const scale = radius / distance;
+  return { x: center.x + dx * scale, y: center.y + dy * scale };
+}
+
+/**
+ * The outside-the-core counterpart to clampToCore: pulls a point that's
+ * inside the circle out onto its boundary along the same direction from
+ * center; points already outside are unchanged. Used to keep force nodes
+ * out of the core zone (mirrors clampToCore keeping component nodes in).
+ */
+export function clampOutsideCore(point: Point, center: Point, radius: number): Point {
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  const distance = Math.hypot(dx, dy);
+  if (distance >= radius) return point;
   if (distance === 0) return { x: center.x + radius, y: center.y };
   const scale = radius / distance;
   return { x: center.x + dx * scale, y: center.y + dy * scale };
@@ -475,6 +491,13 @@ function createAttractorCohesionForce(strength = 0.3) {
 }
 
 const REGION_PADDING = 22;
+/**
+ * How far beyond the core zone boundary a brand-new attractor's first force
+ * member spawns (along its dedicated attractorSpawnAngle direction), so a
+ * freshly seeded group starts with real clearance instead of landing right
+ * on the line and drifting back in on the first few ticks.
+ */
+const SPAWN_CORE_CLEARANCE = REGIONS_COMPONENT_MIN_DISTANCE;
 const FUSION_REGION_PADDING = 18;
 const DEFAULT_CANVAS_WIDTH = 800;
 const DEFAULT_CANVAS_HEIGHT = 600;
@@ -774,6 +797,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         nodesG: any;
         labelsGroup: any;
         coreBoundary: any;
+        coreBoundaryDivider: any;
         sim: any;
         width: number;
         height: number;
@@ -791,6 +815,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   let currentTransform: { invertX: (x: number) => number; invertY: (y: number) => number } = d3.zoomIdentity;
   let regionSel: any;
   let fusionSel: any;
+  let bundleGroupSel: any;
   let bundleTrunkSel: any;
   let bundleBranchSel: any;
   let nodeSel: any;
@@ -911,6 +936,8 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
    * current cells, which prevents filter updates from moving survivors.
    */
   function refreshLatticeTargets(snapIds: ReadonlySet<string> = new Set()): void {
+    const componentCount = nodes.filter((node) => node.type === "component").length;
+    const radius = coreZoneRadius(componentCount);
     const placed = tessellateNodes(nodes.map((node) => ({
       id: node.id,
       x: node.x ?? 0,
@@ -928,6 +955,15 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       if (!point) continue;
       node.x = point.x;
       node.y = point.y;
+      if (node.type === "component") {
+        const clamped = clampToCore({ x: node.x, y: node.y }, coreCenter, radius);
+        node.x = clamped.x;
+        node.y = clamped.y;
+      } else if (node.type === "force") {
+        const clamped = clampOutsideCore({ x: node.x, y: node.y }, coreCenter, radius);
+        node.x = clamped.x;
+        node.y = clamped.y;
+      }
       node.vx = 0;
       node.vy = 0;
     }
@@ -1231,6 +1267,10 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       .attr("data-core-boundary", "true")
       .attr("fill", "none")
       .attr("stroke-dasharray", "4 4");
+    const coreBoundaryDivider = coreG.append("line")
+      .attr("class", "nkp-hyper-core-boundary-divider")
+      .attr("data-core-boundary-divider", "true")
+      .attr("stroke-dasharray", "4 4");
     const regionsG = content.append("g").attr("class", "nkp-hyper-regions");
     const fusionG = content.append("g").attr("class", "nkp-hyper-fusion");
     const edgesG = content.append("g").attr("class", "nkp-hyper-edges");
@@ -1263,38 +1303,32 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       })
       .stop();
 
-    built = { svg, zoom, regionsG, fusionG, edgesG, nodesG, labelsGroup, coreBoundary, sim, width, height, didFit: false, tip: createTooltip(host) };
+    built = { svg, zoom, regionsG, fusionG, edgesG, nodesG, labelsGroup, coreBoundary, coreBoundaryDivider, sim, width, height, didFit: false, tip: createTooltip(host) };
     return built;
   }
 
   /**
-   * Pushes `point` to just outside the core zone along its own direction from
-   * `center` (falling back to `offset`'s direction, then a fixed axis, when
-   * `point` lands exactly on `center`).
+   * Deterministic "home direction" for an attractor's whole force-node group,
+   * hashed from the attractor id (not the individual force id) so every
+   * member of the same attractor shares one spawn angle, scattered roughly
+   * evenly across attractors (same FNV-1a-to-angle technique as
+   * deterministicOffset).
    */
-  function pushOutsideCore(point: Point, center: Point, radius: number, offset: Point): Point {
-    const dx = point.x - center.x;
-    const dy = point.y - center.y;
-    const distance = Math.hypot(dx, dy);
-    if (distance >= radius) return point;
-    let dirX = dx;
-    let dirY = dy;
-    if (distance === 0) {
-      dirX = offset.x !== 0 || offset.y !== 0 ? offset.x : 1;
-      dirY = offset.x !== 0 || offset.y !== 0 ? offset.y : 0;
+  function attractorSpawnAngle(attractorId: string): number {
+    let hash = 2166136261;
+    for (let index = 0; index < attractorId.length; index += 1) {
+      hash ^= attractorId.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
     }
-    const dirDistance = Math.hypot(dirX, dirY) || 1;
-    const margin = 1;
-    const scale = (radius + margin) / dirDistance;
-    return { x: center.x + dirX * scale, y: center.y + dirY * scale };
+    return ((hash >>> 0) / 0xffffffff) * Math.PI * 2;
   }
 
   /**
-   * New force nodes seed near their attractor's current centroid, else the
-   * focus component, else the canvas centre — then get pushed just outside
-   * the core zone if that seed would otherwise land inside it. New component
-   * nodes seed near the canvas centre/focus and get clamped inside the core
-   * zone if that seed would otherwise land outside it.
+   * New force nodes: first member of an attractor seeds on that attractor's
+   * dedicated spawn ray (radius + SPAWN_CORE_CLEARANCE); later members seed
+   * near siblings' centroid with a small per-id jitter. Either way the
+   * result is clamped outside the core. New component nodes seed near the
+   * canvas centre/focus and get clamped inside the core.
    */
   function seedPosition(
     item: HyperNode,
@@ -1311,10 +1345,15 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         (node): node is SimForceNode => node.type === "force" && node.attractorId === item.attractorId && node.x !== undefined,
       );
       const siblingCenter = centroid(siblings.map((node) => ({ x: node.x ?? 0, y: node.y ?? 0 })));
-      const base = siblingCenter
-        ? { x: siblingCenter.x + offset.x, y: siblingCenter.y + offset.y }
-        : { x: center.x + offset.x, y: center.y + offset.y };
-      return pushOutsideCore(base, center, radius, offset);
+      let base: Point;
+      if (siblingCenter) {
+        base = { x: siblingCenter.x + offset.x, y: siblingCenter.y + offset.y };
+      } else {
+        const angle = attractorSpawnAngle(item.attractorId);
+        const spawnR = radius + SPAWN_CORE_CLEARANCE;
+        base = { x: center.x + spawnR * Math.cos(angle), y: center.y + spawnR * Math.sin(angle) };
+      }
+      return clampOutsideCore(base, center, radius);
     }
     const focus = focusComponentId ? placed.get(focusComponentId) : undefined;
     const base = focus?.x !== undefined
@@ -1323,6 +1362,29 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     // Only component nodes reach here (the force branch above always
     // returns); clamp so a newly seeded component always lands in the core.
     return clampToCore(base, center, radius);
+  }
+
+  /**
+   * Shared clamp used by both the real d3-drag handler and the test-only
+   * `dragNodeTo` hook: components stay inside the core, forces stay outside.
+   */
+  function applyNodeDrag(node: SimNode, point: { x: number; y: number }): void {
+    const componentCount = nodes.filter((n) => n.type === "component").length;
+    const radius = coreZoneRadius(componentCount);
+    const clamped = node.type === "component"
+      ? clampToCore(point, coreCenter, radius)
+      : clampOutsideCore(point, coreCenter, radius);
+    node.fx = clamped.x;
+    node.fy = clamped.y;
+    node.x = clamped.x;
+    node.y = clamped.y;
+    tick();
+  }
+
+  function dragNodeTo(nodeId: string, point: { x: number; y: number }): void {
+    const node = byId.get(nodeId);
+    if (!node) return;
+    applyNodeDrag(node, point);
   }
 
   function applySelectionClasses(): void {
@@ -1349,12 +1411,11 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       const keys = [bundle.componentId, ...bundle.forceIds.map((forceId) => `force:${forceId}`)];
       return keys.every((key) => !isSelected(key) && !isConnected(key));
     };
-    bundleTrunkSel?.classed("is-lit", (bundle: RenderBundle) => !bundleDim(bundle));
-    const bundleById = new Map(bundles.map((bundle) => [bundle.id, bundle]));
-    bundleBranchSel?.classed("is-lit", (branch: RenderBranch) => {
-      const bundle = bundleById.get(branch.bundleId);
-      return bundle ? !bundleDim(bundle) : !hasSelection;
-    });
+    // is-lit lives on the per-bundle <g> (not the individual trunk/branch
+    // paths) so hover/selection opacity is applied once after the opaque
+    // strokes have already been composited — overlapping branches no longer
+    // stack stroke-opacity.
+    bundleGroupSel?.classed("is-lit", (bundle: RenderBundle) => !bundleDim(bundle));
     const regionDim = (group: AttractorGroup): boolean => {
       const key = `attractor:${group.attractorId}`;
       return hasSelection && !(isSelected(key) || isConnected(key));
@@ -1379,14 +1440,23 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       links = [];
       bundles = [];
       { const { width, height } = canvasSize(); coreCenter = { x: width / 2, y: height / 2 }; }
-      b.coreBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", coreZoneRadius(0));
+      {
+        const emptyRadius = coreZoneRadius(0);
+        b.coreBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", emptyRadius);
+        b.coreBoundaryDivider
+          .attr("x1", coreCenter.x - emptyRadius)
+          .attr("x2", coreCenter.x + emptyRadius)
+          .attr("y1", coreCenter.y)
+          .attr("y2", coreCenter.y);
+      }
       b.sim.nodes([]);
       (b.sim.force("link") as any).links([]);
       syncRegionLocks([], options.lockRegions === true);
       regionSel = b.regionsG.selectAll("g.nkp-hyper-region").data([]).join("g");
       fusionSel = b.fusionG.selectAll("path.nkp-hyper-fusion-hull").data([]).join("path");
-      bundleTrunkSel = b.edgesG.selectAll("path.nkp-hyper-bundle-trunk").data([]).join("path");
-      bundleBranchSel = b.edgesG.selectAll("path.nkp-hyper-bundle-branch").data([]).join("path");
+      bundleGroupSel = b.edgesG.selectAll("g.nkp-hyper-bundle").data([]).join("g");
+      bundleTrunkSel = bundleGroupSel.selectAll("path.nkp-hyper-bundle-trunk");
+      bundleBranchSel = bundleGroupSel.selectAll("path.nkp-hyper-bundle-branch");
       nodeSel = b.nodesG.selectAll("g.nkp-node").data([]).join("g");
       componentLabelSel = b.labelsGroup.selectAll("text.nkp-hyper-component-label").data([]).join("text");
       forceLabelSel = b.labelsGroup.selectAll("text.nkp-hyper-force-label").data([]).join("text");
@@ -1415,6 +1485,11 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       .attr("cx", coreCenter.x)
       .attr("cy", coreCenter.y)
       .attr("r", coreRadius);
+    b.coreBoundaryDivider
+      .attr("x1", coreCenter.x - coreRadius)
+      .attr("x2", coreCenter.x + coreRadius)
+      .attr("y1", coreCenter.y)
+      .attr("y2", coreCenter.y);
 
     // --- merge nodes by id: survivors keep x/y/vx/vy/fx/fy, newcomers seed, exits just don't reappear ---
     const prevById = byId;
@@ -1491,8 +1566,17 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
           return;
         }
         translateGroup(nodes, group.attractorId, event.dx, event.dy);
-        for (const node of nodes) {
-          if (node.type === "force" && node.attractorId === group.attractorId) { node.fx = node.x; node.fy = node.y; }
+        {
+          const componentCount = nodes.filter((n) => n.type === "component").length;
+          const radius = coreZoneRadius(componentCount);
+          for (const node of nodes) {
+            if (node.type !== "force" || node.attractorId !== group.attractorId) continue;
+            const clamped = clampOutsideCore({ x: node.x ?? 0, y: node.y ?? 0 }, coreCenter, radius);
+            node.x = clamped.x;
+            node.y = clamped.y;
+            node.fx = clamped.x;
+            node.fy = clamped.y;
+          }
         }
         tick();
       })
@@ -1528,33 +1612,37 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       .attr("stroke-dasharray", "3 4")
       .attr("stroke-linejoin", "round");
 
-    // --- edges: one branch bundle per (component, attractor) ---
-    bundleTrunkSel = b.edgesG.selectAll("path.nkp-hyper-bundle-trunk")
+    // --- edges: one <g> per (component, attractor) so trunk+branches
+    // composite at full stroke opacity first; group opacity fades the
+    // combined result once (no stacked alpha at branch intersections). ---
+    bundleGroupSel = b.edgesG.selectAll("g.nkp-hyper-bundle")
       .data(bundles, (bundle: RenderBundle) => bundle.id)
+      .join("g")
+      .attr("class", "nkp-hyper-bundle")
+      .attr("opacity", (bundle: RenderBundle) => bundle.focused ? 0.45 : 0.15);
+    bundleTrunkSel = bundleGroupSel.selectAll("path.nkp-hyper-bundle-trunk")
+      .data((bundle: RenderBundle) => [bundle])
       .join("path")
       .attr("class", "nkp-hyper-bundle-trunk")
       .attr("fill", "none")
       .attr("stroke", (bundle: RenderBundle) => colorFor(bundle.attractorId))
-      .attr("aria-label", (bundle: RenderBundle) => `${bundle.componentId} linked to attractor ${bundle.attractorId}`)
-      .attr("stroke-opacity", (bundle: RenderBundle) => bundle.focused ? 0.45 : 0.15);
-    const branchData: RenderBranch[] = bundles
-      .filter((bundle) => bundle.forceIds.length > 1)
-      .flatMap((bundle) => bundle.forceIds.map((forceId) => ({
-        id: `${bundle.id}:${forceId}`,
-        bundleId: bundle.id,
-        componentId: bundle.componentId,
-        forceId: `force:${forceId}`,
-        attractorId: bundle.attractorId,
-        focused: bundle.focused,
-      })));
-    bundleBranchSel = b.edgesG.selectAll("path.nkp-hyper-bundle-branch")
-      .data(branchData, (branch: RenderBranch) => branch.id)
+      .attr("aria-label", (bundle: RenderBundle) => `${bundle.componentId} linked to attractor ${bundle.attractorId}`);
+    bundleBranchSel = bundleGroupSel.selectAll("path.nkp-hyper-bundle-branch")
+      .data((bundle: RenderBundle) => bundle.forceIds.length > 1
+        ? bundle.forceIds.map((forceId) => ({
+          id: `${bundle.id}:${forceId}`,
+          bundleId: bundle.id,
+          componentId: bundle.componentId,
+          forceId: `force:${forceId}`,
+          attractorId: bundle.attractorId,
+          focused: bundle.focused,
+        } satisfies RenderBranch))
+        : [])
       .join("path")
       .attr("class", "nkp-hyper-bundle-branch")
       .attr("fill", "none")
       .attr("stroke", (branch: RenderBranch) => colorFor(branch.attractorId))
-      .attr("aria-label", (branch: RenderBranch) => `${branch.componentId} linked to ${branch.forceId}`)
-      .attr("stroke-opacity", (branch: RenderBranch) => branch.focused ? 0.45 : 0.15);
+      .attr("aria-label", (branch: RenderBranch) => `${branch.componentId} linked to ${branch.forceId}`);
 
     // --- nodes: component (ring + dot) and force (diamond/circle glyph) share one <g> shape ---
     const nodeJoin = b.nodesG.selectAll("g.nkp-node")
@@ -1596,9 +1684,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         node.fx = node.x; node.fy = node.y;
       })
       .on("drag", (event: { x: number; y: number }, node: SimNode) => {
-        node.fx = event.x; node.fy = event.y;
-        node.x = event.x; node.y = event.y;
-        tick();
+        applyNodeDrag(node, { x: event.x, y: event.y });
       })
       .on("end", (event: { active: boolean }, node: SimNode) => {
         if (!event.active) b.sim.alphaTarget(0);
@@ -1660,8 +1746,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     const clearHighlight = (): void => {
       b.svg.classed("nkp-hyper-hovering", false);
       nodeSel.classed("is-lit", false);
-      bundleTrunkSel.classed("is-lit", false);
-      bundleBranchSel.classed("is-lit", false);
+      bundleGroupSel.classed("is-lit", false);
       regionSel.classed("is-lit", false);
       regionLabelSel.classed("is-lit", false);
       b.tip.hidden = true;
@@ -1677,11 +1762,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         if (item.id === bundle.componentId) return true;
         return bundle.forceIds.some((forceId) => `force:${forceId}` === item.id);
       };
-      bundleTrunkSel.classed("is-lit", branchLit);
-      bundleBranchSel.classed("is-lit", (branch: RenderBranch) => {
-        const bundle = bundles.find((candidate) => candidate.id === branch.bundleId);
-        return bundle ? branchLit(bundle) : false;
-      });
+      bundleGroupSel.classed("is-lit", branchLit);
       regionSel.classed("is-lit", (group: AttractorGroup) => litAttractors.has(group.attractorId));
       regionLabelSel.classed("is-lit", (group: AttractorGroup) => litAttractors.has(group.attractorId));
       componentLabelSel.attr("opacity", (other: SimNode) => lit.has(other.id) ? 1 : 0);
@@ -1740,6 +1821,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     setSelection,
     resetView,
     destroy,
+    dragNodeTo,
     get simulation() {
       return built?.sim;
     },
