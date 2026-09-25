@@ -27,6 +27,8 @@ export interface NkpGraphEdge {
   type: "coupling" | "fusion" | "attractor";
   count: number;
   stressors: string[];
+  /** EffectiveForce.key for every force this edge represents, in the same order as `stressors`. */
+  forceKeys: string[];
   tooltip: string;
   width: number;
   lineStyle: "solid" | "dotted";
@@ -238,6 +240,7 @@ export function buildNkpGraphModel(state: PendingState, options: NkpGraphOptions
       type: "coupling",
       count,
       stressors,
+      forceKeys: group.forces.map((force) => force.key),
       tooltip: `Shared residual forces (${count}): ${stressors.join(", ")}`,
       ...edgeMetrics(count),
       lineStyle: "solid",
@@ -272,6 +275,7 @@ export function buildNkpGraphModel(state: PendingState, options: NkpGraphOptions
           type: "fusion",
           count,
           stressors,
+          forceKeys: vectorForces.map((force) => force.key),
           tooltip: `Fusion candidate: identical coupling vector (${stressors.join(", ")})`,
           ...edgeMetrics(count),
           lineStyle: "dotted",
@@ -296,6 +300,7 @@ export function buildNkpGraphModel(state: PendingState, options: NkpGraphOptions
         type: "attractor",
         count: shared.length,
         stressors,
+        forceKeys: shared.map((force) => force.key),
         tooltip: `${attractor.name} forces: ${stressors.join(", ")}`,
         ...edgeMetrics(shared.length),
         lineStyle: "solid",

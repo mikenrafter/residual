@@ -8,12 +8,14 @@
 // path instead of forming a hairball.
 //
 // The pure model (buildNkpBundleModel and helpers) is DOM-free and unit
-// tested in nkp-bundle.test.ts; renderNkpBundle draws it with the d3 module
-// the page passes in (mounted by nkp-landscape.ts).
+// tested in nkp-bundle.test.ts; createBundleView draws it with the d3 module
+// the page passes in (mounted by nkp-landscape.ts) as a persistent handle —
+// the reference the heatmap/regions handles copy (Phase 3-5).
 
 import { attractorColors, buildNkpGraphModel, type NkpGraphEdge, type NkpGraphOptions } from "./nkp-graph";
 import type { PendingState } from "./model";
-import { appendZoomableSvg, createTooltip, escapeHtml, placeTooltip, renderEmpty } from "./landscape-dom";
+import type { EntityKey } from "./landscape-selection";
+import { appendZoomableSvg, createTooltip, escapeHtml, placeTooltip, renderEmpty, resetZoom } from "./landscape-dom";
 
 export const UNASSIGNED_GROUP_ID = "unassigned";
 /** Attractors that would own fewer components than this fold into their members' next-best attractor. */
@@ -53,6 +55,8 @@ export interface BundleEdge {
   target: string;
   count: number;
   stressors: string[];
+  /** Force keys this edge represents (`EntityKey` minus the `force:` prefix); clicking the edge toggles each. */
+  forceKeys: string[];
   tooltip: string;
   focused: boolean;
   /** Also a fusion candidate pair (identical coupling vectors). */
@@ -289,6 +293,7 @@ export function buildNkpBundleModel(state: PendingState, options: NkpBundleOptio
       target: edge.target,
       count: edge.count,
       stressors: edge.stressors,
+      forceKeys: edge.forceKeys,
       tooltip: edge.tooltip,
       focused: edge.focused,
       fusion: fusionPairs.has([edge.source, edge.target].sort().join("\u0000")),
@@ -417,228 +422,388 @@ export interface BundleRenderOptions extends NkpBundleOptions {
   tension?: number;
 }
 
+/** Turns an entity key (which may contain `:`) into a safe SVG id/href fragment. */
+function slugify(id: string): string {
+  return id.replace(/[^a-zA-Z0-9_-]/g, "-");
+}
+
+export interface BundleViewCtx {
+  host: HTMLElement;
+  d3: any;
+  onToggle: (key: EntityKey) => void;
+  onClear: () => void;
+}
+
+export interface BundleViewHandle {
+  update: (state: PendingState, options?: Record<string, unknown>) => void;
+  setSelection: (selected: ReadonlySet<EntityKey>, connected: ReadonlySet<EntityKey>) => void;
+  resetView: () => void;
+  destroy: () => void;
+}
+
 /**
- * Draws the bundle view into `host` (cleared first). The drawing is a square
- * viewBox fitted into the viewport, so it never scrolls; zoom for detail.
+ * Persistent bundle view handle — the reference the heatmap/regions handles
+ * copy (Phase 3-5). Builds one <svg> the first time `update` draws something,
+ * and keeps it (plus its zoom transform) for the handle's lifetime: every
+ * later `update` recomputes the bundle model and re-joins leaves (keyed by
+ * component id), groups (keyed by attractor id) and edges (keyed by edge id)
+ * so a filter/tension change reuses existing elements instead of tearing the
+ * drawing down. All text (leaf and group-name labels) lives in a last
+ * `g.landscape-labels` layer, panned/zoomed in lockstep with the drawing via
+ * a second, namespaced zoom listener, so it always paints on top.
  *
  * Rings from the centre out: bundled edges, component dots, a coloured band
- * per attractor hugging the dots, radial component labels, then attractor
- * names in the attractor's colour along a guide arc.
+ * per attractor hugging the dots, then (in the labels layer) radial
+ * component labels and attractor names along a guide arc.
  */
-export function renderNkpBundle(host: HTMLElement, state: PendingState, options: BundleRenderOptions, d3: any): void {
-  host.replaceChildren();
-  const model = buildNkpBundleModel(state, options);
-  const leafCount = model.groups.reduce((sum, group) => sum + group.leaves.length, 0);
-  if (leafCount === 0) {
-    renderEmpty(host, "No components to bundle. Loosen the filters or lower the minimum coupling strength.");
-    return;
+export function createBundleView(ctx: BundleViewCtx): BundleViewHandle {
+  const { host, d3 } = ctx;
+
+  let built:
+    | {
+        svg: any;
+        zoom: any;
+        edgesG: any;
+        groupsG: any;
+        leavesG: any;
+        labelsGroup: any;
+        tip: HTMLElement;
+      }
+    | undefined;
+  let lastSelected: ReadonlySet<EntityKey> = new Set();
+  let lastConnected: ReadonlySet<EntityKey> = new Set();
+
+  function teardown(): void {
+    built = undefined;
+    host.replaceChildren();
   }
 
-  const longestLabel = Math.min(
-    MAX_LABEL_CHARS,
-    Math.max(...model.groups.flatMap((group) => group.leaves.map((leaf) => leaf.label.length + (leaf.fissionCandidate ? 2 : 0)))),
-  );
-  // ~14 units of arc per leaf keeps 11px labels from overlapping.
-  const innerRadius = Math.max(150, ((leafCount + model.groups.length * GROUP_GAP) * 14) / (2 * Math.PI));
-  const bandInner = innerRadius + BAND_GAP;
-  const bandOuter = bandInner + BAND_WIDTH;
-  const labelRadius = bandOuter + LABEL_GAP;
-  const nameRadius = labelRadius + longestLabel * CHAR_WIDTH + 16;
-  const half = nameRadius + 18;
+  function ensureBuilt(): NonNullable<typeof built> {
+    if (built) return built;
+    const { svg, content, zoom } = appendZoomableSvg(
+      host,
+      d3,
+      { x: -1, y: -1, width: 2, height: 2 },
+      "nkp-bundle-svg",
+      "Component couplings bundled by attractor",
+    );
+    const edgesG = content.append("g").attr("class", "nkp-bundle-edges");
+    const groupsG = content.append("g").attr("class", "nkp-bundle-groups");
+    const leavesG = content.append("g").attr("class", "nkp-bundle-leaves");
+    const labelsGroup = svg.append("g").attr("class", "landscape-labels");
+    zoom.on("zoom.labels", (event: { transform: unknown }) => labelsGroup.attr("transform", event.transform));
+    svg.on("dblclick", () => ctx.onClear());
+    const tip = createTooltip(host);
+    built = { svg, zoom, edgesG, groupsG, leavesG, labelsGroup, tip };
+    return built;
+  }
 
-  const { svg, content } = appendZoomableSvg(
-    host,
-    d3,
-    { x: -half, y: -half, width: half * 2, height: half * 2 },
-    "nkp-bundle-svg",
-    "Component couplings bundled by attractor",
-  );
+  function applySelectionClasses(): void {
+    if (!built) return;
+    const hasSelection = lastSelected.size > 0;
+    const isSelected = (id: string): boolean => lastSelected.has(id as EntityKey);
+    const isConnected = (id: string): boolean => !isSelected(id) && lastConnected.has(id as EntityKey);
+    // `dim` fades everything that is neither selected nor connected, once
+    // there is a selection at all; a plain toggled class (rather than a
+    // :not(.selected) CSS selector) keeps its specificity below the existing
+    // hover rules, so hovering still wins when both apply.
+    const dim = (id: string): boolean => hasSelection && !isSelected(id) && !isConnected(id);
+    built.leavesG.selectAll(".nkp-bundle-leaf")
+      .classed("selected", (node: any) => isSelected(node.data.id))
+      .classed("connected", (node: any) => isConnected(node.data.id))
+      .classed("dim", (node: any) => dim(node.data.id));
+    built.labelsGroup.selectAll(".nkp-bundle-leaf")
+      .classed("selected", (node: any) => isSelected(node.data.id))
+      .classed("connected", (node: any) => isConnected(node.data.id))
+      .classed("dim", (node: any) => dim(node.data.id));
+    built.groupsG.selectAll(".nkp-bundle-group")
+      .classed("selected", (d: any) => isSelected(d.group.id))
+      .classed("connected", (d: any) => isConnected(d.group.id))
+      .classed("dim", (d: any) => dim(d.group.id));
+  }
 
-  const root = d3.hierarchy(bundleHierarchyData(model));
-  d3.cluster()
-    .size([360, innerRadius])
-    .separation((a: any, b: any) => (a.parent === b.parent ? 1 : GROUP_GAP))(root);
+  function update(state: PendingState, rawOptions: Record<string, unknown> = {}): void {
+    const options = rawOptions as BundleRenderOptions;
+    const model = buildNkpBundleModel(state, options);
+    const leafCount = model.groups.reduce((sum, group) => sum + group.leaves.length, 0);
+    if (leafCount === 0) {
+      if (!built) {
+        // Nothing has ever been drawn: show the empty message without ever
+        // touching d3 (some callers pass a stand-in d3 while a card is
+        // collapsed and would rather nothing ever call into it).
+        renderEmpty(host, "No components to bundle. Loosen the filters or lower the minimum coupling strength.");
+        return;
+      }
+      // A filter change can legitimately collapse the model to nothing once
+      // it's already drawn — keep the persistent <svg> (and its zoom/pan
+      // state), just clear its contents. d3.hierarchy treats an empty
+      // `children` array as "no children" (so the root itself would come
+      // back from `.leaves()`), so skip the hierarchy/cluster layout
+      // entirely here rather than feed it zero groups.
+      const b = ensureBuilt();
+      b.edgesG.selectAll("path.nkp-bundle-edge").data([]).join("path");
+      b.groupsG.selectAll("g.nkp-bundle-group").data([]).join("g");
+      b.leavesG.selectAll("g.nkp-bundle-leaf").data([]).join("g");
+      b.labelsGroup.selectAll("text.nkp-bundle-label").data([]).join("text");
+      b.labelsGroup.selectAll("text.nkp-bundle-group-label").data([]).join("text");
+      return;
+    }
+    if (host.querySelector(".landscape-empty")) host.replaceChildren();
+    const b = ensureBuilt();
 
-  const leafNodes = new Map<string, any>(root.leaves().map((node: any) => [node.data.id, node]));
-  const line = d3.lineRadial()
-    .curve(d3.curveBundle.beta(options.tension ?? DEFAULT_BUNDLE_TENSION))
-    .radius((node: any) => node.y)
-    .angle((node: any) => (node.x * Math.PI) / 180);
+    const longestLabel = Math.min(
+      MAX_LABEL_CHARS,
+      Math.max(...model.groups.flatMap((group) => group.leaves.map((leaf) => leaf.label.length + (leaf.fissionCandidate ? 2 : 0)))),
+    );
+    // ~14 units of arc per leaf keeps 11px labels from overlapping.
+    const innerRadius = Math.max(150, ((leafCount + model.groups.length * GROUP_GAP) * 14) / (2 * Math.PI));
+    const bandInner = innerRadius + BAND_GAP;
+    const bandOuter = bandInner + BAND_WIDTH;
+    const labelRadius = bandOuter + LABEL_GAP;
+    const nameRadius = labelRadius + longestLabel * CHAR_WIDTH + 16;
+    const half = nameRadius + 18;
+    b.svg.attr("viewBox", `${-half} ${-half} ${half * 2} ${half * 2}`);
 
-  // d3.cluster spreads (leaves - groups) unit gaps plus one GROUP_GAP per
-  // group boundary (including the wrap-around) over 360 degrees.
-  const halfStep = 360 / (leafCount - model.groups.length + model.groups.length * GROUP_GAP) / 2;
-  const groupArcs = (root.children ?? []).map((groupNode: any) => {
-    const xs = groupNode.leaves().map((leaf: any) => leaf.x);
-    return {
-      group: groupNode.data.group as BundleGroup,
-      start: Math.min(...xs) - halfStep * 0.85,
-      end: Math.max(...xs) + halfStep * 0.85,
-      name: { start: 0, end: 0, maxChars: 0 },
-    };
-  });
-  const nameSpans = layoutGroupLabels(
-    groupArcs.map((d: any) => ({ start: d.start, end: d.end, label: d.group.label })),
-    nameRadius,
-    GROUP_CHAR_WIDTH,
-  );
-  groupArcs.forEach((d: any, index: number) => {
-    d.name = nameSpans[index];
-  });
+    const root = d3.hierarchy(bundleHierarchyData(model));
+    d3.cluster()
+      .size([360, innerRadius])
+      .separation((a: any, other: any) => (a.parent === other.parent ? 1 : GROUP_GAP))(root);
 
-  const toRadians = (deg: number): number => (deg * Math.PI) / 180;
-  const band = d3.arc().innerRadius(bandInner).outerRadius(bandOuter);
-  const guide = d3.arc().innerRadius(nameRadius - 9).outerRadius(nameRadius - 8);
-  const isBottom = (d: any): boolean => {
-    const mid = (d.start + d.end) / 2;
-    return mid > 90 && mid < 270;
-  };
+    const leafNodes = new Map<string, any>(root.leaves().map((node: any) => [node.data.id, node]));
+    const line = d3.lineRadial()
+      .curve(d3.curveBundle.beta(options.tension ?? DEFAULT_BUNDLE_TENSION))
+      .radius((node: any) => node.y)
+      .angle((node: any) => (node.x * Math.PI) / 180);
 
-  // Edges first so labels and bands paint over them.
-  const edgeData = model.edges
-    .map((edge) => ({ edge, from: leafNodes.get(edge.source), to: leafNodes.get(edge.target) }))
-    .filter((item) => item.from && item.to)
-    .sort((left, right) => left.edge.count - right.edge.count);
-  const edgePaths = content.append("g").attr("class", "nkp-bundle-edges")
-    .selectAll("path").data(edgeData).join("path")
-    .attr("class", (item: any) => `nkp-bundle-edge${item.edge.fusion ? " fusion" : ""}`)
-    .attr("d", (item: any) => line(item.from.path(item.to)))
-    .each(function (this: SVGPathElement, item: any) {
-      const style = bundleEdgeStyle(item.edge.count, model.maxCount, item.edge.focused);
-      this.style.strokeWidth = `${style.width}px`;
-      this.style.strokeOpacity = String(style.opacity);
-    });
-
-  const bands = content.append("g").attr("class", "nkp-bundle-groups")
-    .selectAll("g").data(groupArcs).join("g")
-    .attr("class", "nkp-bundle-group");
-  bands.append("path")
-    .attr("class", "nkp-bundle-band")
-    .attr("fill", (d: any) => d.group.color)
-    .attr("d", (d: any) => band({ startAngle: toRadians(d.start), endAngle: toRadians(d.end) }));
-  bands.append("path")
-    .attr("class", "nkp-bundle-guide")
-    .attr("fill", (d: any) => d.group.color)
-    .attr("d", (d: any) => guide({ startAngle: toRadians(d.start), endAngle: toRadians(d.end) }));
-  // Invisible wedge covering band-to-name so the whole group is one hover target.
-  bands.append("path")
-    .attr("class", "nkp-bundle-hit")
-    .attr("d", (d: any) => d3.arc().innerRadius(bandInner).outerRadius(nameRadius + 8)({ startAngle: toRadians(d.start), endAngle: toRadians(d.end) }))
-    .lower();
-  bands.append("path")
-    .attr("id", (_d: unknown, index: number) => `nkp-bundle-name-${index}`)
-    .attr("fill", "none")
-    .attr("d", (d: any) => {
-      const point = (deg: number): string => {
-        const rad = toRadians(deg - 90);
-        return `${nameRadius * Math.cos(rad)},${nameRadius * Math.sin(rad)}`;
+    // d3.cluster spreads (leaves - groups) unit gaps plus one GROUP_GAP per
+    // group boundary (including the wrap-around) over 360 degrees.
+    const halfStep = 360 / (leafCount - model.groups.length + model.groups.length * GROUP_GAP) / 2;
+    const groupArcs = (root.children ?? []).map((groupNode: any) => {
+      const xs = groupNode.leaves().map((leaf: any) => leaf.x);
+      return {
+        group: groupNode.data.group as BundleGroup,
+        start: Math.min(...xs) - halfStep * 0.85,
+        end: Math.max(...xs) + halfStep * 0.85,
+        name: { start: 0, end: 0, maxChars: 0 },
       };
-      const large = d.name.end - d.name.start > 180 ? 1 : 0;
-      return isBottom(d)
-        ? `M${point(d.name.end)} A${nameRadius},${nameRadius} 0 ${large} 0 ${point(d.name.start)}`
-        : `M${point(d.name.start)} A${nameRadius},${nameRadius} 0 ${large} 1 ${point(d.name.end)}`;
     });
-  bands.append("text")
-    .attr("class", "nkp-bundle-group-label")
-    .attr("fill", (d: any) => d.group.color)
-    .attr("dy", (d: any) => (isBottom(d) ? "0.8em" : "0"))
-    .append("textPath")
-    .attr("href", (_d: unknown, index: number) => `#nkp-bundle-name-${index}`)
-    .attr("startOffset", "50%")
-    .attr("text-anchor", "middle")
-    .text((d: any) => truncate(d.group.label, d.name.maxChars));
-
-  const leaves = content.append("g").attr("class", "nkp-bundle-leaves")
-    .selectAll("g").data(root.leaves()).join("g")
-    .attr("class", (node: any) => {
-      const leaf = node.data.leaf as BundleLeaf;
-      return `nkp-bundle-leaf${leaf.fissionCandidate ? " fission" : ""}${leaf.focused ? "" : " unfocused"}`;
-    });
-  leaves.append("circle")
-    .attr("class", (node: any) => `nkp-bundle-dot status-${node.data.leaf.status ?? "actual"}`)
-    .attr("r", 3.2)
-    .attr("transform", (node: any) => `rotate(${node.x - 90}) translate(${node.y},0)`);
-  leaves.append("text")
-    .attr("class", "nkp-bundle-label")
-    .attr("dy", "0.32em")
-    .each(function (this: SVGTextElement, node: any) {
-      const placement = radialLabelTransform(node.x, labelRadius);
-      this.setAttribute("transform", placement.transform);
-      this.setAttribute("text-anchor", placement.anchor);
-      const leaf = node.data.leaf as BundleLeaf;
-      const text = truncate(leaf.label, MAX_LABEL_CHARS);
-      this.textContent = leaf.fissionCandidate
-        ? (placement.anchor === "start" ? `${text} ▲` : `▲ ${text}`)
-        : text;
+    const nameSpans = layoutGroupLabels(
+      groupArcs.map((d: any) => ({ start: d.start, end: d.end, label: d.group.label })),
+      nameRadius,
+      GROUP_CHAR_WIDTH,
+    );
+    groupArcs.forEach((d: any, index: number) => {
+      d.name = nameSpans[index];
     });
 
-  const tip = createTooltip(host);
-  const clear = (): void => {
-    svg.classed("hovering", false);
-    edgePaths.classed("hl-a", false).classed("hl-b", false);
-    leaves.classed("hl", false);
-    bands.classed("hl", false);
-    tip.hidden = true;
-  };
+    const toRadians = (deg: number): number => (deg * Math.PI) / 180;
+    const band = d3.arc().innerRadius(bandInner).outerRadius(bandOuter);
+    const guide = d3.arc().innerRadius(nameRadius - 9).outerRadius(nameRadius - 8);
+    const isBottom = (d: any): boolean => {
+      const mid = (d.start + d.end) / 2;
+      return mid > 90 && mid < 270;
+    };
 
-  leaves
-    .on("mouseenter", (event: MouseEvent, node: any) => {
-      const leaf = node.data.leaf as BundleLeaf;
-      svg.classed("hovering", true);
-      const neighbours = new Set<string>([leaf.id]);
-      edgePaths.classed("hl-a", (item: any) => {
-        const hit = item.edge.source === leaf.id || item.edge.target === leaf.id;
-        if (hit) {
-          neighbours.add(item.edge.source);
-          neighbours.add(item.edge.target);
-        }
-        return hit;
+    // --- edges, keyed by edge id ---
+    const edgeData = model.edges
+      .map((edge) => ({ edge, from: leafNodes.get(edge.source), to: leafNodes.get(edge.target) }))
+      .filter((item) => item.from && item.to)
+      .sort((left, right) => left.edge.count - right.edge.count);
+    const edgePaths = b.edgesG.selectAll("path.nkp-bundle-edge")
+      .data(edgeData, (item: any) => item.edge.id)
+      .join("path")
+      .attr("class", (item: any) => `nkp-bundle-edge${item.edge.fusion ? " fusion" : ""}`)
+      .attr("d", (item: any) => line(item.from.path(item.to)))
+      .each(function (this: SVGPathElement, item: any) {
+        const style = bundleEdgeStyle(item.edge.count, model.maxCount, item.edge.focused);
+        this.style.strokeWidth = `${style.width}px`;
+        this.style.strokeOpacity = String(style.opacity);
       });
-      edgePaths.filter(".hl-a").raise();
-      leaves.classed("hl", (other: any) => neighbours.has(other.data.id));
-      bands.classed("hl", (d: any) => d.group.id === leaf.groupId);
-      const summary = leafNeighbourSummary(model, leaf.id);
-      const group = model.groups.find((candidate) => candidate.id === leaf.groupId);
-      const placement = group && group.label !== leaf.dominantLabel
-        ? `${escapeHtml(group.label)} (own attractor: ${escapeHtml(leaf.dominantLabel)})`
-        : escapeHtml(group?.label ?? "");
-      const rows = summary.slice(0, 12).map((item) =>
-        `<li><b>${escapeHtml(item.label)}</b> (${item.count}): ${escapeHtml(item.stressors.join(", "))}</li>`).join("");
-      tip.innerHTML = `<strong>${escapeHtml(leaf.label)}</strong>`
-        + `<div class="muted">${placement}${leaf.fissionCandidate ? " · fission candidate" : ""}</div>`
-        + (rows ? `<ul>${rows}</ul>${summary.length > 12 ? `<div class="muted">+${summary.length - 12} more</div>` : ""}` : `<div class="muted">No visible couplings</div>`);
-      placeTooltip(host, tip, event);
-    })
-    .on("mouseleave", clear);
+    edgePaths.on("click", (_event: MouseEvent, item: any) => {
+      for (const key of item.edge.forceKeys as string[]) ctx.onToggle(`force:${key}` as EntityKey);
+    });
 
-  bands
-    .on("mouseenter", (event: MouseEvent, d: any) => {
-      const members = new Set(d.group.leaves.map((leaf: BundleLeaf) => leaf.id));
-      svg.classed("hovering", true);
-      bands.classed("hl", (other: any) => other === d);
-      const touched = new Set<string>();
-      let internal = 0;
-      let external = 0;
-      edgePaths
-        .classed("hl-a", (item: any) => {
-          const hit = members.has(item.edge.source) && members.has(item.edge.target);
-          if (hit) internal += 1;
-          return hit;
-        })
-        .classed("hl-b", (item: any) => {
-          const hit = members.has(item.edge.source) !== members.has(item.edge.target);
+    // --- groups/bands, keyed by attractor id ---
+    const groupSel = b.groupsG.selectAll("g.nkp-bundle-group")
+      .data(groupArcs, (d: any) => d.group.id)
+      .join((enter: any) => {
+        const g = enter.append("g").attr("class", "nkp-bundle-group");
+        g.append("path").attr("class", "nkp-bundle-band");
+        g.append("path").attr("class", "nkp-bundle-guide");
+        g.append("path").attr("class", "nkp-bundle-hit").lower();
+        g.append("path").attr("class", "nkp-bundle-name-path").attr("fill", "none");
+        return g;
+      });
+    groupSel.select(".nkp-bundle-band")
+      .attr("fill", (d: any) => d.group.color)
+      .attr("d", (d: any) => band({ startAngle: toRadians(d.start), endAngle: toRadians(d.end) }));
+    groupSel.select(".nkp-bundle-guide")
+      .attr("fill", (d: any) => d.group.color)
+      .attr("d", (d: any) => guide({ startAngle: toRadians(d.start), endAngle: toRadians(d.end) }));
+    // Invisible wedge covering band-to-name so the whole group is one hover/click target.
+    groupSel.select(".nkp-bundle-hit")
+      .attr("d", (d: any) => d3.arc().innerRadius(bandInner).outerRadius(nameRadius + 8)({ startAngle: toRadians(d.start), endAngle: toRadians(d.end) }));
+    groupSel.select(".nkp-bundle-name-path")
+      .attr("id", (d: any) => `nkp-bundle-name-${slugify(d.group.id)}`)
+      .attr("d", (d: any) => {
+        const point = (deg: number): string => {
+          const rad = toRadians(deg - 90);
+          return `${nameRadius * Math.cos(rad)},${nameRadius * Math.sin(rad)}`;
+        };
+        const large = d.name.end - d.name.start > 180 ? 1 : 0;
+        return isBottom(d)
+          ? `M${point(d.name.end)} A${nameRadius},${nameRadius} 0 ${large} 0 ${point(d.name.start)}`
+          : `M${point(d.name.start)} A${nameRadius},${nameRadius} 0 ${large} 1 ${point(d.name.end)}`;
+      });
+    groupSel.on("click", (_event: MouseEvent, d: any) => {
+      if (d.group.id.startsWith("attractor:")) ctx.onToggle(d.group.id as EntityKey);
+    });
+
+    // --- leaves (dots), keyed by component id ---
+    const leafSel = b.leavesG.selectAll("g.nkp-bundle-leaf")
+      .data(root.leaves(), (node: any) => node.data.id)
+      .join((enter: any) => {
+        const g = enter.append("g");
+        g.append("circle").attr("class", "nkp-bundle-dot").attr("r", 3.2);
+        return g;
+      });
+    leafSel
+      .attr("class", (node: any) => {
+        const leaf = node.data.leaf as BundleLeaf;
+        return `nkp-bundle-leaf${leaf.fissionCandidate ? " fission" : ""}${leaf.focused ? "" : " unfocused"}`;
+      })
+      .select("circle")
+      .attr("class", (node: any) => `nkp-bundle-dot status-${node.data.leaf.status ?? "actual"}`)
+      .attr("transform", (node: any) => `rotate(${node.x - 90}) translate(${node.y},0)`);
+    leafSel.on("click", (_event: MouseEvent, node: any) => ctx.onToggle(node.data.id as EntityKey));
+
+    // --- labels: every text element, leaf and group-name, lives here so it
+    // always paints last. Leaf labels also carry class nkp-bundle-leaf (like
+    // the dot group above) so setSelection/click apply to whichever the
+    // caller found. ---
+    const leafLabelSel = b.labelsGroup.selectAll("text.nkp-bundle-label")
+      .data(root.leaves(), (node: any) => node.data.id)
+      .join("text")
+      .attr("dy", "0.32em");
+    leafLabelSel
+      .attr("class", (node: any) => {
+        const leaf = node.data.leaf as BundleLeaf;
+        return `nkp-bundle-leaf nkp-bundle-label${leaf.fissionCandidate ? " fission" : ""}${leaf.focused ? "" : " unfocused"}`;
+      })
+      .each(function (this: SVGTextElement, node: any) {
+        const placement = radialLabelTransform(node.x, labelRadius);
+        this.setAttribute("transform", placement.transform);
+        this.setAttribute("text-anchor", placement.anchor);
+        const leaf = node.data.leaf as BundleLeaf;
+        const text = truncate(leaf.label, MAX_LABEL_CHARS);
+        this.textContent = leaf.fissionCandidate
+          ? (placement.anchor === "start" ? `${text} ▲` : `▲ ${text}`)
+          : text;
+      });
+    leafLabelSel.on("click", (_event: MouseEvent, node: any) => ctx.onToggle(node.data.id as EntityKey));
+
+    const groupLabelSel = b.labelsGroup.selectAll("text.nkp-bundle-group-label")
+      .data(groupArcs, (d: any) => d.group.id)
+      .join((enter: any) => {
+        const t = enter.append("text").attr("class", "nkp-bundle-group-label");
+        t.append("textPath");
+        return t;
+      });
+    groupLabelSel
+      .attr("fill", (d: any) => d.group.color)
+      .attr("dy", (d: any) => (isBottom(d) ? "0.8em" : "0"))
+      .select("textPath")
+      .attr("href", (d: any) => `#nkp-bundle-name-${slugify(d.group.id)}`)
+      .attr("startOffset", "50%")
+      .attr("text-anchor", "middle")
+      .text((d: any) => truncate(d.group.label, d.name.maxChars));
+
+    // --- hover: dims/highlights neighbours, tooltip ---
+    const clearHover = (): void => {
+      b.svg.classed("hovering", false);
+      edgePaths.classed("hl-a", false).classed("hl-b", false);
+      leafSel.classed("hl", false);
+      leafLabelSel.classed("hl", false);
+      groupSel.classed("hl", false);
+      b.tip.hidden = true;
+    };
+
+    leafSel
+      .on("mouseenter", (event: MouseEvent, node: any) => {
+        const leaf = node.data.leaf as BundleLeaf;
+        b.svg.classed("hovering", true);
+        const neighbours = new Set<string>([leaf.id]);
+        edgePaths.classed("hl-a", (item: any) => {
+          const hit = item.edge.source === leaf.id || item.edge.target === leaf.id;
           if (hit) {
-            external += 1;
-            touched.add(item.edge.source);
-            touched.add(item.edge.target);
+            neighbours.add(item.edge.source);
+            neighbours.add(item.edge.target);
           }
           return hit;
         });
-      edgePaths.filter(".hl-a, .hl-b").raise();
-      leaves.classed("hl", (node: any) => members.has(node.data.id) || touched.has(node.data.id));
-      tip.innerHTML = `<strong>${escapeHtml(d.group.label)}</strong>`
-        + `<div class="muted">${d.group.leaves.length} component(s) · ${internal} internal, ${external} cross-attractor couplings</div>`;
-      placeTooltip(host, tip, event);
-    })
-    .on("mouseleave", clear);
+        edgePaths.filter(".hl-a").raise();
+        leafSel.classed("hl", (other: any) => neighbours.has(other.data.id));
+        leafLabelSel.classed("hl", (other: any) => neighbours.has(other.data.id));
+        groupSel.classed("hl", (d: any) => d.group.id === leaf.groupId);
+        const summary = leafNeighbourSummary(model, leaf.id);
+        const group = model.groups.find((candidate) => candidate.id === leaf.groupId);
+        const placement = group && group.label !== leaf.dominantLabel
+          ? `${escapeHtml(group.label)} (own attractor: ${escapeHtml(leaf.dominantLabel)})`
+          : escapeHtml(group?.label ?? "");
+        const rows = summary.slice(0, 12).map((item) =>
+          `<li><b>${escapeHtml(item.label)}</b> (${item.count}): ${escapeHtml(item.stressors.join(", "))}</li>`).join("");
+        b.tip.innerHTML = `<strong>${escapeHtml(leaf.label)}</strong>`
+          + `<div class="muted">${placement}${leaf.fissionCandidate ? " · fission candidate" : ""}</div>`
+          + (rows ? `<ul>${rows}</ul>${summary.length > 12 ? `<div class="muted">+${summary.length - 12} more</div>` : ""}` : `<div class="muted">No visible couplings</div>`);
+        placeTooltip(host, b.tip, event);
+      })
+      .on("mouseleave", clearHover);
+
+    groupSel
+      .on("mouseenter", (event: MouseEvent, d: any) => {
+        const members = new Set(d.group.leaves.map((leaf: BundleLeaf) => leaf.id));
+        b.svg.classed("hovering", true);
+        groupSel.classed("hl", (other: any) => other === d);
+        const touched = new Set<string>();
+        let internal = 0;
+        let external = 0;
+        edgePaths
+          .classed("hl-a", (item: any) => {
+            const hit = members.has(item.edge.source) && members.has(item.edge.target);
+            if (hit) internal += 1;
+            return hit;
+          })
+          .classed("hl-b", (item: any) => {
+            const hit = members.has(item.edge.source) !== members.has(item.edge.target);
+            if (hit) {
+              external += 1;
+              touched.add(item.edge.source);
+              touched.add(item.edge.target);
+            }
+            return hit;
+          });
+        edgePaths.filter(".hl-a, .hl-b").raise();
+        leafSel.classed("hl", (node: any) => members.has(node.data.id) || touched.has(node.data.id));
+        leafLabelSel.classed("hl", (node: any) => members.has(node.data.id) || touched.has(node.data.id));
+        b.tip.innerHTML = `<strong>${escapeHtml(d.group.label)}</strong>`
+          + `<div class="muted">${d.group.leaves.length} component(s) · ${internal} internal, ${external} cross-attractor couplings</div>`;
+        placeTooltip(host, b.tip, event);
+      })
+      .on("mouseleave", clearHover);
+
+    applySelectionClasses();
+  }
+
+  function setSelection(selected: ReadonlySet<EntityKey>, connected: ReadonlySet<EntityKey>): void {
+    lastSelected = selected;
+    lastConnected = connected;
+    applySelectionClasses();
+  }
+
+  function resetView(): void {
+    if (!built) return;
+    resetZoom(built.svg, built.zoom, d3);
+  }
+
+  return { update, setSelection, resetView, destroy: teardown };
 }

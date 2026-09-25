@@ -2373,6 +2373,7 @@ function buildNkpGraphModel(state, options = {}) {
       type: "coupling",
       count,
       stressors,
+      forceKeys: group.forces.map((force) => force.key),
       tooltip: `Shared residual forces (${count}): ${stressors.join(", ")}`,
       ...edgeMetrics(count),
       lineStyle: "solid",
@@ -2404,6 +2405,7 @@ function buildNkpGraphModel(state, options = {}) {
           type: "fusion",
           count,
           stressors,
+          forceKeys: vectorForces.map((force) => force.key),
           tooltip: `Fusion candidate: identical coupling vector (${stressors.join(", ")})`,
           ...edgeMetrics(count),
           lineStyle: "dotted",
@@ -2428,6 +2430,7 @@ function buildNkpGraphModel(state, options = {}) {
         type: "attractor",
         count: shared.length,
         stressors,
+        forceKeys: shared.map((force) => force.key),
         tooltip: `${attractor.name} forces: ${stressors.join(", ")}`,
         ...edgeMetrics(shared.length),
         lineStyle: "solid",
@@ -2487,6 +2490,10 @@ function renderLegend(host, title, entries, extras = []) {
   host.appendChild(legend);
   return legend;
 }
+var ZOOM_SPEED = 0.6;
+function zoomWheelDelta(event) {
+  return ZOOM_SPEED * -event.deltaY * (event.deltaMode === 1 ? 0.05 : event.deltaMode ? 1 : 0.002) * (event.ctrlKey ? 10 : 1);
+}
 function renderEmpty(host, message) {
   const empty = document.createElement("p");
   empty.className = "landscape-empty";
@@ -2496,10 +2503,12 @@ function renderEmpty(host, message) {
 function appendZoomableSvg(host, d3, viewBox, className, label) {
   const svg = d3.select(host).append("svg").attr("class", `landscape-svg ${className}`).attr("viewBox", `${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`).attr("preserveAspectRatio", "xMidYMid meet").attr("role", "img").attr("aria-label", label);
   const content = svg.append("g").attr("class", "landscape-zoom");
-  const zoom = d3.zoom().scaleExtent([0.5, 8]).filter((event) => event.type === "wheel" ? event.ctrlKey || event.metaKey : !event.button).on("zoom", (event) => content.attr("transform", event.transform));
+  const zoom = d3.zoom().scaleExtent([0.5, 8]).wheelDelta(zoomWheelDelta).filter((event) => event.type === "wheel" ? event.ctrlKey || event.metaKey : !event.button).on("zoom", (event) => content.attr("transform", event.transform));
   svg.call(zoom).on("dblclick.zoom", null);
-  svg.on("dblclick", () => svg.transition().duration(200).call(zoom.transform, d3.zoomIdentity));
-  return { svg, content };
+  return { svg, content, zoom };
+}
+function resetZoom(svg, zoom, d3) {
+  svg.transition().duration(200).call(zoom.transform, d3.zoomIdentity);
 }
 function placeTooltip(host, tip, event) {
   tip.hidden = false;
@@ -2693,6 +2702,7 @@ function buildNkpBundleModel(state, options = {}) {
     target: edge.target,
     count: edge.count,
     stressors: edge.stressors,
+    forceKeys: edge.forceKeys,
     tooltip: edge.tooltip,
     focused: edge.focused,
     fusion: fusionPairs.has([edge.source, edge.target].sort().join("\x00"))
@@ -2765,135 +2775,229 @@ var LABEL_GAP = 5;
 function truncate(text, max) {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
-function renderNkpBundle(host, state, options, d3) {
-  host.replaceChildren();
-  const model = buildNkpBundleModel(state, options);
-  const leafCount = model.groups.reduce((sum, group) => sum + group.leaves.length, 0);
-  if (leafCount === 0) {
-    renderEmpty(host, "No components to bundle. Loosen the filters or lower the minimum coupling strength.");
-    return;
+function slugify(id) {
+  return id.replace(/[^a-zA-Z0-9_-]/g, "-");
+}
+function createBundleView(ctx) {
+  const { host, d3 } = ctx;
+  let built;
+  let lastSelected = new Set;
+  let lastConnected = new Set;
+  function teardown() {
+    built = undefined;
+    host.replaceChildren();
   }
-  const longestLabel = Math.min(MAX_LABEL_CHARS, Math.max(...model.groups.flatMap((group) => group.leaves.map((leaf) => leaf.label.length + (leaf.fissionCandidate ? 2 : 0)))));
-  const innerRadius = Math.max(150, (leafCount + model.groups.length * GROUP_GAP) * 14 / (2 * Math.PI));
-  const bandInner = innerRadius + BAND_GAP;
-  const bandOuter = bandInner + BAND_WIDTH;
-  const labelRadius = bandOuter + LABEL_GAP;
-  const nameRadius = labelRadius + longestLabel * CHAR_WIDTH + 16;
-  const half = nameRadius + 18;
-  const { svg, content } = appendZoomableSvg(host, d3, { x: -half, y: -half, width: half * 2, height: half * 2 }, "nkp-bundle-svg", "Component couplings bundled by attractor");
-  const root = d3.hierarchy(bundleHierarchyData(model));
-  d3.cluster().size([360, innerRadius]).separation((a, b) => a.parent === b.parent ? 1 : GROUP_GAP)(root);
-  const leafNodes = new Map(root.leaves().map((node) => [node.data.id, node]));
-  const line = d3.lineRadial().curve(d3.curveBundle.beta(options.tension ?? DEFAULT_BUNDLE_TENSION)).radius((node) => node.y).angle((node) => node.x * Math.PI / 180);
-  const halfStep = 360 / (leafCount - model.groups.length + model.groups.length * GROUP_GAP) / 2;
-  const groupArcs = (root.children ?? []).map((groupNode) => {
-    const xs = groupNode.leaves().map((leaf) => leaf.x);
-    return {
-      group: groupNode.data.group,
-      start: Math.min(...xs) - halfStep * 0.85,
-      end: Math.max(...xs) + halfStep * 0.85,
-      name: { start: 0, end: 0, maxChars: 0 }
-    };
-  });
-  const nameSpans = layoutGroupLabels(groupArcs.map((d) => ({ start: d.start, end: d.end, label: d.group.label })), nameRadius, GROUP_CHAR_WIDTH);
-  groupArcs.forEach((d, index) => {
-    d.name = nameSpans[index];
-  });
-  const toRadians = (deg) => deg * Math.PI / 180;
-  const band = d3.arc().innerRadius(bandInner).outerRadius(bandOuter);
-  const guide = d3.arc().innerRadius(nameRadius - 9).outerRadius(nameRadius - 8);
-  const isBottom = (d) => {
-    const mid = (d.start + d.end) / 2;
-    return mid > 90 && mid < 270;
-  };
-  const edgeData = model.edges.map((edge) => ({ edge, from: leafNodes.get(edge.source), to: leafNodes.get(edge.target) })).filter((item) => item.from && item.to).sort((left, right) => left.edge.count - right.edge.count);
-  const edgePaths = content.append("g").attr("class", "nkp-bundle-edges").selectAll("path").data(edgeData).join("path").attr("class", (item) => `nkp-bundle-edge${item.edge.fusion ? " fusion" : ""}`).attr("d", (item) => line(item.from.path(item.to))).each(function(item) {
-    const style = bundleEdgeStyle(item.edge.count, model.maxCount, item.edge.focused);
-    this.style.strokeWidth = `${style.width}px`;
-    this.style.strokeOpacity = String(style.opacity);
-  });
-  const bands = content.append("g").attr("class", "nkp-bundle-groups").selectAll("g").data(groupArcs).join("g").attr("class", "nkp-bundle-group");
-  bands.append("path").attr("class", "nkp-bundle-band").attr("fill", (d) => d.group.color).attr("d", (d) => band({ startAngle: toRadians(d.start), endAngle: toRadians(d.end) }));
-  bands.append("path").attr("class", "nkp-bundle-guide").attr("fill", (d) => d.group.color).attr("d", (d) => guide({ startAngle: toRadians(d.start), endAngle: toRadians(d.end) }));
-  bands.append("path").attr("class", "nkp-bundle-hit").attr("d", (d) => d3.arc().innerRadius(bandInner).outerRadius(nameRadius + 8)({ startAngle: toRadians(d.start), endAngle: toRadians(d.end) })).lower();
-  bands.append("path").attr("id", (_d, index) => `nkp-bundle-name-${index}`).attr("fill", "none").attr("d", (d) => {
-    const point = (deg) => {
-      const rad = toRadians(deg - 90);
-      return `${nameRadius * Math.cos(rad)},${nameRadius * Math.sin(rad)}`;
-    };
-    const large = d.name.end - d.name.start > 180 ? 1 : 0;
-    return isBottom(d) ? `M${point(d.name.end)} A${nameRadius},${nameRadius} 0 ${large} 0 ${point(d.name.start)}` : `M${point(d.name.start)} A${nameRadius},${nameRadius} 0 ${large} 1 ${point(d.name.end)}`;
-  });
-  bands.append("text").attr("class", "nkp-bundle-group-label").attr("fill", (d) => d.group.color).attr("dy", (d) => isBottom(d) ? "0.8em" : "0").append("textPath").attr("href", (_d, index) => `#nkp-bundle-name-${index}`).attr("startOffset", "50%").attr("text-anchor", "middle").text((d) => truncate(d.group.label, d.name.maxChars));
-  const leaves = content.append("g").attr("class", "nkp-bundle-leaves").selectAll("g").data(root.leaves()).join("g").attr("class", (node) => {
-    const leaf = node.data.leaf;
-    return `nkp-bundle-leaf${leaf.fissionCandidate ? " fission" : ""}${leaf.focused ? "" : " unfocused"}`;
-  });
-  leaves.append("circle").attr("class", (node) => `nkp-bundle-dot status-${node.data.leaf.status ?? "actual"}`).attr("r", 3.2).attr("transform", (node) => `rotate(${node.x - 90}) translate(${node.y},0)`);
-  leaves.append("text").attr("class", "nkp-bundle-label").attr("dy", "0.32em").each(function(node) {
-    const placement = radialLabelTransform(node.x, labelRadius);
-    this.setAttribute("transform", placement.transform);
-    this.setAttribute("text-anchor", placement.anchor);
-    const leaf = node.data.leaf;
-    const text = truncate(leaf.label, MAX_LABEL_CHARS);
-    this.textContent = leaf.fissionCandidate ? placement.anchor === "start" ? `${text} ▲` : `▲ ${text}` : text;
-  });
-  const tip = createTooltip(host);
-  const clear = () => {
-    svg.classed("hovering", false);
-    edgePaths.classed("hl-a", false).classed("hl-b", false);
-    leaves.classed("hl", false);
-    bands.classed("hl", false);
-    tip.hidden = true;
-  };
-  leaves.on("mouseenter", (event, node) => {
-    const leaf = node.data.leaf;
-    svg.classed("hovering", true);
-    const neighbours = new Set([leaf.id]);
-    edgePaths.classed("hl-a", (item) => {
-      const hit = item.edge.source === leaf.id || item.edge.target === leaf.id;
-      if (hit) {
-        neighbours.add(item.edge.source);
-        neighbours.add(item.edge.target);
+  function ensureBuilt() {
+    if (built)
+      return built;
+    const { svg, content, zoom } = appendZoomableSvg(host, d3, { x: -1, y: -1, width: 2, height: 2 }, "nkp-bundle-svg", "Component couplings bundled by attractor");
+    const edgesG = content.append("g").attr("class", "nkp-bundle-edges");
+    const groupsG = content.append("g").attr("class", "nkp-bundle-groups");
+    const leavesG = content.append("g").attr("class", "nkp-bundle-leaves");
+    const labelsGroup = svg.append("g").attr("class", "landscape-labels");
+    zoom.on("zoom.labels", (event) => labelsGroup.attr("transform", event.transform));
+    svg.on("dblclick", () => ctx.onClear());
+    const tip = createTooltip(host);
+    built = { svg, zoom, edgesG, groupsG, leavesG, labelsGroup, tip };
+    return built;
+  }
+  function applySelectionClasses() {
+    if (!built)
+      return;
+    const hasSelection = lastSelected.size > 0;
+    const isSelected = (id) => lastSelected.has(id);
+    const isConnected = (id) => !isSelected(id) && lastConnected.has(id);
+    const dim = (id) => hasSelection && !isSelected(id) && !isConnected(id);
+    built.leavesG.selectAll(".nkp-bundle-leaf").classed("selected", (node) => isSelected(node.data.id)).classed("connected", (node) => isConnected(node.data.id)).classed("dim", (node) => dim(node.data.id));
+    built.labelsGroup.selectAll(".nkp-bundle-leaf").classed("selected", (node) => isSelected(node.data.id)).classed("connected", (node) => isConnected(node.data.id)).classed("dim", (node) => dim(node.data.id));
+    built.groupsG.selectAll(".nkp-bundle-group").classed("selected", (d) => isSelected(d.group.id)).classed("connected", (d) => isConnected(d.group.id)).classed("dim", (d) => dim(d.group.id));
+  }
+  function update(state, rawOptions = {}) {
+    const options = rawOptions;
+    const model = buildNkpBundleModel(state, options);
+    const leafCount = model.groups.reduce((sum, group) => sum + group.leaves.length, 0);
+    if (leafCount === 0) {
+      if (!built) {
+        renderEmpty(host, "No components to bundle. Loosen the filters or lower the minimum coupling strength.");
+        return;
       }
-      return hit;
+      const b2 = ensureBuilt();
+      b2.edgesG.selectAll("path.nkp-bundle-edge").data([]).join("path");
+      b2.groupsG.selectAll("g.nkp-bundle-group").data([]).join("g");
+      b2.leavesG.selectAll("g.nkp-bundle-leaf").data([]).join("g");
+      b2.labelsGroup.selectAll("text.nkp-bundle-label").data([]).join("text");
+      b2.labelsGroup.selectAll("text.nkp-bundle-group-label").data([]).join("text");
+      return;
+    }
+    if (host.querySelector(".landscape-empty"))
+      host.replaceChildren();
+    const b = ensureBuilt();
+    const longestLabel = Math.min(MAX_LABEL_CHARS, Math.max(...model.groups.flatMap((group) => group.leaves.map((leaf) => leaf.label.length + (leaf.fissionCandidate ? 2 : 0)))));
+    const innerRadius = Math.max(150, (leafCount + model.groups.length * GROUP_GAP) * 14 / (2 * Math.PI));
+    const bandInner = innerRadius + BAND_GAP;
+    const bandOuter = bandInner + BAND_WIDTH;
+    const labelRadius = bandOuter + LABEL_GAP;
+    const nameRadius = labelRadius + longestLabel * CHAR_WIDTH + 16;
+    const half = nameRadius + 18;
+    b.svg.attr("viewBox", `${-half} ${-half} ${half * 2} ${half * 2}`);
+    const root = d3.hierarchy(bundleHierarchyData(model));
+    d3.cluster().size([360, innerRadius]).separation((a, other) => a.parent === other.parent ? 1 : GROUP_GAP)(root);
+    const leafNodes = new Map(root.leaves().map((node) => [node.data.id, node]));
+    const line = d3.lineRadial().curve(d3.curveBundle.beta(options.tension ?? DEFAULT_BUNDLE_TENSION)).radius((node) => node.y).angle((node) => node.x * Math.PI / 180);
+    const halfStep = 360 / (leafCount - model.groups.length + model.groups.length * GROUP_GAP) / 2;
+    const groupArcs = (root.children ?? []).map((groupNode) => {
+      const xs = groupNode.leaves().map((leaf) => leaf.x);
+      return {
+        group: groupNode.data.group,
+        start: Math.min(...xs) - halfStep * 0.85,
+        end: Math.max(...xs) + halfStep * 0.85,
+        name: { start: 0, end: 0, maxChars: 0 }
+      };
     });
-    edgePaths.filter(".hl-a").raise();
-    leaves.classed("hl", (other) => neighbours.has(other.data.id));
-    bands.classed("hl", (d) => d.group.id === leaf.groupId);
-    const summary = leafNeighbourSummary(model, leaf.id);
-    const group = model.groups.find((candidate) => candidate.id === leaf.groupId);
-    const placement = group && group.label !== leaf.dominantLabel ? `${escapeHtml(group.label)} (own attractor: ${escapeHtml(leaf.dominantLabel)})` : escapeHtml(group?.label ?? "");
-    const rows = summary.slice(0, 12).map((item) => `<li><b>${escapeHtml(item.label)}</b> (${item.count}): ${escapeHtml(item.stressors.join(", "))}</li>`).join("");
-    tip.innerHTML = `<strong>${escapeHtml(leaf.label)}</strong>` + `<div class="muted">${placement}${leaf.fissionCandidate ? " · fission candidate" : ""}</div>` + (rows ? `<ul>${rows}</ul>${summary.length > 12 ? `<div class="muted">+${summary.length - 12} more</div>` : ""}` : `<div class="muted">No visible couplings</div>`);
-    placeTooltip(host, tip, event);
-  }).on("mouseleave", clear);
-  bands.on("mouseenter", (event, d) => {
-    const members = new Set(d.group.leaves.map((leaf) => leaf.id));
-    svg.classed("hovering", true);
-    bands.classed("hl", (other) => other === d);
-    const touched = new Set;
-    let internal = 0;
-    let external = 0;
-    edgePaths.classed("hl-a", (item) => {
-      const hit = members.has(item.edge.source) && members.has(item.edge.target);
-      if (hit)
-        internal += 1;
-      return hit;
-    }).classed("hl-b", (item) => {
-      const hit = members.has(item.edge.source) !== members.has(item.edge.target);
-      if (hit) {
-        external += 1;
-        touched.add(item.edge.source);
-        touched.add(item.edge.target);
-      }
-      return hit;
+    const nameSpans = layoutGroupLabels(groupArcs.map((d) => ({ start: d.start, end: d.end, label: d.group.label })), nameRadius, GROUP_CHAR_WIDTH);
+    groupArcs.forEach((d, index) => {
+      d.name = nameSpans[index];
     });
-    edgePaths.filter(".hl-a, .hl-b").raise();
-    leaves.classed("hl", (node) => members.has(node.data.id) || touched.has(node.data.id));
-    tip.innerHTML = `<strong>${escapeHtml(d.group.label)}</strong>` + `<div class="muted">${d.group.leaves.length} component(s) · ${internal} internal, ${external} cross-attractor couplings</div>`;
-    placeTooltip(host, tip, event);
-  }).on("mouseleave", clear);
+    const toRadians = (deg) => deg * Math.PI / 180;
+    const band = d3.arc().innerRadius(bandInner).outerRadius(bandOuter);
+    const guide = d3.arc().innerRadius(nameRadius - 9).outerRadius(nameRadius - 8);
+    const isBottom = (d) => {
+      const mid = (d.start + d.end) / 2;
+      return mid > 90 && mid < 270;
+    };
+    const edgeData = model.edges.map((edge) => ({ edge, from: leafNodes.get(edge.source), to: leafNodes.get(edge.target) })).filter((item) => item.from && item.to).sort((left, right) => left.edge.count - right.edge.count);
+    const edgePaths = b.edgesG.selectAll("path.nkp-bundle-edge").data(edgeData, (item) => item.edge.id).join("path").attr("class", (item) => `nkp-bundle-edge${item.edge.fusion ? " fusion" : ""}`).attr("d", (item) => line(item.from.path(item.to))).each(function(item) {
+      const style = bundleEdgeStyle(item.edge.count, model.maxCount, item.edge.focused);
+      this.style.strokeWidth = `${style.width}px`;
+      this.style.strokeOpacity = String(style.opacity);
+    });
+    edgePaths.on("click", (_event, item) => {
+      for (const key of item.edge.forceKeys)
+        ctx.onToggle(`force:${key}`);
+    });
+    const groupSel = b.groupsG.selectAll("g.nkp-bundle-group").data(groupArcs, (d) => d.group.id).join((enter) => {
+      const g = enter.append("g").attr("class", "nkp-bundle-group");
+      g.append("path").attr("class", "nkp-bundle-band");
+      g.append("path").attr("class", "nkp-bundle-guide");
+      g.append("path").attr("class", "nkp-bundle-hit").lower();
+      g.append("path").attr("class", "nkp-bundle-name-path").attr("fill", "none");
+      return g;
+    });
+    groupSel.select(".nkp-bundle-band").attr("fill", (d) => d.group.color).attr("d", (d) => band({ startAngle: toRadians(d.start), endAngle: toRadians(d.end) }));
+    groupSel.select(".nkp-bundle-guide").attr("fill", (d) => d.group.color).attr("d", (d) => guide({ startAngle: toRadians(d.start), endAngle: toRadians(d.end) }));
+    groupSel.select(".nkp-bundle-hit").attr("d", (d) => d3.arc().innerRadius(bandInner).outerRadius(nameRadius + 8)({ startAngle: toRadians(d.start), endAngle: toRadians(d.end) }));
+    groupSel.select(".nkp-bundle-name-path").attr("id", (d) => `nkp-bundle-name-${slugify(d.group.id)}`).attr("d", (d) => {
+      const point = (deg) => {
+        const rad = toRadians(deg - 90);
+        return `${nameRadius * Math.cos(rad)},${nameRadius * Math.sin(rad)}`;
+      };
+      const large = d.name.end - d.name.start > 180 ? 1 : 0;
+      return isBottom(d) ? `M${point(d.name.end)} A${nameRadius},${nameRadius} 0 ${large} 0 ${point(d.name.start)}` : `M${point(d.name.start)} A${nameRadius},${nameRadius} 0 ${large} 1 ${point(d.name.end)}`;
+    });
+    groupSel.on("click", (_event, d) => {
+      if (d.group.id.startsWith("attractor:"))
+        ctx.onToggle(d.group.id);
+    });
+    const leafSel = b.leavesG.selectAll("g.nkp-bundle-leaf").data(root.leaves(), (node) => node.data.id).join((enter) => {
+      const g = enter.append("g");
+      g.append("circle").attr("class", "nkp-bundle-dot").attr("r", 3.2);
+      return g;
+    });
+    leafSel.attr("class", (node) => {
+      const leaf = node.data.leaf;
+      return `nkp-bundle-leaf${leaf.fissionCandidate ? " fission" : ""}${leaf.focused ? "" : " unfocused"}`;
+    }).select("circle").attr("class", (node) => `nkp-bundle-dot status-${node.data.leaf.status ?? "actual"}`).attr("transform", (node) => `rotate(${node.x - 90}) translate(${node.y},0)`);
+    leafSel.on("click", (_event, node) => ctx.onToggle(node.data.id));
+    const leafLabelSel = b.labelsGroup.selectAll("text.nkp-bundle-label").data(root.leaves(), (node) => node.data.id).join("text").attr("dy", "0.32em");
+    leafLabelSel.attr("class", (node) => {
+      const leaf = node.data.leaf;
+      return `nkp-bundle-leaf nkp-bundle-label${leaf.fissionCandidate ? " fission" : ""}${leaf.focused ? "" : " unfocused"}`;
+    }).each(function(node) {
+      const placement = radialLabelTransform(node.x, labelRadius);
+      this.setAttribute("transform", placement.transform);
+      this.setAttribute("text-anchor", placement.anchor);
+      const leaf = node.data.leaf;
+      const text = truncate(leaf.label, MAX_LABEL_CHARS);
+      this.textContent = leaf.fissionCandidate ? placement.anchor === "start" ? `${text} ▲` : `▲ ${text}` : text;
+    });
+    leafLabelSel.on("click", (_event, node) => ctx.onToggle(node.data.id));
+    const groupLabelSel = b.labelsGroup.selectAll("text.nkp-bundle-group-label").data(groupArcs, (d) => d.group.id).join((enter) => {
+      const t = enter.append("text").attr("class", "nkp-bundle-group-label");
+      t.append("textPath");
+      return t;
+    });
+    groupLabelSel.attr("fill", (d) => d.group.color).attr("dy", (d) => isBottom(d) ? "0.8em" : "0").select("textPath").attr("href", (d) => `#nkp-bundle-name-${slugify(d.group.id)}`).attr("startOffset", "50%").attr("text-anchor", "middle").text((d) => truncate(d.group.label, d.name.maxChars));
+    const clearHover = () => {
+      b.svg.classed("hovering", false);
+      edgePaths.classed("hl-a", false).classed("hl-b", false);
+      leafSel.classed("hl", false);
+      leafLabelSel.classed("hl", false);
+      groupSel.classed("hl", false);
+      b.tip.hidden = true;
+    };
+    leafSel.on("mouseenter", (event, node) => {
+      const leaf = node.data.leaf;
+      b.svg.classed("hovering", true);
+      const neighbours = new Set([leaf.id]);
+      edgePaths.classed("hl-a", (item) => {
+        const hit = item.edge.source === leaf.id || item.edge.target === leaf.id;
+        if (hit) {
+          neighbours.add(item.edge.source);
+          neighbours.add(item.edge.target);
+        }
+        return hit;
+      });
+      edgePaths.filter(".hl-a").raise();
+      leafSel.classed("hl", (other) => neighbours.has(other.data.id));
+      leafLabelSel.classed("hl", (other) => neighbours.has(other.data.id));
+      groupSel.classed("hl", (d) => d.group.id === leaf.groupId);
+      const summary = leafNeighbourSummary(model, leaf.id);
+      const group = model.groups.find((candidate) => candidate.id === leaf.groupId);
+      const placement = group && group.label !== leaf.dominantLabel ? `${escapeHtml(group.label)} (own attractor: ${escapeHtml(leaf.dominantLabel)})` : escapeHtml(group?.label ?? "");
+      const rows = summary.slice(0, 12).map((item) => `<li><b>${escapeHtml(item.label)}</b> (${item.count}): ${escapeHtml(item.stressors.join(", "))}</li>`).join("");
+      b.tip.innerHTML = `<strong>${escapeHtml(leaf.label)}</strong>` + `<div class="muted">${placement}${leaf.fissionCandidate ? " · fission candidate" : ""}</div>` + (rows ? `<ul>${rows}</ul>${summary.length > 12 ? `<div class="muted">+${summary.length - 12} more</div>` : ""}` : `<div class="muted">No visible couplings</div>`);
+      placeTooltip(host, b.tip, event);
+    }).on("mouseleave", clearHover);
+    groupSel.on("mouseenter", (event, d) => {
+      const members = new Set(d.group.leaves.map((leaf) => leaf.id));
+      b.svg.classed("hovering", true);
+      groupSel.classed("hl", (other) => other === d);
+      const touched = new Set;
+      let internal = 0;
+      let external = 0;
+      edgePaths.classed("hl-a", (item) => {
+        const hit = members.has(item.edge.source) && members.has(item.edge.target);
+        if (hit)
+          internal += 1;
+        return hit;
+      }).classed("hl-b", (item) => {
+        const hit = members.has(item.edge.source) !== members.has(item.edge.target);
+        if (hit) {
+          external += 1;
+          touched.add(item.edge.source);
+          touched.add(item.edge.target);
+        }
+        return hit;
+      });
+      edgePaths.filter(".hl-a, .hl-b").raise();
+      leafSel.classed("hl", (node) => members.has(node.data.id) || touched.has(node.data.id));
+      leafLabelSel.classed("hl", (node) => members.has(node.data.id) || touched.has(node.data.id));
+      b.tip.innerHTML = `<strong>${escapeHtml(d.group.label)}</strong>` + `<div class="muted">${d.group.leaves.length} component(s) · ${internal} internal, ${external} cross-attractor couplings</div>`;
+      placeTooltip(host, b.tip, event);
+    }).on("mouseleave", clearHover);
+    applySelectionClasses();
+  }
+  function setSelection(selected, connected) {
+    lastSelected = selected;
+    lastConnected = connected;
+    applySelectionClasses();
+  }
+  function resetView() {
+    if (!built)
+      return;
+    resetZoom(built.svg, built.zoom, d3);
+  }
+  return { update, setSelection, resetView, destroy: teardown };
 }
 
 // src/nkp-seriation.ts
@@ -3020,6 +3124,7 @@ function buildSeriationModel(state, options = {}) {
         row,
         col,
         count: cellForces.length,
+        forceKeys: cellForces.map((force) => force.key),
         forces: cellForces.map(forceLabel),
         focused: cellForces.some(isVisibleForce) && isVisibleComponent(rowItem?.name ?? "") && isVisibleComponent(colItem?.name ?? "")
       });
@@ -3054,98 +3159,311 @@ var CELL = 18;
 var STRIPE = 6;
 var LABEL_WIDTH = 170;
 var HEADER_HEIGHT = 150;
-function renderNkpSeriation(host, state, options, d3) {
-  host.replaceChildren();
-  const model = buildSeriationModel(state, options);
-  const showCounts = options.showCounts ?? true;
-  if (model.components.length === 0) {
-    renderEmpty(host, "No coupled components to show. Loosen the filters or lower the minimum coupling strength.");
-    return;
+function cellHalf(row, col) {
+  if (col > row)
+    return "upper";
+  if (col < row)
+    return "lower";
+  return "diagonal";
+}
+function createHeatmapView(ctx) {
+  const { host, d3 } = ctx;
+  let built;
+  let indexByName = new Map;
+  let componentByIndex = new Map;
+  let lastModel;
+  let pinnedMirrorHalf;
+  let hoverMirrorHalf;
+  let lastSelected = new Set;
+  let lastConnected = new Set;
+  function destroy() {
+    built = undefined;
+    host.replaceChildren();
   }
-  const fissionKey = document.createElement("span");
-  fissionKey.className = "landscape-legend-item landscape-legend-warn";
-  fissionKey.textContent = "▲ fission candidate";
-  renderLegend(host, "Stripe = main attractor", model.attractors.map((attractor) => ({ id: attractor.id, label: `${attractor.name} (${attractor.componentCount})`, color: attractor.color })), [fissionKey]);
-  const n = model.components.length;
-  const colorFor = new Map(model.attractors.map((attractor) => [attractor.id, attractor.color]));
-  const width = LABEL_WIDTH + STRIPE + n * CELL + 8;
-  const height = HEADER_HEIGHT + STRIPE + n * CELL + 8;
-  const gridX = LABEL_WIDTH + STRIPE;
-  const gridY = HEADER_HEIGHT + STRIPE;
-  const { content: svg } = appendZoomableSvg(host, d3, { x: 0, y: 0, width, height }, "nkp-seriation-svg", "Component coupling heatmap, rows ordered so tightly coupled components sit together");
-  const tooltip = createTooltip(host);
-  const grid = svg.append("g").attr("transform", `translate(${gridX},${gridY})`);
-  grid.append("rect").attr("class", "nkp-seriation-frame").attr("width", n * CELL).attr("height", n * CELL);
+  function ensureBuilt() {
+    if (built)
+      return built;
+    const { svg, content, zoom } = appendZoomableSvg(host, d3, { x: 0, y: 0, width: 2, height: 2 }, "nkp-seriation-svg", "Component coupling heatmap, rows ordered so tightly coupled components sit together");
+    const root = content.append("g");
+    const frame = root.append("rect").attr("class", "nkp-seriation-frame");
+    const rowBand = root.append("rect").attr("class", "nkp-seriation-band").attr("visibility", "hidden");
+    const colBand = root.append("rect").attr("class", "nkp-seriation-band").attr("visibility", "hidden");
+    const cellLayer = root.append("g");
+    const diagonalLayer = root.append("g");
+    const rowHeadersLayer = root.append("g");
+    const colHeadersLayer = root.append("g");
+    const labelsGroup = svg.append("g").attr("class", "landscape-labels");
+    zoom.on("zoom.labels", (event) => labelsGroup.attr("transform", event.transform));
+    svg.on("dblclick", () => ctx.onClear());
+    built = { svg, zoom, root, labelsGroup, tip: createTooltip(host), frame, rowBand, colBand, cellLayer, diagonalLayer, rowHeadersLayer, colHeadersLayer };
+    return built;
+  }
   const intensity = (value, max) => max <= 0 ? 0 : 0.18 + 0.82 * (value / max);
-  const diagonal = grid.append("g").selectAll("g").data(model.components).join("g").attr("transform", (_, index) => `translate(${index * CELL},${index * CELL})`);
-  diagonal.append("rect").attr("class", "nkp-seriation-diag").attr("width", CELL - 1).attr("height", CELL - 1).attr("fill-opacity", (item) => intensity(item.k, model.maxK) * (item.focused ? 1 : 0.4));
-  if (showCounts)
-    diagonal.append("text").attr("class", "nkp-seriation-count nkp-seriation-count-strong").attr("x", CELL / 2).attr("y", CELL / 2).text((item) => item.k);
-  const cell = grid.append("g").selectAll("g").data(model.cells).join("g").attr("class", "nkp-seriation-cell").attr("transform", (item) => `translate(${item.col * CELL},${item.row * CELL})`);
-  cell.append("rect").attr("class", (item) => `nkp-seriation-heat${item.focused ? "" : " is-faded"}`).attr("width", CELL - 1).attr("height", CELL - 1).attr("fill-opacity", (item) => intensity(item.count, model.maxCount));
-  if (showCounts)
-    cell.append("text").attr("class", (item) => `nkp-seriation-count${intensity(item.count, model.maxCount) > 0.6 ? " nkp-seriation-count-strong" : ""}`).attr("x", CELL / 2).attr("y", CELL / 2).text((item) => item.count);
-  const rowBand = grid.append("rect").attr("class", "nkp-seriation-band").attr("width", n * CELL).attr("height", CELL).attr("visibility", "hidden");
-  const colBand = grid.append("rect").attr("class", "nkp-seriation-band").attr("width", CELL).attr("height", n * CELL).attr("visibility", "hidden");
-  const rowHeaders = svg.append("g").selectAll("g").data(model.components).join("g").attr("class", "nkp-seriation-header").attr("transform", (_, index) => `translate(0,${gridY + index * CELL})`);
-  rowHeaders.append("rect").attr("class", "nkp-seriation-hit").attr("width", LABEL_WIDTH + STRIPE).attr("height", CELL);
-  rowHeaders.append("rect").attr("x", LABEL_WIDTH).attr("width", STRIPE - 1).attr("height", CELL - 1).attr("fill", (item) => colorFor.get(item.dominantAttractorId ?? "") ?? "var(--line)");
-  rowHeaders.append("text").attr("class", (item) => headerClass(item)).attr("x", LABEL_WIDTH - 4).attr("y", CELL / 2).attr("text-anchor", "end").text((item) => headerLabel(item));
-  const colHeaders = svg.append("g").selectAll("g").data(model.components).join("g").attr("class", "nkp-seriation-header").attr("transform", (_, index) => `translate(${gridX + index * CELL},0)`);
-  colHeaders.append("rect").attr("class", "nkp-seriation-hit").attr("width", CELL).attr("height", HEADER_HEIGHT + STRIPE);
-  colHeaders.append("rect").attr("y", HEADER_HEIGHT).attr("width", CELL - 1).attr("height", STRIPE - 1).attr("fill", (item) => colorFor.get(item.dominantAttractorId ?? "") ?? "var(--line)");
-  colHeaders.append("text").attr("class", (item) => headerClass(item)).attr("transform", `translate(${CELL / 2},${HEADER_HEIGHT - 4}) rotate(-60)`).text((item) => headerLabel(item));
-  let pinned;
-  const highlight = (row, col) => {
-    const effectiveRow = row ?? pinned;
-    const effectiveCol = col ?? pinned;
-    rowBand.attr("visibility", effectiveRow === undefined ? "hidden" : "visible").attr("y", (effectiveRow ?? 0) * CELL);
-    colBand.attr("visibility", effectiveCol === undefined ? "hidden" : "visible").attr("x", (effectiveCol ?? 0) * CELL);
-    rowHeaders.classed("is-active", (_, index) => index === effectiveRow);
-    colHeaders.classed("is-active", (_, index) => index === effectiveCol);
-  };
-  const showTooltip = (event, lines) => {
-    tooltip.replaceChildren(...lines.map((line, index) => {
+  function showTooltip(event, lines) {
+    const b = built;
+    if (!b)
+      return;
+    b.tip.replaceChildren(...lines.map((line, index) => {
       const element = document.createElement(index === 0 ? "strong" : "div");
       element.textContent = line;
       return element;
     }));
-    placeTooltip(host, tooltip, event);
-  };
-  const hideTooltip = () => {
-    tooltip.hidden = true;
-    highlight(undefined, undefined);
-  };
-  const componentLines = (item) => [
-    item.name,
-    `K = ${item.k} force${item.k === 1 ? "" : "s"}${item.fissionCandidate ? " (fission candidate)" : ""}`,
-    `Status: ${item.status}`,
-    `Dominant attractor: ${model.attractors.find((a) => a.id === item.dominantAttractorId)?.name ?? "none"}`
-  ];
-  cell.on("mousemove", (event, item) => {
-    highlight(item.row, item.col);
-    const rowName = model.components[item.row]?.name ?? "";
-    const colName = model.components[item.col]?.name ?? "";
-    showTooltip(event, [`${rowName} × ${colName}: ${item.count} shared`, ...item.forces]);
-  }).on("mouseleave", hideTooltip);
-  diagonal.on("mousemove", (event, item) => {
-    const index = model.components.indexOf(item);
-    highlight(index, index);
-    showTooltip(event, componentLines(item));
-  }).on("mouseleave", hideTooltip);
-  const headerHandlers = (selection) => {
-    selection.on("mousemove", (event, item) => {
-      const index = model.components.indexOf(item);
-      highlight(index, index);
-      showTooltip(event, componentLines(item));
-    }).on("mouseleave", hideTooltip).on("click", (_event, item) => {
-      const index = model.components.indexOf(item);
-      pinned = pinned === index ? undefined : index;
-      highlight(undefined, undefined);
+    placeTooltip(host, b.tip, event);
+  }
+  function hideTooltip() {
+    if (!built)
+      return;
+    built.tip.hidden = true;
+  }
+  function clearHover() {
+    hideTooltip();
+    hoverMirrorHalf = undefined;
+    applyMirrorClasses();
+    applyHeaderBands(undefined, undefined);
+  }
+  function applyHeaderBands(row, col) {
+    if (!built)
+      return;
+    const activeRow = row;
+    const activeCol = col;
+    const n = lastModel?.components.length ?? 0;
+    built.rowBand.attr("visibility", activeRow === undefined ? "hidden" : "visible").attr("y", (activeRow ?? 0) * CELL).attr("width", n * CELL).attr("height", CELL);
+    built.colBand.attr("visibility", activeCol === undefined ? "hidden" : "visible").attr("x", (activeCol ?? 0) * CELL).attr("width", CELL).attr("height", n * CELL);
+    built.rowHeaders?.classed("is-active", (item) => indexByName.get(item.name) === activeRow);
+    built.colHeaders?.classed("is-active", (item) => indexByName.get(item.name) === activeCol);
+  }
+  function applyMirrorClasses() {
+    const b = built;
+    if (!b)
+      return;
+    const active = hoverMirrorHalf ?? pinnedMirrorHalf;
+    b.cells?.classed("mirror-dim", (item) => {
+      if (!active)
+        return false;
+      const half = cellHalf(item.row, item.col);
+      if (half === "diagonal")
+        return false;
+      return active === "upper" ? half === "lower" : half === "upper";
     });
-  };
-  headerHandlers(rowHeaders);
-  headerHandlers(colHeaders);
+  }
+  function applySelectionClasses() {
+    const b = built;
+    if (!b)
+      return;
+    const hasSelection = lastSelected.size > 0;
+    const keyState = (keys) => {
+      const isSelected = keys.some((key) => lastSelected.has(key));
+      if (isSelected)
+        return "selected";
+      const isConnected = keys.some((key) => lastConnected.has(key));
+      if (isConnected)
+        return "connected";
+      return hasSelection ? "dim" : "none";
+    };
+    const setState = (selection, keysFor) => {
+      if (!selection)
+        return;
+      selection.classed("selected", (item) => keyState(keysFor(item)) === "selected").classed("connected", (item) => keyState(keysFor(item)) === "connected").classed("dim", (item) => keyState(keysFor(item)) === "dim");
+    };
+    setState(b.rowHeaders, (item) => [`component:${item.name}`]);
+    setState(b.colHeaders, (item) => [`component:${item.name}`]);
+    setState(b.diagonal, (item) => [`component:${item.name}`]);
+    setState(b.cells, (item) => item.forceKeys.map((key) => `force:${key}`));
+    if (b.legend) {
+      for (const item of Array.from(b.legend.querySelectorAll("[data-legend-id]"))) {
+        const key = `attractor:${item.dataset.legendId ?? ""}`;
+        const state = keyState([key]);
+        item.classList.toggle("selected", state === "selected");
+        item.classList.toggle("connected", state === "connected");
+        item.classList.toggle("dim", state === "dim");
+      }
+    }
+  }
+  function componentLines(item) {
+    return [
+      item.name,
+      `K = ${item.k} force${item.k === 1 ? "" : "s"}${item.fissionCandidate ? " (fission candidate)" : ""}`,
+      `Status: ${item.status}`,
+      `Dominant attractor: ${lastModel?.attractors.find((attractor) => attractor.id === item.dominantAttractorId)?.name ?? "none"}`
+    ];
+  }
+  function renderLegendForModel(model) {
+    const b = ensureBuilt();
+    b.legend?.remove();
+    const fissionKey = document.createElement("span");
+    fissionKey.className = "landscape-legend-item landscape-legend-warn";
+    fissionKey.textContent = "▲ fission candidate";
+    const legend = renderLegend(host, "Stripe = main attractor", model.attractors.map((attractor) => ({ id: attractor.id, label: `${attractor.name} (${attractor.componentCount})`, color: attractor.color })), [fissionKey]);
+    host.insertBefore(legend, b.svg.node());
+    b.legend = legend;
+    for (const item of Array.from(legend.querySelectorAll("[data-legend-id]"))) {
+      item.addEventListener("click", () => {
+        const id = item.dataset.legendId;
+        if (id)
+          ctx.onToggle(`attractor:${id}`);
+      });
+    }
+  }
+  function update(state, rawOptions = {}) {
+    const options = rawOptions;
+    const model = buildSeriationModel(state, options);
+    const showCounts = options.showCounts ?? true;
+    if (model.components.length === 0) {
+      if (!built) {
+        renderEmpty(host, "No coupled components to show. Loosen the filters or lower the minimum coupling strength.");
+        return;
+      }
+      const b2 = ensureBuilt();
+      b2.legend?.remove();
+      b2.legend = undefined;
+      b2.cellLayer.selectAll("g.nkp-seriation-cell").data([]).join("g");
+      b2.diagonalLayer.selectAll("g.nkp-seriation-diagonal").data([]).join("g");
+      b2.rowHeadersLayer.selectAll("g.nkp-seriation-header.row").data([]).join("g");
+      b2.colHeadersLayer.selectAll("g.nkp-seriation-header.col").data([]).join("g");
+      b2.labelsGroup.selectAll("text").data([]).join("text");
+      hideTooltip();
+      return;
+    }
+    if (host.querySelector(".landscape-empty"))
+      host.replaceChildren();
+    const b = ensureBuilt();
+    renderLegendForModel(model);
+    lastModel = model;
+    indexByName = new Map(model.components.map((item, index) => [item.name, index]));
+    componentByIndex = new Map(model.components.map((item, index) => [index, item]));
+    const n = model.components.length;
+    const colorFor = new Map(model.attractors.map((attractor) => [attractor.id, attractor.color]));
+    const width = LABEL_WIDTH + STRIPE + n * CELL + 8;
+    const height = HEADER_HEIGHT + STRIPE + n * CELL + 8;
+    const gridX = LABEL_WIDTH + STRIPE;
+    const gridY = HEADER_HEIGHT + STRIPE;
+    b.svg.attr("viewBox", `0 0 ${width} ${height}`);
+    b.root.attr("transform", `translate(${gridX},${gridY})`);
+    b.frame.attr("width", n * CELL).attr("height", n * CELL);
+    const cellSelection = b.cellLayer.selectAll("g.nkp-seriation-cell").data(model.cells, (item) => `${item.row}:${item.col}`).join((enter) => {
+      const g = enter.append("g").attr("class", "nkp-seriation-cell");
+      g.append("rect");
+      return g;
+    }).attr("transform", (item) => `translate(${item.col * CELL},${item.row * CELL})`).attr("data-cell-row", (item) => String(item.row)).attr("data-cell-col", (item) => String(item.col));
+    cellSelection.select("rect").attr("class", (item) => `nkp-seriation-heat${item.focused ? "" : " is-faded"}`).attr("width", CELL - 1).attr("height", CELL - 1).attr("fill-opacity", (item) => intensity(item.count, model.maxCount));
+    b.cells = cellSelection;
+    const diagonalSelection = b.diagonalLayer.selectAll("g.nkp-seriation-diagonal").data(model.components, (item) => item.name).join((enter) => {
+      const g = enter.append("g").attr("class", "nkp-seriation-diagonal");
+      g.append("rect").attr("class", "nkp-seriation-diag");
+      return g;
+    }).attr("transform", (item) => `translate(${(indexByName.get(item.name) ?? 0) * CELL},${(indexByName.get(item.name) ?? 0) * CELL})`).attr("data-diagonal-index", (item) => String(indexByName.get(item.name) ?? 0));
+    diagonalSelection.select("rect").attr("width", CELL - 1).attr("height", CELL - 1).attr("fill-opacity", (item) => intensity(item.k, model.maxK) * (item.focused ? 1 : 0.4));
+    b.diagonal = diagonalSelection;
+    const rowHeaders = b.rowHeadersLayer.selectAll("g.nkp-seriation-header.row").data(model.components, (item) => item.name).join((enter) => {
+      const g = enter.append("g").attr("class", "nkp-seriation-header row");
+      g.append("rect").attr("class", "nkp-seriation-hit");
+      g.append("rect").attr("class", "nkp-seriation-stripe");
+      return g;
+    }).attr("transform", (item) => `translate(${-gridX},${(indexByName.get(item.name) ?? 0) * CELL})`).attr("data-header-axis", "row").attr("data-header-index", (item) => String(indexByName.get(item.name) ?? 0));
+    rowHeaders.select(".nkp-seriation-hit").attr("width", LABEL_WIDTH + STRIPE).attr("height", CELL);
+    rowHeaders.select(".nkp-seriation-stripe").attr("x", LABEL_WIDTH).attr("width", STRIPE - 1).attr("height", CELL - 1).attr("fill", (item) => colorFor.get(item.dominantAttractorId ?? "") ?? "var(--line)");
+    b.rowHeaders = rowHeaders;
+    const colHeaders = b.colHeadersLayer.selectAll("g.nkp-seriation-header.col").data(model.components, (item) => item.name).join((enter) => {
+      const g = enter.append("g").attr("class", "nkp-seriation-header col");
+      g.append("rect").attr("class", "nkp-seriation-hit");
+      g.append("rect").attr("class", "nkp-seriation-stripe");
+      return g;
+    }).attr("transform", (item) => `translate(${(indexByName.get(item.name) ?? 0) * CELL},${-gridY})`).attr("data-header-axis", "col").attr("data-header-index", (item) => String(indexByName.get(item.name) ?? 0));
+    colHeaders.select(".nkp-seriation-hit").attr("width", CELL).attr("height", HEADER_HEIGHT + STRIPE);
+    colHeaders.select(".nkp-seriation-stripe").attr("y", HEADER_HEIGHT).attr("width", CELL - 1).attr("height", STRIPE - 1).attr("fill", (item) => colorFor.get(item.dominantAttractorId ?? "") ?? "var(--line)");
+    b.colHeaders = colHeaders;
+    const countClass = (count) => `nkp-seriation-count${intensity(count, model.maxCount) > 0.6 ? " nkp-seriation-count-strong" : ""}`;
+    const textData = [];
+    if (showCounts) {
+      for (const item of model.components) {
+        const index = indexByName.get(item.name) ?? 0;
+        textData.push({
+          id: `diag:${item.name}`,
+          className: "nkp-seriation-count nkp-seriation-count-strong",
+          x: gridX + index * CELL + CELL / 2,
+          y: gridY + index * CELL + CELL / 2,
+          text: String(item.k)
+        });
+      }
+      for (const item of model.cells) {
+        textData.push({
+          id: `cell:${item.row}:${item.col}`,
+          className: countClass(item.count),
+          x: gridX + item.col * CELL + CELL / 2,
+          y: gridY + item.row * CELL + CELL / 2,
+          text: String(item.count)
+        });
+      }
+    }
+    for (const item of model.components) {
+      const index = indexByName.get(item.name) ?? 0;
+      textData.push({
+        id: `row:${item.name}`,
+        className: headerClass(item),
+        x: LABEL_WIDTH - 4,
+        y: gridY + index * CELL + CELL / 2,
+        text: headerLabel(item)
+      });
+      textData.push({
+        id: `col:${item.name}`,
+        className: headerClass(item),
+        x: gridX + index * CELL + CELL / 2,
+        y: HEADER_HEIGHT - 4,
+        transform: `rotate(-60 ${gridX + index * CELL + CELL / 2} ${HEADER_HEIGHT - 4})`,
+        text: headerLabel(item)
+      });
+    }
+    b.labelsGroup.selectAll("text").data(textData, (item) => item.id).join("text").attr("class", (item) => item.className).attr("x", (item) => item.x).attr("y", (item) => item.y).attr("transform", (item) => item.transform ?? null).attr("text-anchor", (item) => item.id.startsWith("row:") ? "end" : "middle").text((item) => item.text);
+    cellSelection.on("mousemove", (event, item) => {
+      const half = cellHalf(item.row, item.col);
+      hoverMirrorHalf = half === "diagonal" ? undefined : half;
+      applyMirrorClasses();
+      applyHeaderBands(item.row, item.col);
+      const rowName = componentByIndex.get(item.row)?.name ?? "";
+      const colName = componentByIndex.get(item.col)?.name ?? "";
+      showTooltip(event, [`${rowName} × ${colName}: ${item.count} shared`, ...item.forces]);
+    }).on("mouseleave", clearHover).on("click", (_event, item) => {
+      for (const key of item.forceKeys)
+        ctx.onToggle(`force:${key}`);
+      const half = cellHalf(item.row, item.col);
+      if (half !== "diagonal")
+        pinnedMirrorHalf = half;
+      applyMirrorClasses();
+    });
+    diagonalSelection.on("mousemove", (event, item) => {
+      const index = indexByName.get(item.name);
+      applyHeaderBands(index, index);
+      showTooltip(event, componentLines(item));
+    }).on("mouseleave", clearHover).on("click", (_event, item) => ctx.onToggle(`component:${item.name}`));
+    const headerHandlers = (selection) => {
+      selection.on("mousemove", (event, item) => {
+        const index = indexByName.get(item.name);
+        applyHeaderBands(index, index);
+        showTooltip(event, componentLines(item));
+      }).on("mouseleave", clearHover).on("click", (_event, item) => ctx.onToggle(`component:${item.name}`));
+    };
+    headerHandlers(rowHeaders);
+    headerHandlers(colHeaders);
+    applyHeaderBands(undefined, undefined);
+    applyMirrorClasses();
+    applySelectionClasses();
+  }
+  function setSelection(selected, connected) {
+    lastSelected = selected;
+    lastConnected = connected;
+    if (selected.size === 0) {
+      pinnedMirrorHalf = undefined;
+      hoverMirrorHalf = undefined;
+    }
+    applySelectionClasses();
+    applyMirrorClasses();
+  }
+  function resetView() {
+    if (!built)
+      return;
+    resetZoom(built.svg, built.zoom, d3);
+  }
+  return { update, setSelection, resetView, destroy };
 }
 function headerLabel(item) {
   const name = item.name.length > 24 ? `${item.name.slice(0, 23)}…` : item.name;
@@ -3158,6 +3476,136 @@ function headerClass(item) {
     item.status === "proposed" ? "is-proposed" : "",
     item.focused ? "" : "is-faded"
   ].filter(Boolean).join(" ");
+}
+
+// src/landscape-geometry.ts
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+function normalize(dx, dy) {
+  const length = Math.hypot(dx, dy);
+  if (length === 0)
+    return { x: 1, y: 0 };
+  return { x: dx / length, y: dy / length };
+}
+function centroid(points) {
+  if (points.length === 0)
+    return;
+  const sum = points.reduce((acc, point) => ({ x: acc.x + point.x, y: acc.y + point.y }), { x: 0, y: 0 });
+  return { x: sum.x / points.length, y: sum.y / points.length };
+}
+function fmt(value) {
+  const rounded = Number(value.toFixed(2));
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded);
+}
+function curveToPath(from, curve) {
+  return `M ${fmt(from.x)},${fmt(from.y)} C ${fmt(curve.c1.x)},${fmt(curve.c1.y)} ${fmt(curve.c2.x)},${fmt(curve.c2.y)} ${fmt(curve.end.x)},${fmt(curve.end.y)}`;
+}
+function cubicBetween(from, to, direction) {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const distance = Math.hypot(dx, dy);
+  const lead = distance * 0.34;
+  return {
+    c1: { x: from.x + direction.x * lead, y: from.y + direction.y * lead },
+    c2: { x: to.x - dx * 0.32, y: to.y - dy * 0.32 },
+    end: to
+  };
+}
+function branchGeometry(from, to, splitFraction = 0.6) {
+  const targets = to.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+  const count = targets.length;
+  if (count === 0)
+    return { trunk: "", branches: [], width: 1 };
+  const width = 1 + Math.sqrt(Math.max(0, count - 1)) * 0.9;
+  if (count === 1) {
+    const target = targets[0];
+    const direction = normalize(target.x - from.x, target.y - from.y);
+    const curve = cubicBetween(from, target, direction);
+    const path = curveToPath(from, curve);
+    return { trunk: path, branches: [path], width };
+  }
+  const center = centroid(targets) ?? from;
+  const split = clamp(splitFraction, 0.05, 0.95);
+  const splitPoint = {
+    x: from.x + (center.x - from.x) * split,
+    y: from.y + (center.y - from.y) * split
+  };
+  const trunkDirection = normalize(splitPoint.x - from.x, splitPoint.y - from.y);
+  const trunk = curveToPath(from, cubicBetween(from, splitPoint, trunkDirection));
+  const branches = targets.map((target) => {
+    const targetDx = target.x - splitPoint.x;
+    const targetDy = target.y - splitPoint.y;
+    const targetDistance = Math.hypot(targetDx, targetDy);
+    const cp1Distance = Math.min(Math.max(10, targetDistance * 0.35), 32);
+    const cp1 = {
+      x: splitPoint.x + trunkDirection.x * cp1Distance,
+      y: splitPoint.y + trunkDirection.y * cp1Distance
+    };
+    const cp2 = {
+      x: target.x - targetDx * 0.3,
+      y: target.y - targetDy * 0.3
+    };
+    return curveToPath(splitPoint, { c1: cp1, c2: cp2, end: target });
+  });
+  return { trunk, branches, width };
+}
+function overlap1d(a0, a1, b0, b1) {
+  return Math.min(a1, b1) - Math.max(a0, b0);
+}
+function xOverlaps(a, b) {
+  return overlap1d(a.x, a.x + a.width, b.x, b.x + b.width) > 0;
+}
+function nudgeLabels(boxes, maxShift = 12) {
+  const limit = Math.max(0, maxShift);
+  const shifts = boxes.map(() => 0);
+  if (boxes.length < 2 || limit === 0)
+    return shifts;
+  const pairs = [];
+  for (let i = 0;i < boxes.length; i += 1) {
+    for (let j = i + 1;j < boxes.length; j += 1) {
+      if (xOverlaps(boxes[i], boxes[j]))
+        pairs.push([i, j]);
+    }
+  }
+  if (pairs.length === 0)
+    return shifts;
+  for (let pass = 0;pass < 10; pass += 1) {
+    let changed = false;
+    for (const [i, j] of pairs) {
+      const a = boxes[i];
+      const b = boxes[j];
+      const topA = a.y + shifts[i];
+      const botA = topA + a.height;
+      const topB = b.y + shifts[j];
+      const botB = topB + b.height;
+      const overlap = Math.max(0, Math.min(botA, botB) - Math.max(topA, topB));
+      if (overlap <= 0)
+        continue;
+      const targetStep = overlap / 2 + 0.5;
+      const canUp = shifts[i] + limit;
+      const canDown = limit - shifts[j];
+      const paired = Math.min(targetStep, canUp, canDown);
+      if (paired > 0) {
+        shifts[i] = shifts[i] - paired;
+        shifts[j] = shifts[j] + paired;
+        changed = true;
+        continue;
+      }
+      if (canUp > 0) {
+        const applied = Math.min(overlap + 0.5, canUp);
+        shifts[i] = shifts[i] - applied;
+        changed = changed || applied > 0;
+      } else if (canDown > 0) {
+        const applied = Math.min(overlap + 0.5, canDown);
+        shifts[j] = shifts[j] + applied;
+        changed = changed || applied > 0;
+      }
+    }
+    if (!changed)
+      break;
+  }
+  return shifts.map((value) => clamp(value, -limit, limit));
 }
 
 // src/nkp-hypergraph.ts
@@ -3266,7 +3714,37 @@ function buildNkpHypergraphModel(state, options = {}) {
       focused: members.some((item) => item.focused)
     });
   });
-  return { nodes, edges: keptEdges, groups };
+  const componentVectors = new Map;
+  for (const edge of keptEdges) {
+    componentVectors.set(edge.target, [...componentVectors.get(edge.target) ?? [], edge.source]);
+  }
+  const vectorGroups = new Map;
+  for (const [componentId, forceIds] of componentVectors) {
+    const vectorKey = [...forceIds].sort().join("\x00");
+    vectorGroups.set(vectorKey, [...vectorGroups.get(vectorKey) ?? [], componentId]);
+  }
+  const fusionGroups = [...vectorGroups.values()].filter((group) => group.length >= 2);
+  const bundleMap = new Map;
+  for (const edge of keptEdges) {
+    const forceKey = edge.source.startsWith("force:") ? edge.source.slice("force:".length) : edge.source;
+    const bundleId = `bundle:${edge.target}:${edge.attractorId}`;
+    const existing = bundleMap.get(bundleId);
+    if (existing) {
+      existing.forceIds.push(forceKey);
+      if (forceFocus.get(edge.source))
+        existing.focused = true;
+      continue;
+    }
+    bundleMap.set(bundleId, {
+      id: bundleId,
+      componentId: edge.target,
+      attractorId: edge.attractorId,
+      forceIds: [forceKey],
+      focused: !!forceFocus.get(edge.source)
+    });
+  }
+  const branchBundles = [...bundleMap.values()];
+  return { nodes, edges: keptEdges, groups, branchBundles, fusionGroups };
 }
 function cross(origin, a, b) {
   return (a.x - origin.x) * (b.y - origin.y) - (a.y - origin.y) * (b.x - origin.x);
@@ -3303,13 +3781,13 @@ function regionCorePath(points) {
   const first = hull[0];
   if (first === undefined)
     return "";
-  const fmt = (value) => value.toFixed(1);
+  const fmt2 = (value) => value.toFixed(1);
   if (hull.length === 1) {
-    return `M${fmt(first.x - 0.5)},${fmt(first.y)}L${fmt(first.x + 0.5)},${fmt(first.y)}Z`;
+    return `M${fmt2(first.x - 0.5)},${fmt2(first.y)}L${fmt2(first.x + 0.5)},${fmt2(first.y)}Z`;
   }
-  return `M${hull.map((point) => `${fmt(point.x)},${fmt(point.y)}`).join("L")}Z`;
+  return `M${hull.map((point) => `${fmt2(point.x)},${fmt2(point.y)}`).join("L")}Z`;
 }
-function centroid(points) {
+function centroid2(points) {
   if (points.length === 0)
     return;
   const sum = points.reduce((acc, point) => ({ x: acc.x + point.x, y: acc.y + point.y }), { x: 0, y: 0 });
@@ -3345,122 +3823,691 @@ function createAttractorCohesionForce(strength = 0.3) {
   return force;
 }
 var REGION_PADDING = 22;
-function renderNkpHypergraph(host, model, d3, options = {}) {
-  if (model.nodes.length === 0) {
-    renderEmpty(host, "No forces or components to draw. Loosen the filters or pick another focus component.");
-    return;
+var DEFAULT_CANVAS_WIDTH = 800;
+var DEFAULT_CANVAS_HEIGHT = 600;
+var FORCE_NODE_SCALE = 1.3;
+var FORCE_DIAMOND_HALF_DIAGONAL = 5 * FORCE_NODE_SCALE;
+var FORCE_CIRCLE_RADIUS = 4 * FORCE_NODE_SCALE;
+function forceNodeOpacity(kind) {
+  return kind === "purpose" ? 0.75 : 1;
+}
+function forceGlyphPath(kind) {
+  if (kind === "stressor") {
+    const h = FORCE_DIAMOND_HALF_DIAGONAL;
+    return `M0,-${h}L${h},0L0,${h}L-${h},0Z`;
   }
-  const side = Math.max(480, Math.round(Math.sqrt(model.nodes.length) * 105));
-  const aspect = host.clientWidth > 0 && host.clientHeight > 0 ? host.clientWidth / host.clientHeight : 1.4;
-  const width = Math.round(side * Math.sqrt(aspect));
-  const height = Math.round(side / Math.sqrt(aspect));
-  const { svg: root, content: svg } = appendZoomableSvg(host, d3, { x: 0, y: 0, width, height }, "nkp-hyper", "Forces linked to the components they touch, grouped into attractor regions");
-  root.classed("names-hidden", options.showNames === false);
-  const nodes = model.nodes.map((item) => ({ ...item }));
-  const byId = new Map(nodes.map((item) => [item.id, item]));
-  const links = model.edges.map((edge) => ({ ...edge }));
-  const groupColor = new Map(model.groups.map((group) => [group.attractorId, group.color]));
-  const colorOf = (attractorId) => groupColor.get(attractorId) ?? "var(--muted)";
-  const cx = width / 2;
-  const cy = height / 2;
-  model.groups.forEach((group, index) => {
-    const angle = index / Math.max(1, model.groups.length) * Math.PI * 2;
-    const seed = { x: cx + Math.cos(angle) * side * 0.35, y: cy + Math.sin(angle) * side * 0.35 };
-    for (const id of group.forceNodeIds) {
-      const item = byId.get(id);
-      if (!item)
+  const r = FORCE_CIRCLE_RADIUS;
+  return `M-${r},0a${r},${r} 0 1,0 ${r * 2},0a${r},${r} 0 1,0 -${r * 2},0`;
+}
+var FORCE_INTERACTION_DISTANCE_MAX = 220;
+var FORCE_INTERACTION_PURPOSE_STRENGTH = 42;
+var FORCE_INTERACTION_STRESSOR_STRENGTH = 16;
+function forceInteractionDelta(source, target, params) {
+  const zero = { vx: 0, vy: 0 };
+  if (source.attractorId === undefined || target.attractorId === undefined || source.attractorId === target.attractorId) {
+    return zero;
+  }
+  const dx = (target.x ?? 0) - (source.x ?? 0);
+  const dy = (target.y ?? 0) - (source.y ?? 0);
+  const distance = Math.hypot(dx, dy);
+  if (distance === 0 || distance >= params.distanceMax)
+    return zero;
+  const falloff = 1 - distance / params.distanceMax;
+  const isPurpose = source.kind === "purpose";
+  const strength = (isPurpose ? FORCE_INTERACTION_PURPOSE_STRENGTH : FORCE_INTERACTION_STRESSOR_STRENGTH) * falloff;
+  const sign = isPurpose ? 1 : -1;
+  return { vx: dx / distance * strength * sign, vy: dy / distance * strength * sign };
+}
+function createForceInteractionForce(distanceMax = FORCE_INTERACTION_DISTANCE_MAX) {
+  let forceNodes = [];
+  const force = (alpha) => {
+    for (const target of forceNodes) {
+      if (target.fx != null)
         continue;
-      item.x = seed.x + (Math.random() - 0.5) * 40;
-      item.y = seed.y + (Math.random() - 0.5) * 40;
+      let dvx = 0;
+      let dvy = 0;
+      for (const source of forceNodes) {
+        if (source === target)
+          continue;
+        const delta = forceInteractionDelta(source, target, { distanceMax });
+        dvx += delta.vx;
+        dvy += delta.vy;
+      }
+      target.vx = (target.vx ?? 0) + dvx * alpha;
+      target.vy = (target.vy ?? 0) + dvy * alpha;
     }
-  });
-  const regionLayer = svg.append("g").attr("class", "nkp-hyper-regions");
-  const region = regionLayer.selectAll("g").data(model.groups).join("g").attr("class", "nkp-hyper-region").attr("opacity", (group) => group.focused ? 0.16 : 0.07);
-  const regionPath = region.append("path").attr("fill", (group) => group.color).attr("stroke", (group) => group.color).attr("stroke-width", REGION_PADDING * 2).attr("stroke-linejoin", "round").attr("stroke-linecap", "round");
-  region.append("title").text((group) => group.tooltip);
-  const link = svg.append("g").attr("class", "nkp-hyper-edges").selectAll("line").data(links).join("line").attr("class", "nkp-hyper-edge").attr("stroke", (edge) => colorOf(edge.attractorId)).attr("stroke-opacity", (edge) => edge.focused ? 0.45 : 0.15);
-  const regionLabel = svg.append("g").attr("class", "nkp-hyper-region-labels").selectAll("text").data(model.groups).join("text").attr("class", "nkp-hyper-region-label").attr("text-anchor", "middle").attr("fill", (group) => group.color).attr("opacity", (group) => group.focused ? 0.9 : 0.4).text((group) => group.name);
-  const node = svg.append("g").attr("class", "nkp-hyper-nodes").selectAll("g").data(nodes).join("g").attr("class", (item) => `nkp-node nkp-hyper-node nkp-hyper-${item.type}`).attr("opacity", (item) => item.focused ? 1 : 0.45);
-  const components = node.filter((item) => item.type === "component");
-  components.filter((item) => item.type === "component" && item.fissionCandidate).append("circle").attr("class", "nkp-fission-ring").attr("r", 15).attr("fill", "none").attr("stroke-dasharray", "3 4");
-  components.append("circle").attr("class", (item) => `nkp-node-dot ${item.type === "component" ? `status-${item.status}` : ""}`).attr("r", 9);
-  components.append("text").attr("class", "nkp-node-label").attr("y", (item) => item.type === "component" && item.fissionCandidate ? -19 : -13).attr("text-anchor", "middle").text((item) => item.label);
-  const forces = node.filter((item) => item.type === "force");
-  forces.append("path").attr("class", "nkp-hyper-force-dot").attr("d", (item) => item.type === "force" && item.kind === "stressor" ? "M0,-5L5,0L0,5L-5,0Z" : "M-4,0a4,4 0 1,0 8,0a4,4 0 1,0 -8,0").attr("fill", (item) => item.type === "force" ? colorOf(item.attractorId) : null);
-  forces.append("text").attr("class", "nkp-node-label nkp-hyper-force-label").attr("y", -9).attr("text-anchor", "middle").attr("opacity", 0).text((item) => item.label);
-  node.append("title").text((item) => item.tooltip);
-  const neighbours = new Map;
-  for (const edge of model.edges) {
-    neighbours.set(edge.source, (neighbours.get(edge.source) ?? new Set).add(edge.target));
-    neighbours.set(edge.target, (neighbours.get(edge.target) ?? new Set).add(edge.source));
+  };
+  force.initialize = (nodes) => {
+    forceNodes = nodes.filter((node) => node.type === "force");
+  };
+  return force;
+}
+function translateGroup(nodes, attractorId, dx, dy) {
+  for (const node of nodes) {
+    if (node.attractorId !== attractorId)
+      continue;
+    node.x = (node.x ?? 0) + dx;
+    node.y = (node.y ?? 0) + dy;
   }
-  const attractorOfForce = (id) => {
-    const item = byId.get(id);
-    return item?.type === "force" ? item.attractorId : undefined;
-  };
-  const highlight = (item) => {
-    if (!item) {
-      root.classed("nkp-hyper-hovering", false);
-      node.classed("is-lit", false);
-      link.classed("is-lit", false);
-      region.classed("is-lit", false);
-      regionLabel.classed("is-lit", false);
-      forces.select(".nkp-hyper-force-label").attr("opacity", 0);
+}
+function createRegionsView(ctx) {
+  const { host, d3 } = ctx;
+  let built;
+  let nodes = [];
+  let byId = new Map;
+  let links = [];
+  let bundles = [];
+  let regionSel;
+  let fusionSel;
+  let bundleTrunkSel;
+  let bundleBranchSel;
+  let nodeSel;
+  let componentLabelSel;
+  let forceLabelSel;
+  let regionLabelSel;
+  let lastSelected = new Set;
+  let lastConnected = new Set;
+  let tickCount = 0;
+  let labelShiftByKey = new Map;
+  let groupColorById = new Map;
+  function colorFor(attractorId) {
+    return groupColorById.get(attractorId) ?? "var(--muted)";
+  }
+  function canvasSize() {
+    return {
+      width: host.clientWidth > 0 ? host.clientWidth : DEFAULT_CANVAS_WIDTH,
+      height: host.clientHeight > 0 ? host.clientHeight : DEFAULT_CANVAS_HEIGHT
+    };
+  }
+  function pointsOfGroup(group) {
+    return group.forceNodeIds.map((id) => byId.get(id)).filter((item) => item !== undefined).map((item) => ({ x: item.x ?? 0, y: item.y ?? 0 }));
+  }
+  function fitToContent() {
+    if (!built || nodes.length === 0)
       return;
+    const margin = 80;
+    const xs = nodes.map((node) => node.x ?? 0);
+    const ys = nodes.map((node) => node.y ?? 0);
+    const minX = Math.min(...xs) - margin;
+    const maxX = Math.max(...xs) + margin;
+    const minY = Math.min(...ys) - margin;
+    const maxY = Math.max(...ys) + margin;
+    const scale = Math.min(8, Math.max(0.5, Math.min(built.width / Math.max(1, maxX - minX), built.height / Math.max(1, maxY - minY))));
+    const transform = d3.zoomIdentity.translate(built.width / 2 - scale * ((minX + maxX) / 2), built.height / 2 - scale * ((minY + maxY) / 2)).scale(scale);
+    built.svg.transition().duration(400).call(built.zoom.transform, transform);
+  }
+  function positionRegions() {
+    regionSel?.select("path").attr("d", (group) => regionCorePath(pointsOfGroup(group)));
+  }
+  function positionFusionHulls() {
+    fusionSel?.attr("d", (item) => regionCorePath(item.ids.map((id) => {
+      const node = byId.get(id);
+      return { x: node?.x ?? 0, y: node?.y ?? 0 };
+    })));
+  }
+  function positionEdges() {
+    const geometryByBundle = new Map;
+    for (const bundle of bundles) {
+      const component = byId.get(bundle.componentId);
+      if (!component)
+        continue;
+      const placed = bundle.forceIds.map((forceId) => ({ forceId, node: byId.get(`force:${forceId}`) })).filter((item) => item.node !== undefined);
+      const geometry = branchGeometry({ x: component.x ?? 0, y: component.y ?? 0 }, placed.map(({ node }) => ({ x: node.x ?? 0, y: node.y ?? 0 })));
+      geometryByBundle.set(bundle.id, {
+        trunk: geometry.trunk,
+        width: geometry.width,
+        branchByForce: new Map(placed.map(({ forceId }, index) => [`force:${forceId}`, geometry.branches[index] ?? ""]))
+      });
     }
-    const lit = new Set([item.id, ...neighbours.get(item.id) ?? []]);
-    const forceIds = item.type === "force" ? [item.id] : [...neighbours.get(item.id) ?? []];
-    const litAttractors = new Set(forceIds.map(attractorOfForce).filter((id) => id !== undefined));
-    root.classed("nkp-hyper-hovering", true);
-    node.classed("is-lit", (other) => lit.has(other.id));
-    link.classed("is-lit", (edge) => {
-      const source = typeof edge.source === "string" ? edge.source : edge.source.id;
-      const target = typeof edge.target === "string" ? edge.target : edge.target.id;
-      return source === item.id || target === item.id;
+    bundleTrunkSel?.attr("d", (bundle) => geometryByBundle.get(bundle.id)?.trunk ?? "").attr("stroke-width", (bundle) => geometryByBundle.get(bundle.id)?.width ?? 1);
+    bundleBranchSel?.attr("d", (branch) => geometryByBundle.get(branch.bundleId)?.branchByForce.get(branch.forceId) ?? "").attr("stroke-width", (branch) => Math.max(1, (geometryByBundle.get(branch.bundleId)?.width ?? 1) * 0.62));
+  }
+  function positionNodes() {
+    nodeSel?.attr("transform", (node) => `translate(${node.x ?? 0},${node.y ?? 0})`);
+  }
+  function measureLabelBox(element, x, y, text) {
+    const fallbackWidth = Math.max(1, text.length * 6.6);
+    const fallbackHeight = 11;
+    const box = typeof element.getBBox === "function" ? element.getBBox() : undefined;
+    if (box && box.width > 0 && box.height > 0) {
+      return { x: box.x, y: box.y, width: box.width, height: box.height };
+    }
+    return {
+      x: x - fallbackWidth / 2,
+      y: y - fallbackHeight * 0.82,
+      width: fallbackWidth,
+      height: fallbackHeight
+    };
+  }
+  function recomputeLabelNudges(force) {
+    if (!force && tickCount % 5 !== 0)
+      return;
+    const keyed = [];
+    componentLabelSel?.each(function(node) {
+      keyed.push({
+        key: node.id,
+        x: node.x ?? 0,
+        y: (node.y ?? 0) + (node.type === "component" && node.fissionCandidate ? -19 : -13),
+        text: node.label ?? "",
+        element: this
+      });
     });
-    region.classed("is-lit", (group) => litAttractors.has(group.attractorId));
-    regionLabel.classed("is-lit", (group) => litAttractors.has(group.attractorId));
-    forces.select(".nkp-hyper-force-label").attr("opacity", (other) => other.id === item.id ? 1 : 0);
-  };
-  node.on("mouseenter", (_event, item) => highlight(item)).on("mouseleave", () => highlight(undefined));
-  const degree = new Map;
-  for (const edge of model.edges)
-    degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
-  const sim = d3.forceSimulation(nodes).force("link", d3.forceLink(links).id((item) => item.id).distance((edge) => 45 + Math.sqrt(degree.get(typeof edge.target === "string" ? edge.target : edge.target.id) ?? 1) * 14).strength(0.18)).force("charge", d3.forceManyBody().strength((item) => item.type === "component" ? -650 : -130).distanceMax(side)).force("x", d3.forceX(cx).strength(0.05)).force("y", d3.forceY(cy).strength(0.05)).force("collision", d3.forceCollide().radius((item) => item.type === "component" ? 30 : 9)).force("cohesion", createAttractorCohesionForce());
-  node.call(d3.drag().on("start", (event, item) => {
-    if (!event.active)
-      sim.alphaTarget(0.3).restart();
-    item.fx = item.x;
-    item.fy = item.y;
-  }).on("drag", (event, item) => {
-    item.fx = event.x;
-    item.fy = event.y;
-  }).on("end", (event, item) => {
-    if (!event.active)
-      sim.alphaTarget(0);
-    item.fx = null;
-    item.fy = null;
-  }));
-  const pointsOf = (group) => group.forceNodeIds.map((id) => byId.get(id)).filter((item) => item !== undefined).map((item) => ({ x: item.x ?? 0, y: item.y ?? 0 }));
-  const margin = REGION_PADDING + 30;
-  sim.on("tick", () => {
-    for (const item of nodes) {
-      item.x = Math.min(width - margin, Math.max(margin, item.x ?? cx));
-      item.y = Math.min(height - margin, Math.max(margin, item.y ?? cy));
-    }
-    regionPath.attr("d", (group) => regionCorePath(pointsOf(group)));
-    regionLabel.each(function(group) {
-      const points = pointsOf(group);
-      const center = centroid(points);
+    forceLabelSel?.each(function(node) {
+      keyed.push({
+        key: node.id,
+        x: node.x ?? 0,
+        y: (node.y ?? 0) - 9,
+        text: node.label ?? "",
+        element: this
+      });
+    });
+    regionLabelSel?.each(function(group) {
+      const points = pointsOfGroup(group);
+      const center = centroid2(points);
+      if (!center)
+        return;
+      const top = Math.min(...points.map((point) => point.y));
+      keyed.push({
+        key: `attractor:${group.attractorId}`,
+        x: center.x,
+        y: top - REGION_PADDING - 4,
+        text: group.name,
+        element: this
+      });
+    });
+    const boxes = keyed.map((item) => measureLabelBox(item.element, item.x, item.y, item.text));
+    const shifts = nudgeLabels(boxes);
+    labelShiftByKey = new Map(keyed.map((item, index) => [item.key, shifts[index] ?? 0]));
+  }
+  function positionLabels() {
+    componentLabelSel?.attr("x", (node) => node.x ?? 0).attr("y", (node) => (node.y ?? 0) + (node.type === "component" && node.fissionCandidate ? -19 : -13));
+    forceLabelSel?.attr("x", (node) => node.x ?? 0).attr("y", (node) => (node.y ?? 0) - 9);
+    regionLabelSel?.each(function(group) {
+      const points = pointsOfGroup(group);
+      const center = centroid2(points);
       if (!center)
         return;
       const top = Math.min(...points.map((point) => point.y));
       d3.select(this).attr("x", center.x).attr("y", top - REGION_PADDING - 4);
     });
-    link.attr("x1", (edge) => edge.source.x ?? 0).attr("y1", (edge) => edge.source.y ?? 0).attr("x2", (edge) => edge.target.x ?? 0).attr("y2", (edge) => edge.target.y ?? 0);
-    node.attr("transform", (item) => `translate(${item.x ?? 0},${item.y ?? 0})`);
-  });
-  return sim;
+    tickCount += 1;
+    recomputeLabelNudges(false);
+    componentLabelSel?.attr("y", (node) => (node.y ?? 0) + (node.type === "component" && node.fissionCandidate ? -19 : -13) + (labelShiftByKey.get(node.id) ?? 0));
+    forceLabelSel?.attr("y", (node) => (node.y ?? 0) - 9 + (labelShiftByKey.get(node.id) ?? 0));
+    regionLabelSel?.attr("y", (group) => {
+      const points = pointsOfGroup(group);
+      const center = centroid2(points);
+      if (!center)
+        return -9999;
+      const top = Math.min(...points.map((point) => point.y));
+      return top - REGION_PADDING - 4 + (labelShiftByKey.get(`attractor:${group.attractorId}`) ?? 0);
+    });
+  }
+  function tick() {
+    if (!built)
+      return;
+    positionRegions();
+    positionFusionHulls();
+    positionEdges();
+    positionNodes();
+    positionLabels();
+    if (!built.didFit && built.sim.alpha() < 0.05) {
+      built.didFit = true;
+      fitToContent();
+    }
+  }
+  function ensureBuilt() {
+    if (built)
+      return built;
+    const { width, height } = canvasSize();
+    const { svg, content, zoom } = appendZoomableSvg(host, d3, { x: 0, y: 0, width, height }, "nkp-hyper", "Forces linked to the components they touch, grouped into attractor regions");
+    const regionsG = content.append("g").attr("class", "nkp-hyper-regions");
+    const fusionG = content.append("g").attr("class", "nkp-hyper-fusion");
+    const edgesG = content.append("g").attr("class", "nkp-hyper-edges");
+    const nodesG = content.append("g").attr("class", "nkp-hyper-nodes");
+    const labelsGroup = svg.append("g").attr("class", "landscape-labels");
+    zoom.on("zoom.labels", (event) => labelsGroup.attr("transform", event.transform));
+    svg.on("dblclick", () => ctx.onClear());
+    const sim = d3.forceSimulation([]).force("link", d3.forceLink([]).id((item) => item.id).distance(60).strength(0.18)).force("charge", d3.forceManyBody().strength((item) => item.type === "component" ? -650 : -130)).force("x", d3.forceX(width / 2).strength(0.05)).force("y", d3.forceY(height / 2).strength(0.05)).force("collision", d3.forceCollide().radius((item) => item.type === "component" ? 30 : 9)).force("cohesion", createAttractorCohesionForce()).force("interaction", createForceInteractionForce()).on("tick", tick).on("end", () => {
+      recomputeLabelNudges(true);
+      positionLabels();
+    }).stop();
+    built = { svg, zoom, regionsG, fusionG, edgesG, nodesG, labelsGroup, sim, width, height, didFit: false };
+    return built;
+  }
+  function seedPosition(item, placed, focusComponentId) {
+    const jitter = () => (Math.random() - 0.5) * 30;
+    if (item.type === "force") {
+      const siblings = [...placed.values()].filter((node) => node.type === "force" && node.attractorId === item.attractorId && node.x !== undefined);
+      const center = centroid2(siblings.map((node) => ({ x: node.x ?? 0, y: node.y ?? 0 })));
+      if (center)
+        return { x: center.x + jitter(), y: center.y + jitter() };
+    }
+    const focus = focusComponentId ? placed.get(focusComponentId) : undefined;
+    if (focus?.x !== undefined)
+      return { x: focus.x + jitter(), y: (focus.y ?? 0) + jitter() };
+    return { x: jitter(), y: jitter() };
+  }
+  function applySelectionClasses() {
+    if (!built)
+      return;
+    const hasSelection = lastSelected.size > 0;
+    const isSelected = (key) => lastSelected.has(key);
+    const isConnected = (key) => !isSelected(key) && lastConnected.has(key);
+    const dim = (key) => hasSelection && !isSelected(key) && !isConnected(key);
+    const applyToKeyed = (selection) => {
+      selection?.classed("selected", (node) => isSelected(node.id)).classed("connected", (node) => isConnected(node.id)).classed("dim", (node) => dim(node.id));
+    };
+    applyToKeyed(nodeSel);
+    applyToKeyed(componentLabelSel);
+    applyToKeyed(forceLabelSel);
+    const bundleDim = (bundle) => {
+      if (!hasSelection)
+        return false;
+      const keys = [bundle.componentId, ...bundle.forceIds.map((forceId) => `force:${forceId}`)];
+      return keys.every((key) => !isSelected(key) && !isConnected(key));
+    };
+    bundleTrunkSel?.classed("dim", bundleDim);
+    const bundleById = new Map(bundles.map((bundle) => [bundle.id, bundle]));
+    bundleBranchSel?.classed("dim", (branch) => {
+      const bundle = bundleById.get(branch.bundleId);
+      return bundle ? bundleDim(bundle) : hasSelection;
+    });
+    const regionDim = (group) => {
+      const key = `attractor:${group.attractorId}`;
+      return hasSelection && !(isSelected(key) || isConnected(key));
+    };
+    regionSel?.classed("dim", regionDim);
+    regionLabelSel?.classed("dim", regionDim);
+  }
+  function update(state, rawOptions = {}) {
+    const options = rawOptions;
+    const model = buildNkpHypergraphModel(state, options);
+    if (model.nodes.length === 0) {
+      if (!built) {
+        renderEmpty(host, "No forces or components to draw. Loosen the filters or pick another focus component.");
+        return;
+      }
+      const b2 = ensureBuilt();
+      nodes = [];
+      byId = new Map;
+      links = [];
+      bundles = [];
+      b2.sim.nodes([]);
+      b2.sim.force("link").links([]);
+      regionSel = b2.regionsG.selectAll("g.nkp-hyper-region").data([]).join("g");
+      fusionSel = b2.fusionG.selectAll("path.nkp-hyper-fusion-hull").data([]).join("path");
+      bundleTrunkSel = b2.edgesG.selectAll("path.nkp-hyper-bundle-trunk").data([]).join("path");
+      bundleBranchSel = b2.edgesG.selectAll("path.nkp-hyper-bundle-branch").data([]).join("path");
+      nodeSel = b2.nodesG.selectAll("g.nkp-node").data([]).join("g");
+      componentLabelSel = b2.labelsGroup.selectAll("text.nkp-hyper-component-label").data([]).join("text");
+      forceLabelSel = b2.labelsGroup.selectAll("text.nkp-hyper-force-label").data([]).join("text");
+      regionLabelSel = b2.labelsGroup.selectAll("text.nkp-hyper-region-label").data([]).join("text");
+      return;
+    }
+    if (host.querySelector(".landscape-empty"))
+      host.replaceChildren();
+    const b = ensureBuilt();
+    const { width, height } = canvasSize();
+    b.width = width;
+    b.height = height;
+    b.svg.attr("viewBox", `0 0 ${width} ${height}`);
+    b.svg.classed("names-hidden", options.showNames === false);
+    b.sim.force("x").x(width / 2);
+    b.sim.force("y").y(height / 2);
+    groupColorById = new Map(model.groups.map((group) => [group.attractorId, group.color]));
+    const focusComponentId = options.focusComponent ? `component:${options.focusComponent}` : undefined;
+    const prevById = byId;
+    const nextById = new Map;
+    nodes = model.nodes.map((item) => {
+      const existing = prevById.get(item.id);
+      const merged = existing ? { ...item, x: existing.x, y: existing.y, vx: existing.vx, vy: existing.vy, fx: existing.fx ?? null, fy: existing.fy ?? null } : { ...item, ...seedPosition(item, nextById, focusComponentId), vx: 0, vy: 0 };
+      nextById.set(item.id, merged);
+      return merged;
+    });
+    byId = nextById;
+    links = model.edges.map((edge) => ({ ...edge }));
+    bundles = model.branchBundles.map((bundle) => ({ ...bundle }));
+    b.sim.nodes(nodes);
+    b.sim.force("link").links(links);
+    b.sim.alpha(0.3).restart();
+    regionSel = b.regionsG.selectAll("g.nkp-hyper-region").data(model.groups, (group) => group.attractorId).join((enter) => {
+      const g = enter.append("g").attr("class", "nkp-hyper-region");
+      g.append("path");
+      g.append("title");
+      return g;
+    });
+    regionSel.attr("opacity", (group) => group.focused ? 0.16 : 0.07);
+    regionSel.select("path").attr("fill", (group) => group.color).attr("stroke", (group) => group.color).attr("stroke-width", REGION_PADDING * 2).attr("stroke-linejoin", "round").attr("stroke-linecap", "round");
+    regionSel.select("title").text((group) => group.tooltip);
+    regionSel.on("click", (_event, group) => ctx.onToggle(`attractor:${group.attractorId}`));
+    regionSel.call(d3.drag().on("start", (event, group) => {
+      if (!event.active)
+        b.sim.alphaTarget(0.15).restart();
+      for (const node of nodes) {
+        if (node.type === "force" && node.attractorId === group.attractorId) {
+          node.fx = node.x;
+          node.fy = node.y;
+        }
+      }
+    }).on("drag", (event, group) => {
+      translateGroup(nodes, group.attractorId, event.dx, event.dy);
+      for (const node of nodes) {
+        if (node.type === "force" && node.attractorId === group.attractorId) {
+          node.fx = node.x;
+          node.fy = node.y;
+        }
+      }
+    }).on("end", (event, group) => {
+      if (!event.active)
+        b.sim.alphaTarget(0);
+      for (const node of nodes) {
+        if (node.type === "force" && node.attractorId === group.attractorId) {
+          node.fx = null;
+          node.fy = null;
+        }
+      }
+    }));
+    const fusionData = model.fusionGroups.map((ids) => ({ id: [...ids].sort().join("\x00"), ids }));
+    fusionSel = b.fusionG.selectAll("path.nkp-hyper-fusion-hull").data(fusionData, (item) => item.id).join("path").attr("class", "nkp-hyper-fusion-hull");
+    bundleTrunkSel = b.edgesG.selectAll("path.nkp-hyper-bundle-trunk").data(bundles, (bundle) => bundle.id).join("path").attr("class", "nkp-hyper-bundle-trunk").attr("fill", "none").attr("stroke", (bundle) => colorFor(bundle.attractorId)).attr("stroke-opacity", (bundle) => bundle.focused ? 0.45 : 0.15);
+    const branchData = bundles.filter((bundle) => bundle.forceIds.length > 1).flatMap((bundle) => bundle.forceIds.map((forceId) => ({
+      id: `${bundle.id}:${forceId}`,
+      bundleId: bundle.id,
+      componentId: bundle.componentId,
+      forceId: `force:${forceId}`,
+      attractorId: bundle.attractorId,
+      focused: bundle.focused
+    })));
+    bundleBranchSel = b.edgesG.selectAll("path.nkp-hyper-bundle-branch").data(branchData, (branch) => branch.id).join("path").attr("class", "nkp-hyper-bundle-branch").attr("fill", "none").attr("stroke", (branch) => colorFor(branch.attractorId)).attr("stroke-opacity", (branch) => branch.focused ? 0.45 : 0.15);
+    const nodeJoin = b.nodesG.selectAll("g.nkp-node").data(nodes, (node) => node.id).join((enter) => {
+      const g = enter.append("g");
+      g.append("circle").attr("class", "nkp-fission-ring").attr("r", 15).attr("fill", "none").attr("stroke-dasharray", "3 4");
+      g.append("circle").attr("class", "nkp-node-dot").attr("r", 9);
+      g.append("path").attr("class", "nkp-hyper-force-dot");
+      g.append("title");
+      return g;
+    });
+    nodeSel = nodeJoin.attr("class", (node) => `nkp-node nkp-hyper-node nkp-hyper-${node.type}`).attr("opacity", (node) => node.focused ? 1 : 0.45);
+    nodeSel.select(".nkp-fission-ring").attr("display", (node) => node.type === "component" && node.fissionCandidate ? null : "none");
+    nodeSel.select(".nkp-node-dot").attr("class", (node) => node.type === "component" ? `nkp-node-dot status-${node.status}` : "nkp-node-dot").attr("display", (node) => node.type === "component" ? null : "none");
+    nodeSel.select(".nkp-hyper-force-dot").attr("d", (node) => node.type === "force" ? forceGlyphPath(node.kind) : null).attr("fill", (node) => node.type === "force" ? colorFor(node.attractorId) : null).attr("fill-opacity", (node) => node.type === "force" ? forceNodeOpacity(node.kind) : null).attr("display", (node) => node.type === "force" ? null : "none");
+    nodeSel.select("title").text((node) => node.tooltip);
+    nodeSel.on("click", (_event, node) => ctx.onToggle(node.id));
+    nodeSel.call(d3.drag().on("start", (event, node) => {
+      if (!event.active)
+        b.sim.alphaTarget(0.3).restart();
+      node.fx = node.x;
+      node.fy = node.y;
+    }).on("drag", (event, node) => {
+      node.fx = event.x;
+      node.fy = event.y;
+    }).on("end", (event, node) => {
+      if (!event.active)
+        b.sim.alphaTarget(0);
+      node.fx = null;
+      node.fy = null;
+    }));
+    const componentNodes = nodes.filter((node) => node.type === "component");
+    componentLabelSel = b.labelsGroup.selectAll("text.nkp-hyper-component-label").data(componentNodes, (node) => node.id).join("text").attr("class", (node) => `nkp-hyper-component nkp-node-label nkp-hyper-component-label${node.type === "component" && node.fissionCandidate ? " fission" : ""}`).attr("text-anchor", "middle").text((node) => node.label);
+    componentLabelSel.on("click", (_event, node) => ctx.onToggle(node.id));
+    const forceNodes = nodes.filter((node) => node.type === "force");
+    forceLabelSel = b.labelsGroup.selectAll("text.nkp-hyper-force-label").data(forceNodes, (node) => node.id).join("text").attr("class", "nkp-hyper-force nkp-node-label nkp-hyper-force-label").attr("text-anchor", "middle").attr("opacity", 0).text((node) => node.label);
+    forceLabelSel.on("click", (_event, node) => ctx.onToggle(node.id));
+    regionLabelSel = b.labelsGroup.selectAll("text.nkp-hyper-region-label").data(model.groups, (group) => group.attractorId).join("text").attr("class", "nkp-hyper-region-label").attr("text-anchor", "middle").attr("fill", (group) => group.color).attr("opacity", (group) => group.focused ? 0.9 : 0.4).text((group) => group.name);
+    const neighbours = new Map;
+    for (const edge of model.edges) {
+      neighbours.set(edge.source, (neighbours.get(edge.source) ?? new Set).add(edge.target));
+      neighbours.set(edge.target, (neighbours.get(edge.target) ?? new Set).add(edge.source));
+    }
+    const attractorOfForce = (id) => {
+      const item = byId.get(id);
+      return item?.type === "force" ? item.attractorId : undefined;
+    };
+    const clearHighlight = () => {
+      b.svg.classed("nkp-hyper-hovering", false);
+      nodeSel.classed("is-lit", false);
+      bundleTrunkSel.classed("is-lit", false);
+      bundleBranchSel.classed("is-lit", false);
+      regionSel.classed("is-lit", false);
+      regionLabelSel.classed("is-lit", false);
+      forceLabelSel.attr("opacity", 0);
+    };
+    const highlight = (item) => {
+      const lit = new Set([item.id, ...neighbours.get(item.id) ?? []]);
+      const forceIds = item.type === "force" ? [item.id] : [...neighbours.get(item.id) ?? []];
+      const litAttractors = new Set(forceIds.map(attractorOfForce).filter((id) => id !== undefined));
+      b.svg.classed("nkp-hyper-hovering", true);
+      nodeSel.classed("is-lit", (other) => lit.has(other.id));
+      const branchLit = (bundle) => {
+        if (item.id === bundle.componentId)
+          return true;
+        return bundle.forceIds.some((forceId) => `force:${forceId}` === item.id);
+      };
+      bundleTrunkSel.classed("is-lit", branchLit);
+      bundleBranchSel.classed("is-lit", (branch) => {
+        const bundle = bundles.find((candidate) => candidate.id === branch.bundleId);
+        return bundle ? branchLit(bundle) : false;
+      });
+      regionSel.classed("is-lit", (group) => litAttractors.has(group.attractorId));
+      regionLabelSel.classed("is-lit", (group) => litAttractors.has(group.attractorId));
+      forceLabelSel.attr("opacity", (other) => other.id === item.id ? 1 : 0);
+    };
+    nodeSel.on("mouseenter", (_event, item) => highlight(item)).on("mouseleave", clearHighlight);
+    applySelectionClasses();
+  }
+  function setSelection(selected, connected) {
+    lastSelected = selected;
+    lastConnected = connected;
+    applySelectionClasses();
+  }
+  function resetView() {
+    fitToContent();
+  }
+  function destroy() {
+    built?.sim.stop();
+    built = undefined;
+    nodes = [];
+    byId = new Map;
+    links = [];
+    host.replaceChildren();
+  }
+  return {
+    update,
+    setSelection,
+    resetView,
+    destroy,
+    get simulation() {
+      return built?.sim;
+    }
+  };
+}
+
+// src/landscape-selection.ts
+var HOVER_DIM_OPACITY = 0.12;
+var SELECTION_DIM_OPACITY = 1 - 0.6 * (1 - HOVER_DIM_OPACITY);
+function keyKind(key) {
+  if (key.startsWith("component:"))
+    return "component";
+  if (key.startsWith("force:"))
+    return "force";
+  if (key.startsWith("attractor:"))
+    return "attractor";
+  return;
+}
+function keyId(key) {
+  return key.slice(key.indexOf(":") + 1);
+}
+function entityDetail(state, key) {
+  const { components, attractors, forces } = effectiveState(state);
+  const kind = keyKind(key);
+  const id = keyId(key);
+  if (kind === "component") {
+    const component = components.find((candidate) => candidate.name === id);
+    if (!component)
+      return;
+    const forceCount = forces.filter((force) => force.components.includes(component.name)).length;
+    return {
+      key,
+      kind: "component",
+      title: component.name,
+      fields: [
+        { label: "name", value: component.name },
+        { label: "description", value: component.description },
+        { label: "status", value: component.status },
+        { label: "architecture set", value: component.architectureSet },
+        { label: "force count", value: String(forceCount) }
+      ]
+    };
+  }
+  if (kind === "force") {
+    const force = forces.find((candidate) => candidate.key === id);
+    if (!force)
+      return;
+    const attractor = attractors.find((candidate) => candidate.id === force.attractorId);
+    const changeLabel = force.kind === "stressor" ? "naive change" : "feature";
+    return {
+      key,
+      kind: force.kind,
+      title: force.shortname || force.id,
+      fields: [
+        { label: "id", value: force.id },
+        { label: "shortname", value: force.shortname },
+        { label: "kind", value: force.kind },
+        { label: "description", value: force.description },
+        { label: "attractor", value: attractor?.name ?? force.attractorId },
+        { label: "components", value: force.components.join(", ") },
+        { label: changeLabel, value: force.naiveChangeOrFeature },
+        { label: "outcomes", value: force.outcomes }
+      ]
+    };
+  }
+  if (kind === "attractor") {
+    const attractor = attractors.find((candidate) => candidate.id === id);
+    if (!attractor)
+      return;
+    const forceCount = forces.filter((force) => force.attractorId === attractor.id).length;
+    return {
+      key,
+      kind: "attractor",
+      title: attractor.name,
+      color: attractorColors(state).get(attractor.id),
+      fields: [
+        { label: "name", value: attractor.name },
+        { label: "description", value: attractor.description },
+        { label: "positive", value: attractor.positiveState },
+        { label: "negative", value: attractor.negativeState },
+        { label: "force count", value: String(forceCount) }
+      ]
+    };
+  }
+  return;
+}
+function connectedKeys(state, selected) {
+  const { forces } = effectiveState(state);
+  const forceByKey = new Map(forces.map((force) => [force.key, force]));
+  const result = new Set;
+  for (const key of selected) {
+    result.add(key);
+    const kind = keyKind(key);
+    const id = keyId(key);
+    if (kind === "component") {
+      for (const force of forces.filter((candidate) => candidate.components.includes(id))) {
+        result.add(`force:${force.key}`);
+        result.add(`attractor:${force.attractorId}`);
+        for (const name of force.components)
+          result.add(`component:${name}`);
+      }
+    } else if (kind === "force") {
+      const force = forceByKey.get(id);
+      if (force) {
+        result.add(`attractor:${force.attractorId}`);
+        for (const name of force.components)
+          result.add(`component:${name}`);
+      }
+    } else if (kind === "attractor") {
+      for (const force of forces.filter((candidate) => candidate.attractorId === id)) {
+        result.add(`force:${force.key}`);
+        for (const name of force.components)
+          result.add(`component:${name}`);
+      }
+    }
+  }
+  return result;
+}
+function toggleSelection(current, key) {
+  const next = new Set(current);
+  if (next.has(key))
+    next.delete(key);
+  else
+    next.add(key);
+  return next;
+}
+
+// src/landscape-sidebar.ts
+function renderSidebar(el, details, handlers) {
+  el.replaceChildren();
+  const header = document.createElement("div");
+  header.className = "landscape-sidebar-header";
+  const count = document.createElement("span");
+  count.className = "landscape-sidebar-count";
+  count.textContent = `${details.length} selected`;
+  const clearAll = document.createElement("button");
+  clearAll.type = "button";
+  clearAll.className = "landscape-sidebar-clear";
+  clearAll.dataset.landscapeDeselectAll = "";
+  clearAll.textContent = "deselect all";
+  clearAll.addEventListener("click", () => handlers.onClearAll());
+  header.append(count, clearAll);
+  el.appendChild(header);
+  if (details.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "landscape-sidebar-empty";
+    empty.dataset.sidebarEmpty = "";
+    empty.textContent = "Click a component, force or attractor in the landscape to see its details here.";
+    el.appendChild(empty);
+    return;
+  }
+  for (const detail of details) {
+    const card = document.createElement("article");
+    card.className = "landscape-sidebar-card";
+    card.dataset.sidebarCard = "";
+    card.dataset.key = detail.key;
+    const cardHeader = document.createElement("div");
+    cardHeader.className = "landscape-sidebar-card-header";
+    if (detail.color) {
+      const chip = document.createElement("i");
+      chip.className = "landscape-sidebar-chip";
+      chip.style.background = detail.color;
+      cardHeader.appendChild(chip);
+    }
+    const kind = document.createElement("span");
+    kind.className = "landscape-sidebar-kind";
+    kind.textContent = detail.kind;
+    const title = document.createElement("strong");
+    title.className = "landscape-sidebar-title";
+    title.textContent = detail.title;
+    const deselect = document.createElement("button");
+    deselect.type = "button";
+    deselect.className = "landscape-sidebar-deselect";
+    deselect.dataset.sidebarDeselect = "";
+    deselect.setAttribute("aria-label", `Deselect ${detail.title}`);
+    deselect.textContent = "×";
+    deselect.addEventListener("click", () => handlers.onDeselect(detail.key));
+    cardHeader.append(kind, title, deselect);
+    card.appendChild(cardHeader);
+    const fields = document.createElement("dl");
+    fields.className = "landscape-sidebar-fields";
+    for (const field of detail.fields) {
+      const dt = document.createElement("dt");
+      dt.textContent = field.label;
+      const dd = document.createElement("dd");
+      dd.textContent = field.value;
+      fields.append(dt, dd);
+    }
+    card.appendChild(fields);
+    el.appendChild(card);
+  }
 }
 
 // src/nkp-landscape.ts
@@ -3556,8 +4603,13 @@ function fitViewportHeight(windowHeight, toolbarHeight, chrome, bottomPadding) {
 function mountLandscape(container, getState, d3) {
   const host = container.querySelector("[data-landscape]");
   const card = host?.closest("details") ?? null;
-  let simulation;
+  const sidebarEl = container.querySelector("[data-landscape-sidebar]");
+  const deselectAllButton = container.querySelector("[data-landscape-deselect-all]");
+  const resetViewButton = container.querySelector("[data-landscape-reset-view]");
   let stale = true;
+  let activeView;
+  let viewHandle;
+  let selected = new Set;
   const currentView = () => parseLandscapeView(container.querySelector("[data-landscape-view-input]:checked")?.value);
   const toolbar = container.querySelector("[data-view-toolbar]");
   const fitViewport = () => {
@@ -3567,6 +4619,41 @@ function mountLandscape(container, getState, d3) {
     const chrome = host.getBoundingClientRect().top - card.getBoundingClientRect().top;
     card.style.scrollMarginTop = `${toolbarHeight + 8}px`;
     host.style.height = `${fitViewportHeight(window.innerHeight, toolbarHeight, chrome, 32)}px`;
+  };
+  const renderSidebarNow = () => {
+    if (!sidebarEl)
+      return;
+    const state = getState();
+    const details = [];
+    for (const key of selected) {
+      const detail = entityDetail(state, key);
+      if (detail)
+        details.push(detail);
+    }
+    renderSidebar(sidebarEl, details, {
+      onDeselect: (key) => applySelection(toggleSelection(selected, key)),
+      onClearAll: clearSelection
+    });
+  };
+  const applySelection = (next) => {
+    selected = next;
+    const connected = connectedKeys(getState(), selected);
+    viewHandle?.setSelection(selected, connected);
+    renderSidebarNow();
+  };
+  const onEntityToggle = (key) => applySelection(toggleSelection(selected, key));
+  function clearSelection() {
+    if (selected.size === 0)
+      return;
+    applySelection(new Set);
+  }
+  const ensureViewHandle = (view, viewportHost) => {
+    if (viewHandle && activeView === view)
+      return viewHandle;
+    viewHandle?.destroy();
+    viewHandle = view === "bundle" ? createBundleView({ host: viewportHost, d3, onToggle: onEntityToggle, onClear: clearSelection }) : view === "heatmap" ? createHeatmapView({ host: viewportHost, d3, onToggle: onEntityToggle, onClear: clearSelection }) : createRegionsView({ host: viewportHost, d3, onToggle: onEntityToggle, onClear: clearSelection });
+    activeView = view;
+    return viewHandle;
   };
   const sync = () => {
     if (!host)
@@ -3582,36 +4669,36 @@ function mountLandscape(container, getState, d3) {
     }
     stale = false;
     fitViewport();
-    simulation?.stop();
-    simulation = undefined;
-    host.replaceChildren();
     const state = getState();
     const filters = readFilters(container);
     const hideFiltered = container.querySelector("[data-hide-filtered-graph-toggle]")?.checked ?? true;
+    const handle = ensureViewHandle(view, host);
     if (view === "regions") {
       const focusComponent = syncFocusOptions(container.querySelector("[data-regions-focus]"), state);
       const showNames = container.querySelector("[data-regions-names-toggle]")?.checked ?? true;
-      const model = buildNkpHypergraphModel(state, { ...filters, hideFiltered, ...focusComponent ? { focusComponent } : {} });
-      simulation = renderNkpHypergraph(host, model, d3, { showNames });
-      return;
+      handle.update(state, { ...filters, hideFiltered, showNames, ...focusComponent ? { focusComponent } : {} });
+    } else {
+      const minCouplingStrength = syncMinCouplingStrength(container, state, filters);
+      if (view === "heatmap") {
+        const showCounts = container.querySelector("[data-heatmap-counts-toggle]")?.checked ?? true;
+        handle.update(state, { ...filters, hideFiltered, minCouplingStrength, showCounts });
+      } else {
+        const { topNCouplings, topNDirection } = syncTopN(container, state, filters, minCouplingStrength);
+        const tensionInput = container.querySelector("[data-bundle-tension-input]");
+        const tension = tensionInput ? Number(tensionInput.value) / 100 : DEFAULT_BUNDLE_TENSION;
+        handle.update(state, {
+          ...filters,
+          hideFiltered,
+          minCouplingStrength,
+          ...topNCouplings === undefined ? {} : { topNCouplings },
+          topNDirection,
+          tension
+        });
+      }
     }
-    const minCouplingStrength = syncMinCouplingStrength(container, state, filters);
-    if (view === "heatmap") {
-      const showCounts = container.querySelector("[data-heatmap-counts-toggle]")?.checked ?? true;
-      renderNkpSeriation(host, state, { ...filters, hideFiltered, minCouplingStrength, showCounts }, d3);
-      return;
-    }
-    const { topNCouplings, topNDirection } = syncTopN(container, state, filters, minCouplingStrength);
-    const tensionInput = container.querySelector("[data-bundle-tension-input]");
-    const tension = tensionInput ? Number(tensionInput.value) / 100 : DEFAULT_BUNDLE_TENSION;
-    renderNkpBundle(host, state, {
-      ...filters,
-      hideFiltered,
-      minCouplingStrength,
-      ...topNCouplings === undefined ? {} : { topNCouplings },
-      topNDirection,
-      tension
-    }, d3);
+    const connected = connectedKeys(state, selected);
+    handle.setSelection(selected, connected);
+    renderSidebarNow();
   };
   const onControl = (event) => {
     const target = event.target;
@@ -3628,13 +4715,16 @@ function mountLandscape(container, getState, d3) {
     }
     queueMicrotask(sync);
   };
-  const onToggle = () => {
+  const onCardToggle = () => {
     if (!card?.open)
       return;
     if (stale)
       sync();
     card.scrollIntoView({ block: "start", behavior: "smooth" });
   };
+  const onHostDblClick = () => clearSelection();
+  const onDeselectAllClick = () => clearSelection();
+  const onResetViewClick = () => viewHandle?.resetView();
   let resizeTimer;
   const onResize = () => {
     clearTimeout(resizeTimer);
@@ -3647,17 +4737,23 @@ function mountLandscape(container, getState, d3) {
   };
   container.addEventListener("input", onControl);
   container.addEventListener("change", onControl);
-  card?.addEventListener("toggle", onToggle);
+  card?.addEventListener("toggle", onCardToggle);
+  host?.addEventListener("dblclick", onHostDblClick);
+  deselectAllButton?.addEventListener("click", onDeselectAllClick);
+  resetViewButton?.addEventListener("click", onResetViewClick);
   window.addEventListener("resize", onResize);
   sync();
   return {
     sync,
     destroy: () => {
-      simulation?.stop();
+      viewHandle?.destroy();
       clearTimeout(resizeTimer);
       container.removeEventListener("input", onControl);
       container.removeEventListener("change", onControl);
-      card?.removeEventListener("toggle", onToggle);
+      card?.removeEventListener("toggle", onCardToggle);
+      host?.removeEventListener("dblclick", onHostDblClick);
+      deselectAllButton?.removeEventListener("click", onDeselectAllClick);
+      resetViewButton?.removeEventListener("click", onResetViewClick);
       window.removeEventListener("resize", onResize);
       host?.replaceChildren();
     }

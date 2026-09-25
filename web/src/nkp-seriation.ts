@@ -16,7 +16,8 @@ import {
   forceLabel,
   type EffectiveForce,
 } from "./nkp-graph";
-import { appendZoomableSvg, createTooltip, placeTooltip, renderEmpty, renderLegend } from "./landscape-dom";
+import type { EntityKey } from "./landscape-selection";
+import { appendZoomableSvg, createTooltip, placeTooltip, renderEmpty, renderLegend, resetZoom } from "./landscape-dom";
 
 export interface SeriationOptions {
   visibleForceIds?: ReadonlySet<string>;
@@ -46,6 +47,7 @@ export interface SeriationCell {
   row: number;
   col: number;
   count: number;
+  forceKeys: string[];
   forces: string[];
   focused: boolean;
 }
@@ -206,6 +208,7 @@ export function buildSeriationModel(state: PendingState, options: SeriationOptio
         row,
         col,
         count: cellForces.length,
+        forceKeys: cellForces.map((force) => force.key),
         forces: cellForces.map(forceLabel),
         focused:
           cellForces.some(isVisibleForce) &&
@@ -245,152 +248,442 @@ const CELL = 18;
 const STRIPE = 6;
 const LABEL_WIDTH = 170;
 const HEADER_HEIGHT = 150;
+export const MIRROR_DIM_OPACITY = 0.5;
+
+export function cellHalf(row: number, col: number): "upper" | "lower" | "diagonal" {
+  if (col > row) return "upper";
+  if (col < row) return "lower";
+  return "diagonal";
+}
 
 export interface SeriationRenderOptions extends SeriationOptions {
   /** Print the shared-force count inside each cell. */
   showCounts?: boolean;
 }
 
-/** Renders the seriated matrix into `host` (replacing its contents), fitted to the viewport. */
-export function renderNkpSeriation(host: HTMLElement, state: PendingState, options: SeriationRenderOptions, d3: any): void {
-  host.replaceChildren();
-  const model = buildSeriationModel(state, options);
-  const showCounts = options.showCounts ?? true;
-  if (model.components.length === 0) {
-    renderEmpty(host, "No coupled components to show. Loosen the filters or lower the minimum coupling strength.");
-    return;
+export interface HeatmapViewCtx {
+  host: HTMLElement;
+  d3: any;
+  onToggle: (key: EntityKey) => void;
+  onClear: () => void;
+}
+
+export interface HeatmapViewHandle {
+  update: (state: PendingState, options?: Record<string, unknown>) => void;
+  setSelection: (selected: ReadonlySet<EntityKey>, connected: ReadonlySet<EntityKey>) => void;
+  resetView: () => void;
+  destroy: () => void;
+}
+
+export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
+  const { host, d3 } = ctx;
+  let built:
+    | {
+        svg: any;
+        zoom: any;
+        root: any;
+        labelsGroup: any;
+        tip: HTMLElement;
+        frame: any;
+        rowBand: any;
+        colBand: any;
+        cellLayer: any;
+        diagonalLayer: any;
+        rowHeadersLayer: any;
+        colHeadersLayer: any;
+        legend?: HTMLElement;
+        rowHeaders?: any;
+        colHeaders?: any;
+        diagonal?: any;
+        cells?: any;
+      }
+    | undefined;
+  let indexByName = new Map<string, number>();
+  let componentByIndex = new Map<number, SeriationComponent>();
+  let lastModel: SeriationModel | undefined;
+  let pinnedMirrorHalf: "upper" | "lower" | undefined;
+  let hoverMirrorHalf: "upper" | "lower" | undefined;
+  let lastSelected: ReadonlySet<EntityKey> = new Set();
+  let lastConnected: ReadonlySet<EntityKey> = new Set();
+
+  function destroy(): void {
+    built = undefined;
+    host.replaceChildren();
   }
 
-  const fissionKey = document.createElement("span");
-  fissionKey.className = "landscape-legend-item landscape-legend-warn";
-  fissionKey.textContent = "▲ fission candidate";
-  renderLegend(
-    host,
-    "Stripe = main attractor",
-    model.attractors.map((attractor) => ({ id: attractor.id, label: `${attractor.name} (${attractor.componentCount})`, color: attractor.color })),
-    [fissionKey],
-  );
-
-  const n = model.components.length;
-  const colorFor = new Map(model.attractors.map((attractor) => [attractor.id, attractor.color]));
-  const width = LABEL_WIDTH + STRIPE + n * CELL + 8;
-  const height = HEADER_HEIGHT + STRIPE + n * CELL + 8;
-  const gridX = LABEL_WIDTH + STRIPE;
-  const gridY = HEADER_HEIGHT + STRIPE;
-
-  const { content: svg } = appendZoomableSvg(
-    host,
-    d3,
-    { x: 0, y: 0, width, height },
-    "nkp-seriation-svg",
-    "Component coupling heatmap, rows ordered so tightly coupled components sit together",
-  );
-  const tooltip = createTooltip(host);
-
-  const grid = svg.append("g").attr("transform", `translate(${gridX},${gridY})`);
-  grid.append("rect").attr("class", "nkp-seriation-frame")
-    .attr("width", n * CELL).attr("height", n * CELL);
+  function ensureBuilt(): NonNullable<typeof built> {
+    if (built) return built;
+    const { svg, content, zoom } = appendZoomableSvg(
+      host,
+      d3,
+      { x: 0, y: 0, width: 2, height: 2 },
+      "nkp-seriation-svg",
+      "Component coupling heatmap, rows ordered so tightly coupled components sit together",
+    );
+    const root = content.append("g");
+    const frame = root.append("rect").attr("class", "nkp-seriation-frame");
+    const rowBand = root.append("rect").attr("class", "nkp-seriation-band").attr("visibility", "hidden");
+    const colBand = root.append("rect").attr("class", "nkp-seriation-band").attr("visibility", "hidden");
+    const cellLayer = root.append("g");
+    const diagonalLayer = root.append("g");
+    const rowHeadersLayer = root.append("g");
+    const colHeadersLayer = root.append("g");
+    const labelsGroup = svg.append("g").attr("class", "landscape-labels");
+    zoom.on("zoom.labels", (event: { transform: unknown }) => labelsGroup.attr("transform", event.transform));
+    svg.on("dblclick", () => ctx.onClear());
+    built = { svg, zoom, root, labelsGroup, tip: createTooltip(host), frame, rowBand, colBand, cellLayer, diagonalLayer, rowHeadersLayer, colHeadersLayer };
+    return built;
+  }
 
   const intensity = (value: number, max: number): number => (max <= 0 ? 0 : 0.18 + 0.82 * (value / max));
 
-  const diagonal = grid.append("g").selectAll("g").data(model.components).join("g")
-    .attr("transform", (_: SeriationComponent, index: number) => `translate(${index * CELL},${index * CELL})`);
-  diagonal.append("rect").attr("class", "nkp-seriation-diag")
-    .attr("width", CELL - 1).attr("height", CELL - 1)
-    .attr("fill-opacity", (item: SeriationComponent) => intensity(item.k, model.maxK) * (item.focused ? 1 : 0.4));
-  if (showCounts) diagonal.append("text").attr("class", "nkp-seriation-count nkp-seriation-count-strong")
-    .attr("x", CELL / 2).attr("y", CELL / 2).text((item: SeriationComponent) => item.k);
-
-  const cell = grid.append("g").selectAll("g").data(model.cells).join("g")
-    .attr("class", "nkp-seriation-cell")
-    .attr("transform", (item: SeriationCell) => `translate(${item.col * CELL},${item.row * CELL})`);
-  cell.append("rect")
-    .attr("class", (item: SeriationCell) => `nkp-seriation-heat${item.focused ? "" : " is-faded"}`)
-    .attr("width", CELL - 1).attr("height", CELL - 1)
-    .attr("fill-opacity", (item: SeriationCell) => intensity(item.count, model.maxCount));
-  if (showCounts) cell.append("text")
-    .attr("class", (item: SeriationCell) =>
-      `nkp-seriation-count${intensity(item.count, model.maxCount) > 0.6 ? " nkp-seriation-count-strong" : ""}`)
-    .attr("x", CELL / 2).attr("y", CELL / 2).text((item: SeriationCell) => item.count);
-
-  const rowBand = grid.append("rect").attr("class", "nkp-seriation-band").attr("width", n * CELL).attr("height", CELL).attr("visibility", "hidden");
-  const colBand = grid.append("rect").attr("class", "nkp-seriation-band").attr("width", CELL).attr("height", n * CELL).attr("visibility", "hidden");
-
-  const rowHeaders = svg.append("g").selectAll("g").data(model.components).join("g")
-    .attr("class", "nkp-seriation-header")
-    .attr("transform", (_: SeriationComponent, index: number) => `translate(0,${gridY + index * CELL})`);
-  rowHeaders.append("rect").attr("class", "nkp-seriation-hit").attr("width", LABEL_WIDTH + STRIPE).attr("height", CELL);
-  rowHeaders.append("rect").attr("x", LABEL_WIDTH).attr("width", STRIPE - 1).attr("height", CELL - 1)
-    .attr("fill", (item: SeriationComponent) => colorFor.get(item.dominantAttractorId ?? "") ?? "var(--line)");
-  rowHeaders.append("text")
-    .attr("class", (item: SeriationComponent) => headerClass(item))
-    .attr("x", LABEL_WIDTH - 4).attr("y", CELL / 2).attr("text-anchor", "end")
-    .text((item: SeriationComponent) => headerLabel(item));
-
-  const colHeaders = svg.append("g").selectAll("g").data(model.components).join("g")
-    .attr("class", "nkp-seriation-header")
-    .attr("transform", (_: SeriationComponent, index: number) => `translate(${gridX + index * CELL},0)`);
-  colHeaders.append("rect").attr("class", "nkp-seriation-hit").attr("width", CELL).attr("height", HEADER_HEIGHT + STRIPE);
-  colHeaders.append("rect").attr("y", HEADER_HEIGHT).attr("width", CELL - 1).attr("height", STRIPE - 1)
-    .attr("fill", (item: SeriationComponent) => colorFor.get(item.dominantAttractorId ?? "") ?? "var(--line)");
-  colHeaders.append("text")
-    .attr("class", (item: SeriationComponent) => headerClass(item))
-    .attr("transform", `translate(${CELL / 2},${HEADER_HEIGHT - 4}) rotate(-60)`)
-    .text((item: SeriationComponent) => headerLabel(item));
-
-  let pinned: number | undefined;
-  const highlight = (row: number | undefined, col: number | undefined): void => {
-    const effectiveRow = row ?? pinned;
-    const effectiveCol = col ?? pinned;
-    rowBand.attr("visibility", effectiveRow === undefined ? "hidden" : "visible").attr("y", (effectiveRow ?? 0) * CELL);
-    colBand.attr("visibility", effectiveCol === undefined ? "hidden" : "visible").attr("x", (effectiveCol ?? 0) * CELL);
-    rowHeaders.classed("is-active", (_: SeriationComponent, index: number) => index === effectiveRow);
-    colHeaders.classed("is-active", (_: SeriationComponent, index: number) => index === effectiveCol);
-  };
-  const showTooltip = (event: MouseEvent, lines: string[]): void => {
-    tooltip.replaceChildren(...lines.map((line, index) => {
+  function showTooltip(event: MouseEvent, lines: string[]): void {
+    const b = built;
+    if (!b) return;
+    b.tip.replaceChildren(...lines.map((line, index) => {
       const element = document.createElement(index === 0 ? "strong" : "div");
       element.textContent = line;
       return element;
     }));
-    placeTooltip(host, tooltip, event);
-  };
-  const hideTooltip = (): void => {
-    tooltip.hidden = true;
-    highlight(undefined, undefined);
-  };
-  const componentLines = (item: SeriationComponent): string[] => [
-    item.name,
-    `K = ${item.k} force${item.k === 1 ? "" : "s"}${item.fissionCandidate ? " (fission candidate)" : ""}`,
-    `Status: ${item.status}`,
-    `Dominant attractor: ${model.attractors.find((a) => a.id === item.dominantAttractorId)?.name ?? "none"}`,
-  ];
+    placeTooltip(host, b.tip, event);
+  }
 
-  cell.on("mousemove", (event: MouseEvent, item: SeriationCell) => {
-    highlight(item.row, item.col);
-    const rowName = model.components[item.row]?.name ?? "";
-    const colName = model.components[item.col]?.name ?? "";
-    showTooltip(event, [`${rowName} × ${colName}: ${item.count} shared`, ...item.forces]);
-  }).on("mouseleave", hideTooltip);
-  diagonal.on("mousemove", (event: MouseEvent, item: SeriationComponent) => {
-    const index = model.components.indexOf(item);
-    highlight(index, index);
-    showTooltip(event, componentLines(item));
-  }).on("mouseleave", hideTooltip);
-  const headerHandlers = (selection: any): void => {
-    selection.on("mousemove", (event: MouseEvent, item: SeriationComponent) => {
-      const index = model.components.indexOf(item);
-      highlight(index, index);
-      showTooltip(event, componentLines(item));
-    }).on("mouseleave", hideTooltip)
-      .on("click", (_event: MouseEvent, item: SeriationComponent) => {
-        const index = model.components.indexOf(item);
-        pinned = pinned === index ? undefined : index;
-        highlight(undefined, undefined);
+  function hideTooltip(): void {
+    if (!built) return;
+    built.tip.hidden = true;
+  }
+
+  function clearHover(): void {
+    hideTooltip();
+    hoverMirrorHalf = undefined;
+    applyMirrorClasses();
+    applyHeaderBands(undefined, undefined);
+  }
+
+  function applyHeaderBands(row: number | undefined, col: number | undefined): void {
+    if (!built) return;
+    const activeRow = row;
+    const activeCol = col;
+    const n = lastModel?.components.length ?? 0;
+    built.rowBand
+      .attr("visibility", activeRow === undefined ? "hidden" : "visible")
+      .attr("y", (activeRow ?? 0) * CELL)
+      .attr("width", n * CELL)
+      .attr("height", CELL);
+    built.colBand
+      .attr("visibility", activeCol === undefined ? "hidden" : "visible")
+      .attr("x", (activeCol ?? 0) * CELL)
+      .attr("width", CELL)
+      .attr("height", n * CELL);
+    built.rowHeaders?.classed("is-active", (item: SeriationComponent) => indexByName.get(item.name) === activeRow);
+    built.colHeaders?.classed("is-active", (item: SeriationComponent) => indexByName.get(item.name) === activeCol);
+  }
+
+  function applyMirrorClasses(): void {
+    const b = built;
+    if (!b) return;
+    const active = hoverMirrorHalf ?? pinnedMirrorHalf;
+    b.cells?.classed("mirror-dim", (item: SeriationCell) => {
+      if (!active) return false;
+      const half = cellHalf(item.row, item.col);
+      if (half === "diagonal") return false;
+      return active === "upper" ? half === "lower" : half === "upper";
+    });
+  }
+
+  function applySelectionClasses(): void {
+    const b = built;
+    if (!b) return;
+    const hasSelection = lastSelected.size > 0;
+    const keyState = (keys: readonly EntityKey[]): "selected" | "connected" | "dim" | "none" => {
+      const isSelected = keys.some((key) => lastSelected.has(key));
+      if (isSelected) return "selected";
+      const isConnected = keys.some((key) => lastConnected.has(key));
+      if (isConnected) return "connected";
+      return hasSelection ? "dim" : "none";
+    };
+    const setState = (selection: any, keysFor: (item: any) => readonly EntityKey[]): void => {
+      if (!selection) return;
+      selection
+        .classed("selected", (item: any) => keyState(keysFor(item)) === "selected")
+        .classed("connected", (item: any) => keyState(keysFor(item)) === "connected")
+        .classed("dim", (item: any) => keyState(keysFor(item)) === "dim");
+    };
+    setState(b.rowHeaders, (item: SeriationComponent) => [`component:${item.name}` as EntityKey]);
+    setState(b.colHeaders, (item: SeriationComponent) => [`component:${item.name}` as EntityKey]);
+    setState(b.diagonal, (item: SeriationComponent) => [`component:${item.name}` as EntityKey]);
+    setState(b.cells, (item: SeriationCell) => item.forceKeys.map((key) => `force:${key}` as EntityKey));
+    if (b.legend) {
+      for (const item of Array.from(b.legend.querySelectorAll<HTMLElement>("[data-legend-id]"))) {
+        const key = `attractor:${item.dataset.legendId ?? ""}` as EntityKey;
+        const state = keyState([key]);
+        item.classList.toggle("selected", state === "selected");
+        item.classList.toggle("connected", state === "connected");
+        item.classList.toggle("dim", state === "dim");
+      }
+    }
+  }
+
+  function componentLines(item: SeriationComponent): string[] {
+    return [
+      item.name,
+      `K = ${item.k} force${item.k === 1 ? "" : "s"}${item.fissionCandidate ? " (fission candidate)" : ""}`,
+      `Status: ${item.status}`,
+      `Dominant attractor: ${lastModel?.attractors.find((attractor) => attractor.id === item.dominantAttractorId)?.name ?? "none"}`,
+    ];
+  }
+
+  function renderLegendForModel(model: SeriationModel): void {
+    const b = ensureBuilt();
+    b.legend?.remove();
+    const fissionKey = document.createElement("span");
+    fissionKey.className = "landscape-legend-item landscape-legend-warn";
+    fissionKey.textContent = "▲ fission candidate";
+    const legend = renderLegend(
+      host,
+      "Stripe = main attractor",
+      model.attractors.map((attractor) => ({ id: attractor.id, label: `${attractor.name} (${attractor.componentCount})`, color: attractor.color })),
+      [fissionKey],
+    );
+    host.insertBefore(legend, b.svg.node());
+    b.legend = legend;
+    for (const item of Array.from(legend.querySelectorAll<HTMLElement>("[data-legend-id]"))) {
+      item.addEventListener("click", () => {
+        const id = item.dataset.legendId;
+        if (id) ctx.onToggle(`attractor:${id}` as EntityKey);
       });
-  };
-  headerHandlers(rowHeaders);
-  headerHandlers(colHeaders);
+    }
+  }
+
+  function update(state: PendingState, rawOptions: Record<string, unknown> = {}): void {
+    const options = rawOptions as SeriationRenderOptions;
+    const model = buildSeriationModel(state, options);
+    const showCounts = options.showCounts ?? true;
+    if (model.components.length === 0) {
+      if (!built) {
+        renderEmpty(host, "No coupled components to show. Loosen the filters or lower the minimum coupling strength.");
+        return;
+      }
+      const b = ensureBuilt();
+      b.legend?.remove();
+      b.legend = undefined;
+      b.cellLayer.selectAll("g.nkp-seriation-cell").data([]).join("g");
+      b.diagonalLayer.selectAll("g.nkp-seriation-diagonal").data([]).join("g");
+      b.rowHeadersLayer.selectAll("g.nkp-seriation-header.row").data([]).join("g");
+      b.colHeadersLayer.selectAll("g.nkp-seriation-header.col").data([]).join("g");
+      b.labelsGroup.selectAll("text").data([]).join("text");
+      hideTooltip();
+      return;
+    }
+    if (host.querySelector(".landscape-empty")) host.replaceChildren();
+    const b = ensureBuilt();
+    renderLegendForModel(model);
+    lastModel = model;
+    indexByName = new Map(model.components.map((item, index) => [item.name, index]));
+    componentByIndex = new Map(model.components.map((item, index) => [index, item]));
+
+    const n = model.components.length;
+    const colorFor = new Map(model.attractors.map((attractor) => [attractor.id, attractor.color]));
+    const width = LABEL_WIDTH + STRIPE + n * CELL + 8;
+    const height = HEADER_HEIGHT + STRIPE + n * CELL + 8;
+    const gridX = LABEL_WIDTH + STRIPE;
+    const gridY = HEADER_HEIGHT + STRIPE;
+    b.svg.attr("viewBox", `0 0 ${width} ${height}`);
+    b.root.attr("transform", `translate(${gridX},${gridY})`);
+    b.frame.attr("width", n * CELL).attr("height", n * CELL);
+
+    const cellSelection = b.cellLayer
+      .selectAll("g.nkp-seriation-cell")
+      .data(model.cells, (item: SeriationCell) => `${item.row}:${item.col}`)
+      .join((enter: any) => {
+        const g = enter.append("g").attr("class", "nkp-seriation-cell");
+        g.append("rect");
+        return g;
+      })
+      .attr("transform", (item: SeriationCell) => `translate(${item.col * CELL},${item.row * CELL})`)
+      .attr("data-cell-row", (item: SeriationCell) => String(item.row))
+      .attr("data-cell-col", (item: SeriationCell) => String(item.col));
+    cellSelection.select("rect")
+      .attr("class", (item: SeriationCell) => `nkp-seriation-heat${item.focused ? "" : " is-faded"}`)
+      .attr("width", CELL - 1)
+      .attr("height", CELL - 1)
+      .attr("fill-opacity", (item: SeriationCell) => intensity(item.count, model.maxCount));
+    b.cells = cellSelection;
+
+    const diagonalSelection = b.diagonalLayer
+      .selectAll("g.nkp-seriation-diagonal")
+      .data(model.components, (item: SeriationComponent) => item.name)
+      .join((enter: any) => {
+        const g = enter.append("g").attr("class", "nkp-seriation-diagonal");
+        g.append("rect").attr("class", "nkp-seriation-diag");
+        return g;
+      })
+      .attr("transform", (item: SeriationComponent) => `translate(${(indexByName.get(item.name) ?? 0) * CELL},${(indexByName.get(item.name) ?? 0) * CELL})`)
+      .attr("data-diagonal-index", (item: SeriationComponent) => String(indexByName.get(item.name) ?? 0));
+    diagonalSelection.select("rect")
+      .attr("width", CELL - 1)
+      .attr("height", CELL - 1)
+      .attr("fill-opacity", (item: SeriationComponent) => intensity(item.k, model.maxK) * (item.focused ? 1 : 0.4));
+    b.diagonal = diagonalSelection;
+
+    const rowHeaders = b.rowHeadersLayer
+      .selectAll("g.nkp-seriation-header.row")
+      .data(model.components, (item: SeriationComponent) => item.name)
+      .join((enter: any) => {
+        const g = enter.append("g").attr("class", "nkp-seriation-header row");
+        g.append("rect").attr("class", "nkp-seriation-hit");
+        g.append("rect").attr("class", "nkp-seriation-stripe");
+        return g;
+      })
+      .attr("transform", (item: SeriationComponent) => `translate(${-gridX},${(indexByName.get(item.name) ?? 0) * CELL})`)
+      .attr("data-header-axis", "row")
+      .attr("data-header-index", (item: SeriationComponent) => String(indexByName.get(item.name) ?? 0));
+    rowHeaders.select(".nkp-seriation-hit")
+      .attr("width", LABEL_WIDTH + STRIPE)
+      .attr("height", CELL);
+    rowHeaders.select(".nkp-seriation-stripe")
+      .attr("x", LABEL_WIDTH)
+      .attr("width", STRIPE - 1)
+      .attr("height", CELL - 1)
+      .attr("fill", (item: SeriationComponent) => colorFor.get(item.dominantAttractorId ?? "") ?? "var(--line)");
+    b.rowHeaders = rowHeaders;
+
+    const colHeaders = b.colHeadersLayer
+      .selectAll("g.nkp-seriation-header.col")
+      .data(model.components, (item: SeriationComponent) => item.name)
+      .join((enter: any) => {
+        const g = enter.append("g").attr("class", "nkp-seriation-header col");
+        g.append("rect").attr("class", "nkp-seriation-hit");
+        g.append("rect").attr("class", "nkp-seriation-stripe");
+        return g;
+      })
+      .attr("transform", (item: SeriationComponent) => `translate(${(indexByName.get(item.name) ?? 0) * CELL},${-gridY})`)
+      .attr("data-header-axis", "col")
+      .attr("data-header-index", (item: SeriationComponent) => String(indexByName.get(item.name) ?? 0));
+    colHeaders.select(".nkp-seriation-hit")
+      .attr("width", CELL)
+      .attr("height", HEADER_HEIGHT + STRIPE);
+    colHeaders.select(".nkp-seriation-stripe")
+      .attr("y", HEADER_HEIGHT)
+      .attr("width", CELL - 1)
+      .attr("height", STRIPE - 1)
+      .attr("fill", (item: SeriationComponent) => colorFor.get(item.dominantAttractorId ?? "") ?? "var(--line)");
+    b.colHeaders = colHeaders;
+
+    const countClass = (count: number): string =>
+      `nkp-seriation-count${intensity(count, model.maxCount) > 0.6 ? " nkp-seriation-count-strong" : ""}`;
+    const textData: Array<{ id: string; className: string; x: number; y: number; transform?: string; text: string }> = [];
+    if (showCounts) {
+      for (const item of model.components) {
+        const index = indexByName.get(item.name) ?? 0;
+        textData.push({
+          id: `diag:${item.name}`,
+          className: "nkp-seriation-count nkp-seriation-count-strong",
+          x: gridX + index * CELL + CELL / 2,
+          y: gridY + index * CELL + CELL / 2,
+          text: String(item.k),
+        });
+      }
+      for (const item of model.cells) {
+        textData.push({
+          id: `cell:${item.row}:${item.col}`,
+          className: countClass(item.count),
+          x: gridX + item.col * CELL + CELL / 2,
+          y: gridY + item.row * CELL + CELL / 2,
+          text: String(item.count),
+        });
+      }
+    }
+    for (const item of model.components) {
+      const index = indexByName.get(item.name) ?? 0;
+      textData.push({
+        id: `row:${item.name}`,
+        className: headerClass(item),
+        x: LABEL_WIDTH - 4,
+        y: gridY + index * CELL + CELL / 2,
+        text: headerLabel(item),
+      });
+      textData.push({
+        id: `col:${item.name}`,
+        className: headerClass(item),
+        x: gridX + index * CELL + CELL / 2,
+        y: HEADER_HEIGHT - 4,
+        transform: `rotate(-60 ${gridX + index * CELL + CELL / 2} ${HEADER_HEIGHT - 4})`,
+        text: headerLabel(item),
+      });
+    }
+    b.labelsGroup.selectAll("text")
+      .data(textData, (item: any) => item.id)
+      .join("text")
+      .attr("class", (item: any) => item.className)
+      .attr("x", (item: any) => item.x)
+      .attr("y", (item: any) => item.y)
+      .attr("transform", (item: any) => item.transform ?? null)
+      .attr("text-anchor", (item: any) => (item.id.startsWith("row:") ? "end" : "middle"))
+      .text((item: any) => item.text);
+
+    cellSelection
+      .on("mousemove", (event: MouseEvent, item: SeriationCell) => {
+        const half = cellHalf(item.row, item.col);
+        hoverMirrorHalf = half === "diagonal" ? undefined : half;
+        applyMirrorClasses();
+        applyHeaderBands(item.row, item.col);
+        const rowName = componentByIndex.get(item.row)?.name ?? "";
+        const colName = componentByIndex.get(item.col)?.name ?? "";
+        showTooltip(event, [`${rowName} × ${colName}: ${item.count} shared`, ...item.forces]);
+      })
+      .on("mouseleave", clearHover)
+      .on("click", (_event: MouseEvent, item: SeriationCell) => {
+        for (const key of item.forceKeys) ctx.onToggle(`force:${key}` as EntityKey);
+        const half = cellHalf(item.row, item.col);
+        if (half !== "diagonal") pinnedMirrorHalf = half;
+        applyMirrorClasses();
+      });
+
+    diagonalSelection
+      .on("mousemove", (event: MouseEvent, item: SeriationComponent) => {
+        const index = indexByName.get(item.name);
+        applyHeaderBands(index, index);
+        showTooltip(event, componentLines(item));
+      })
+      .on("mouseleave", clearHover)
+      .on("click", (_event: MouseEvent, item: SeriationComponent) => ctx.onToggle(`component:${item.name}` as EntityKey));
+
+    const headerHandlers = (selection: any): void => {
+      selection
+        .on("mousemove", (event: MouseEvent, item: SeriationComponent) => {
+          const index = indexByName.get(item.name);
+          applyHeaderBands(index, index);
+          showTooltip(event, componentLines(item));
+        })
+        .on("mouseleave", clearHover)
+        .on("click", (_event: MouseEvent, item: SeriationComponent) => ctx.onToggle(`component:${item.name}` as EntityKey));
+    };
+    headerHandlers(rowHeaders);
+    headerHandlers(colHeaders);
+
+    applyHeaderBands(undefined, undefined);
+    applyMirrorClasses();
+    applySelectionClasses();
+  }
+
+  function setSelection(selected: ReadonlySet<EntityKey>, connected: ReadonlySet<EntityKey>): void {
+    lastSelected = selected;
+    lastConnected = connected;
+    if (selected.size === 0) {
+      pinnedMirrorHalf = undefined;
+      hoverMirrorHalf = undefined;
+    }
+    applySelectionClasses();
+    applyMirrorClasses();
+  }
+
+  function resetView(): void {
+    if (!built) return;
+    resetZoom(built.svg, built.zoom, d3);
+  }
+
+  return { update, setSelection, resetView, destroy };
 }
 
 function headerLabel(item: SeriationComponent): string {

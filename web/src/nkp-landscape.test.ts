@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { PendingState } from "./model";
+import * as d3 from "d3";
+import type { PendingState, SnapshotAttractor, SnapshotComponent, SnapshotForce } from "./model";
 import { controlAppliesTo, fitViewportHeight, mountLandscape, parseLandscapeView } from "./nkp-landscape";
 
 function emptyState(): PendingState {
@@ -42,9 +43,70 @@ function fixture(open: boolean): void {
         <label data-landscape-for="bundle" data-test="tension"></label>
         <label data-landscape-for="heatmap" data-test="counts"></label>
         <label data-landscape-for="regions" data-test="focus"></label>
+        <button type="button" data-landscape-reset-view>reset view</button>
+        <button type="button" data-landscape-deselect-all>deselect all</button>
       </div>
       <div data-landscape></div>
+      <aside data-landscape-sidebar></aside>
     </details>`;
+}
+
+/**
+ * Fixture with real coupled data (unlike `fixture`/`emptyState`, which draw
+ * nothing) and "hide filtered" unchecked, so the bundle view still draws its
+ * leaves even though there is no matrix table in this fixture to populate
+ * `visibleForceIds`/`visibleComponentNames` (readFilters always returns an
+ * empty-but-defined Set when there is no matrix table, which would mark
+ * everything unfocused and, under hideFiltered, filter it all away).
+ */
+function selectionFixture(): { state: PendingState } {
+  fixture(true);
+  const toggle = document.querySelector<HTMLInputElement>("[data-hide-filtered-graph-toggle]")!;
+  toggle.checked = false;
+  const attractors: SnapshotAttractor[] = [
+    { id: "A-01", name: "resilience", description: "stays useful", positiveState: "degrades", negativeState: "cascades" },
+  ];
+  const components: SnapshotComponent[] = [
+    { name: "auth", description: "authenticates requests", status: "actual", architectureSet: "runtime" },
+    { name: "cache", description: "caches sessions", status: "actual", architectureSet: "runtime" },
+  ];
+  const forces: SnapshotForce[] = [
+    {
+      id: "S-01", kind: "stressor", shortname: "sn1", description: "desc S-01", attractorId: "A-01",
+      naiveChangeOrFeature: "naive1", outcomes: "outcome1", components: ["auth", "cache"],
+    },
+    {
+      id: "S-02", kind: "stressor", shortname: "sn2", description: "desc S-02", attractorId: "A-01",
+      naiveChangeOrFeature: "naive2", outcomes: "outcome2", components: ["auth", "cache"],
+    },
+  ];
+  const state: PendingState = {
+    baseAttractors: attractors,
+    baseComponents: components,
+    baseForces: forces,
+    basePersonas: [],
+    baseTerms: [],
+    addedAttractors: [],
+    addedComponents: [],
+    addedForces: [],
+    addedPersonas: [],
+    addedTerms: [],
+    updatedAttractors: {},
+    updatedComponents: {},
+    updatedForces: {},
+    updatedPersonas: {},
+    updatedTerms: {},
+  };
+  return { state };
+}
+
+function authLeaf(): SVGGElement | undefined {
+  const host = document.querySelector<HTMLElement>("[data-landscape]")!;
+  return [...host.querySelectorAll<SVGGElement>(".nkp-bundle-leaf")].find((g) => g.textContent?.includes("auth"));
+}
+
+function sidebarText(): string {
+  return document.querySelector<HTMLElement>("[data-landscape-sidebar]")?.textContent ?? "";
 }
 
 const hidden = (name: string): boolean =>
@@ -127,5 +189,109 @@ describe("rendered-page integration", () => {
     expect(main).toContain("mountLandscape");
     expect(main).toMatch(/onChange[\s\S]*landscape\.sync\(/);
     expect(main).not.toMatch(/fetch\([^)]*(?:add|update|remove|ledger)/i);
+  });
+
+  test("the landscape card carries a sidebar, a deselect-all button and a reset-view button", async () => {
+    const shell = await Bun.file("../src/view/shell.html").text();
+    expect(shell).toContain("data-landscape-sidebar");
+    expect(shell).toContain("data-landscape-deselect-all");
+    expect(shell).toContain("data-landscape-reset-view");
+  });
+});
+
+describe("cross-view selection (Phase 2)", () => {
+  test("clicking a bundle leaf shows it in the sidebar", async () => {
+    const { state } = selectionFixture();
+    const handle = mountLandscape(document.body, () => state, d3);
+    authLeaf()?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await Promise.resolve();
+    expect(sidebarText()).toContain("auth");
+    handle.destroy();
+  });
+
+  test("clicking the same leaf twice toggles it back off (mobile-friendly: no modifier keys)", async () => {
+    const { state } = selectionFixture();
+    const handle = mountLandscape(document.body, () => state, d3);
+    authLeaf()?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await Promise.resolve();
+    expect(sidebarText()).toContain("auth");
+    authLeaf()?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await Promise.resolve();
+    expect(sidebarText()).not.toContain("auth");
+    handle.destroy();
+  });
+
+  test("selection survives a view switch", async () => {
+    const { state } = selectionFixture();
+    const handle = mountLandscape(document.body, () => state, d3);
+    authLeaf()?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await Promise.resolve();
+    expect(sidebarText()).toContain("auth");
+
+    await pickView("heatmap");
+    expect(sidebarText()).toContain("auth");
+
+    await pickView("regions");
+    expect(sidebarText()).toContain("auth");
+    handle.destroy();
+  });
+
+  test("selection survives a filter change", async () => {
+    const { state } = selectionFixture();
+    const handle = mountLandscape(document.body, () => state, d3);
+    authLeaf()?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await Promise.resolve();
+    expect(sidebarText()).toContain("auth");
+
+    const toggle = document.querySelector<HTMLInputElement>("[data-hide-filtered-graph-toggle]")!;
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event("change", { bubbles: true }));
+    await Promise.resolve();
+    expect(sidebarText()).toContain("auth");
+    handle.destroy();
+  });
+
+  test("double-clicking the viewport clears the selection", async () => {
+    const { state } = selectionFixture();
+    const handle = mountLandscape(document.body, () => state, d3);
+    authLeaf()?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await Promise.resolve();
+    expect(sidebarText()).toContain("auth");
+
+    document.querySelector<HTMLElement>("[data-landscape]")!
+      .dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    await Promise.resolve();
+    expect(sidebarText()).not.toContain("auth");
+    handle.destroy();
+  });
+
+  test("the deselect-all button clears the selection", async () => {
+    const { state } = selectionFixture();
+    const handle = mountLandscape(document.body, () => state, d3);
+    authLeaf()?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await Promise.resolve();
+    expect(sidebarText()).toContain("auth");
+
+    document.querySelector<HTMLElement>("[data-landscape-deselect-all]")!
+      .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await Promise.resolve();
+    expect(sidebarText()).not.toContain("auth");
+    handle.destroy();
+  });
+
+  test("a filter change updates the active view handle instead of recreating the <svg>", async () => {
+    const { state } = selectionFixture();
+    const handle = mountLandscape(document.body, () => state, d3);
+    const host = document.querySelector<HTMLElement>("[data-landscape]")!;
+    const svgBefore = host.querySelector("svg");
+    expect(svgBefore).not.toBeNull();
+
+    const toggle = document.querySelector<HTMLInputElement>("[data-hide-filtered-graph-toggle]")!;
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event("change", { bubbles: true }));
+    await Promise.resolve();
+
+    expect(host.querySelector("svg")).toBe(svgBefore);
+    handle.destroy();
   });
 });

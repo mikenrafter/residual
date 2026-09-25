@@ -13,9 +13,11 @@
 
 import { effectiveState, buildNkpGraphModel, DEFAULT_MIN_COUPLING_STRENGTH } from "./nkp-graph";
 import type { PendingState } from "./model";
-import { renderNkpBundle, DEFAULT_BUNDLE_TENSION } from "./nkp-bundle";
-import { renderNkpSeriation } from "./nkp-seriation";
-import { buildNkpHypergraphModel, renderNkpHypergraph } from "./nkp-hypergraph";
+import { createBundleView, DEFAULT_BUNDLE_TENSION, type BundleViewHandle } from "./nkp-bundle";
+import { createHeatmapView } from "./nkp-seriation";
+import { createRegionsView } from "./nkp-hypergraph";
+import { connectedKeys, entityDetail, toggleSelection, type EntityDetail, type EntityKey } from "./landscape-selection";
+import { renderSidebar } from "./landscape-sidebar";
 
 export type LandscapeView = "bundle" | "heatmap" | "regions";
 export const LANDSCAPE_VIEWS: readonly LandscapeView[] = ["bundle", "heatmap", "regions"];
@@ -150,12 +152,25 @@ export function fitViewportHeight(windowHeight: number, toolbarHeight: number, c
   return Math.max(320, Math.floor(windowHeight - toolbarHeight - chrome - bottomPadding));
 }
 
-/** Mounts the landscape card's view switcher, controls and viewport. */
+/**
+ * Mounts the landscape card's view switcher, controls, viewport and sidebar.
+ * Owns the cross-view selection (`Set<EntityKey>`): it survives view
+ * switches and filter changes, and drives both the active view's
+ * `setSelection` and the sidebar on every change. Each view is a persistent
+ * handle (`{update, setSelection, resetView, destroy}`); a filter/setting
+ * change calls the active handle's `update` (never recreates its `<svg>`),
+ * and only a view switch destroys the old handle and creates the new one.
+ */
 export function mountLandscape(container: HTMLElement, getState: () => PendingState, d3: any): LandscapeHandle {
   const host = container.querySelector<HTMLElement>("[data-landscape]");
   const card = host?.closest("details") ?? null;
-  let simulation: { stop: () => void } | undefined;
+  const sidebarEl = container.querySelector<HTMLElement>("[data-landscape-sidebar]");
+  const deselectAllButton = container.querySelector<HTMLElement>("[data-landscape-deselect-all]");
+  const resetViewButton = container.querySelector<HTMLElement>("[data-landscape-reset-view]");
   let stale = true;
+  let activeView: LandscapeView | undefined;
+  let viewHandle: BundleViewHandle | undefined;
+  let selected = new Set<EntityKey>();
 
   const currentView = (): LandscapeView =>
     parseLandscapeView(container.querySelector<HTMLInputElement>("[data-landscape-view-input]:checked")?.value);
@@ -167,6 +182,47 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
     const chrome = host.getBoundingClientRect().top - card.getBoundingClientRect().top;
     card.style.scrollMarginTop = `${toolbarHeight + 8}px`;
     host.style.height = `${fitViewportHeight(window.innerHeight, toolbarHeight, chrome, 32)}px`;
+  };
+
+  const renderSidebarNow = (): void => {
+    if (!sidebarEl) return;
+    const state = getState();
+    const details: EntityDetail[] = [];
+    for (const key of selected) {
+      const detail = entityDetail(state, key);
+      if (detail) details.push(detail);
+    }
+    renderSidebar(sidebarEl, details, {
+      onDeselect: (key) => applySelection(toggleSelection(selected, key)),
+      onClearAll: clearSelection,
+    });
+  };
+
+  /** Re-applies `next` as the selection: pushes it to the active view and re-renders the sidebar. */
+  const applySelection = (next: Set<EntityKey>): void => {
+    selected = next;
+    const connected = connectedKeys(getState(), selected);
+    viewHandle?.setSelection(selected, connected);
+    renderSidebarNow();
+  };
+
+  const onEntityToggle = (key: EntityKey): void => applySelection(toggleSelection(selected, key));
+  function clearSelection(): void {
+    if (selected.size === 0) return;
+    applySelection(new Set());
+  }
+
+  /** Builds the view's persistent handle on first use or on a view switch; reuses it otherwise. */
+  const ensureViewHandle = (view: LandscapeView, viewportHost: HTMLElement): BundleViewHandle => {
+    if (viewHandle && activeView === view) return viewHandle;
+    viewHandle?.destroy();
+    viewHandle = view === "bundle"
+      ? createBundleView({ host: viewportHost, d3, onToggle: onEntityToggle, onClear: clearSelection })
+      : view === "heatmap"
+        ? createHeatmapView({ host: viewportHost, d3, onToggle: onEntityToggle, onClear: clearSelection })
+        : createRegionsView({ host: viewportHost, d3, onToggle: onEntityToggle, onClear: clearSelection });
+    activeView = view;
+    return viewHandle;
   };
 
   const sync = (): void => {
@@ -182,40 +238,39 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
     }
     stale = false;
     fitViewport();
-    simulation?.stop();
-    simulation = undefined;
-    host.replaceChildren();
 
     const state = getState();
     const filters = readFilters(container);
     const hideFiltered = container.querySelector<HTMLInputElement>("[data-hide-filtered-graph-toggle]")?.checked ?? true;
+    const handle = ensureViewHandle(view, host);
 
     if (view === "regions") {
       const focusComponent = syncFocusOptions(container.querySelector<HTMLSelectElement>("[data-regions-focus]"), state);
       const showNames = container.querySelector<HTMLInputElement>("[data-regions-names-toggle]")?.checked ?? true;
-      const model = buildNkpHypergraphModel(state, { ...filters, hideFiltered, ...(focusComponent ? { focusComponent } : {}) });
-      simulation = renderNkpHypergraph(host, model, d3, { showNames });
-      return;
+      handle.update(state, { ...filters, hideFiltered, showNames, ...(focusComponent ? { focusComponent } : {}) });
+    } else {
+      const minCouplingStrength = syncMinCouplingStrength(container, state, filters);
+      if (view === "heatmap") {
+        const showCounts = container.querySelector<HTMLInputElement>("[data-heatmap-counts-toggle]")?.checked ?? true;
+        handle.update(state, { ...filters, hideFiltered, minCouplingStrength, showCounts });
+      } else {
+        const { topNCouplings, topNDirection } = syncTopN(container, state, filters, minCouplingStrength);
+        const tensionInput = container.querySelector<HTMLInputElement>("[data-bundle-tension-input]");
+        const tension = tensionInput ? Number(tensionInput.value) / 100 : DEFAULT_BUNDLE_TENSION;
+        handle.update(state, {
+          ...filters,
+          hideFiltered,
+          minCouplingStrength,
+          ...(topNCouplings === undefined ? {} : { topNCouplings }),
+          topNDirection,
+          tension,
+        });
+      }
     }
 
-    const minCouplingStrength = syncMinCouplingStrength(container, state, filters);
-    if (view === "heatmap") {
-      const showCounts = container.querySelector<HTMLInputElement>("[data-heatmap-counts-toggle]")?.checked ?? true;
-      renderNkpSeriation(host, state, { ...filters, hideFiltered, minCouplingStrength, showCounts }, d3);
-      return;
-    }
-
-    const { topNCouplings, topNDirection } = syncTopN(container, state, filters, minCouplingStrength);
-    const tensionInput = container.querySelector<HTMLInputElement>("[data-bundle-tension-input]");
-    const tension = tensionInput ? Number(tensionInput.value) / 100 : DEFAULT_BUNDLE_TENSION;
-    renderNkpBundle(host, state, {
-      ...filters,
-      hideFiltered,
-      minCouplingStrength,
-      ...(topNCouplings === undefined ? {} : { topNCouplings }),
-      topNDirection,
-      tension,
-    }, d3);
+    const connected = connectedKeys(state, selected);
+    handle.setSelection(selected, connected);
+    renderSidebarNow();
   };
 
   const onControl = (event: Event): void => {
@@ -230,11 +285,14 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
     }
     queueMicrotask(sync);
   };
-  const onToggle = (): void => {
+  const onCardToggle = (): void => {
     if (!card?.open) return;
     if (stale) sync();
     card.scrollIntoView({ block: "start", behavior: "smooth" });
   };
+  const onHostDblClick = (): void => clearSelection();
+  const onDeselectAllClick = (): void => clearSelection();
+  const onResetViewClick = (): void => viewHandle?.resetView();
   let resizeTimer: ReturnType<typeof setTimeout> | undefined;
   const onResize = (): void => {
     clearTimeout(resizeTimer);
@@ -248,18 +306,24 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
 
   container.addEventListener("input", onControl);
   container.addEventListener("change", onControl);
-  card?.addEventListener("toggle", onToggle);
+  card?.addEventListener("toggle", onCardToggle);
+  host?.addEventListener("dblclick", onHostDblClick);
+  deselectAllButton?.addEventListener("click", onDeselectAllClick);
+  resetViewButton?.addEventListener("click", onResetViewClick);
   window.addEventListener("resize", onResize);
   sync();
 
   return {
     sync,
     destroy: () => {
-      simulation?.stop();
+      viewHandle?.destroy();
       clearTimeout(resizeTimer);
       container.removeEventListener("input", onControl);
       container.removeEventListener("change", onControl);
-      card?.removeEventListener("toggle", onToggle);
+      card?.removeEventListener("toggle", onCardToggle);
+      host?.removeEventListener("dblclick", onHostDblClick);
+      deselectAllButton?.removeEventListener("click", onDeselectAllClick);
+      resetViewButton?.removeEventListener("click", onResetViewClick);
       window.removeEventListener("resize", onResize);
       host?.replaceChildren();
     },

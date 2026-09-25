@@ -9,6 +9,8 @@
 import type { PendingState } from "./model";
 import { attractorColors, effectiveState, forceLabel, type EffectiveForce } from "./nkp-graph";
 import { appendZoomableSvg, renderEmpty } from "./landscape-dom";
+import type { EntityKey } from "./landscape-selection";
+import { branchGeometry, nudgeLabels } from "./landscape-geometry";
 
 export interface HyperComponentNode {
   id: string;
@@ -57,6 +59,22 @@ export interface NkpHypergraphModel {
   nodes: HyperNode[];
   edges: HyperEdge[];
   groups: AttractorGroup[];
+  branchBundles: BranchBundle[];
+  /**
+   * Visible components whose force vectors (the set of forces touching them)
+   * are identical, grouped when 2+ components share a vector — fusion
+   * candidates. Rendered by createRegionsView as a dashed hull; the pure
+   * grouping lives here so it stays testable without the DOM.
+   */
+  fusionGroups: string[][];
+}
+
+export interface BranchBundle {
+  id: string;
+  componentId: string;
+  attractorId: string;
+  forceIds: string[];
+  focused: boolean;
 }
 
 export interface NkpHypergraphOptions {
@@ -189,7 +207,41 @@ export function buildNkpHypergraphModel(
     });
   });
 
-  return { nodes, edges: keptEdges, groups };
+  // Fusion candidates: visible components carrying the exact same set of
+  // forces (by node id, since a component may share a force key with an
+  // identically-named added/removed variant only through the same key).
+  const componentVectors = new Map<string, string[]>();
+  for (const edge of keptEdges) {
+    componentVectors.set(edge.target, [...(componentVectors.get(edge.target) ?? []), edge.source]);
+  }
+  const vectorGroups = new Map<string, string[]>();
+  for (const [componentId, forceIds] of componentVectors) {
+    const vectorKey = [...forceIds].sort().join("\u0000");
+    vectorGroups.set(vectorKey, [...(vectorGroups.get(vectorKey) ?? []), componentId]);
+  }
+  const fusionGroups = [...vectorGroups.values()].filter((group) => group.length >= 2);
+
+  const bundleMap = new Map<string, BranchBundle>();
+  for (const edge of keptEdges) {
+    const forceKey = edge.source.startsWith("force:") ? edge.source.slice("force:".length) : edge.source;
+    const bundleId = `bundle:${edge.target}:${edge.attractorId}`;
+    const existing = bundleMap.get(bundleId);
+    if (existing) {
+      existing.forceIds.push(forceKey);
+      if (forceFocus.get(edge.source)) existing.focused = true;
+      continue;
+    }
+    bundleMap.set(bundleId, {
+      id: bundleId,
+      componentId: edge.target,
+      attractorId: edge.attractorId,
+      forceIds: [forceKey],
+      focused: !!forceFocus.get(edge.source),
+    });
+  }
+  const branchBundles = [...bundleMap.values()];
+
+  return { nodes, edges: keptEdges, groups, branchBundles, fusionGroups };
 }
 
 export interface Point {
@@ -254,6 +306,15 @@ export function centroid(points: readonly Point[]): Point | undefined {
 
 type SimNode = HyperNode & { x?: number; y?: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null };
 type SimLink = Omit<HyperEdge, "source" | "target"> & { source: SimNode | string; target: SimNode | string };
+type RenderBundle = BranchBundle;
+type RenderBranch = {
+  id: string;
+  bundleId: string;
+  componentId: string;
+  forceId: string;
+  attractorId: string;
+  focused: boolean;
+};
 
 /**
  * Pulls each force node toward the current centroid of its attractor's force
@@ -288,210 +349,738 @@ function createAttractorCohesionForce(strength = 0.3) {
 }
 
 const REGION_PADDING = 22;
+const DEFAULT_CANVAS_WIDTH = 800;
+const DEFAULT_CANVAS_HEIGHT = 600;
 
-export interface HypergraphRenderOptions {
+/** 1.3x the original glyph sizes (diamond half-diagonal 5 -> 6.5, circle r 4 -> 5.2). */
+export const FORCE_NODE_SCALE = 1.3;
+const FORCE_DIAMOND_HALF_DIAGONAL = 5 * FORCE_NODE_SCALE;
+const FORCE_CIRCLE_RADIUS = 4 * FORCE_NODE_SCALE;
+
+/** Fill-opacity of a force glyph: stressors are solid, purposes read a touch lighter. */
+export function forceNodeOpacity(kind: "stressor" | "purpose"): number {
+  return kind === "purpose" ? 0.75 : 1;
+}
+
+/** Stressors as diamonds, purposes as circles: both small, coloured by attractor. */
+function forceGlyphPath(kind: "stressor" | "purpose"): string {
+  if (kind === "stressor") {
+    const h = FORCE_DIAMOND_HALF_DIAGONAL;
+    return `M0,-${h}L${h},0L0,${h}L-${h},0Z`;
+  }
+  const r = FORCE_CIRCLE_RADIUS;
+  return `M-${r},0a${r},${r} 0 1,0 ${r * 2},0a${r},${r} 0 1,0 -${r * 2},0`;
+}
+
+type SimForceNode = HyperForceNode & { x?: number; y?: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null };
+
+/** Sensible defaults for forceInteractionDelta; exported so createRegionsView and tests share one source of truth. */
+export const FORCE_INTERACTION_DISTANCE_MAX = 220;
+export const FORCE_INTERACTION_PURPOSE_STRENGTH = 42;
+export const FORCE_INTERACTION_STRESSOR_STRENGTH = 16;
+
+export interface ForceInteractionNode {
+  attractorId?: string;
+  x?: number;
+  y?: number;
+}
+
+export interface ForceInteractionSource extends ForceInteractionNode {
+  kind: "stressor" | "purpose";
+}
+
+/**
+ * Pure effect of `source` on `target`: a purpose pushes forces belonging to
+ * *other* attractors away (stronger, falls off linearly with distance); a
+ * stressor pulls them in instead (weaker, at equal distance, than a
+ * purpose's push). Same-attractor pairs and pairs beyond `distanceMax` are
+ * untouched. Returns the velocity delta `target` receives.
+ */
+export function forceInteractionDelta(
+  source: ForceInteractionSource,
+  target: ForceInteractionNode,
+  params: { distanceMax: number },
+): { vx: number; vy: number } {
+  const zero = { vx: 0, vy: 0 };
+  if (source.attractorId === undefined || target.attractorId === undefined || source.attractorId === target.attractorId) {
+    return zero;
+  }
+  const dx = (target.x ?? 0) - (source.x ?? 0);
+  const dy = (target.y ?? 0) - (source.y ?? 0);
+  const distance = Math.hypot(dx, dy);
+  if (distance === 0 || distance >= params.distanceMax) return zero;
+  const falloff = 1 - distance / params.distanceMax;
+  const isPurpose = source.kind === "purpose";
+  const strength = (isPurpose ? FORCE_INTERACTION_PURPOSE_STRENGTH : FORCE_INTERACTION_STRESSOR_STRENGTH) * falloff;
+  const sign = isPurpose ? 1 : -1;
+  return { vx: (dx / distance) * strength * sign, vy: (dy / distance) * strength * sign };
+}
+
+/** d3 force wrapping forceInteractionDelta over every pair of force nodes. */
+function createForceInteractionForce(distanceMax = FORCE_INTERACTION_DISTANCE_MAX) {
+  let forceNodes: SimForceNode[] = [];
+  const force = (alpha: number): void => {
+    for (const target of forceNodes) {
+      if (target.fx != null) continue;
+      let dvx = 0;
+      let dvy = 0;
+      for (const source of forceNodes) {
+        if (source === target) continue;
+        const delta = forceInteractionDelta(source, target, { distanceMax });
+        dvx += delta.vx;
+        dvy += delta.vy;
+      }
+      target.vx = (target.vx ?? 0) + dvx * alpha;
+      target.vy = (target.vy ?? 0) + dvy * alpha;
+    }
+  };
+  force.initialize = (nodes: SimNode[]): void => {
+    forceNodes = nodes.filter((node): node is SimForceNode => node.type === "force");
+  };
+  return force;
+}
+
+/** Translates every force node belonging to `attractorId` by (dx, dy); everything else is untouched. */
+export function translateGroup(
+  nodes: readonly { attractorId?: string; x?: number; y?: number }[],
+  attractorId: string,
+  dx: number,
+  dy: number,
+): void {
+  for (const node of nodes) {
+    if (node.attractorId !== attractorId) continue;
+    node.x = (node.x ?? 0) + dx;
+    node.y = (node.y ?? 0) + dy;
+  }
+}
+
+export interface RegionsRenderOptions extends NkpHypergraphOptions {
   /** Draw attractor names above their regions. */
   showNames?: boolean;
 }
 
+export interface RegionsViewCtx {
+  host: HTMLElement;
+  d3: any;
+  onToggle: (key: EntityKey) => void;
+  onClear: () => void;
+}
+
+export interface RegionsViewHandle {
+  update: (state: PendingState, options?: Record<string, unknown>) => void;
+  setSelection: (selected: ReadonlySet<EntityKey>, connected: ReadonlySet<EntityKey>) => void;
+  resetView: () => void;
+  destroy: () => void;
+  /** Test-only hook (not part of the fixed handle contract): the live d3
+   * force simulation, so incremental-update/no-clamping tests can inspect
+   * and step physics directly instead of guessing at timing. */
+  readonly simulation: { nodes: () => SimNode[]; tick: (iterations?: number) => void } | undefined;
+}
+
 /**
- * Renders the hypergraph into `host` (already emptied by the caller) and
- * returns the running simulation so the caller can stop it on re-sync. The
- * layout canvas takes the viewport's aspect ratio and is scaled to fit it.
+ * Persistent regions view handle: the bipartite force<->component hypergraph
+ * with attractor regions, following the bundle/heatmap handle pattern (one
+ * persistent <svg>, keyed joins, all text in a last g.landscape-labels
+ * layer synced by a second namespaced zoom listener). Unlike the other two
+ * views the canvas is infinite: nothing clamps node position and there is no
+ * translateExtent, so the simulation is free to spread out. The first time
+ * it cools below alpha 0.05 the view animates a fit-to-content zoom;
+ * resetView() repeats that fit on demand.
+ *
+ * One d3-force simulation lives for the handle's whole lifetime. update()
+ * rebuilds the model and re-joins nodes by id: survivors keep their x/y/vx/vy
+ * (and fx/fy, mid-drag), newcomers seed near their attractor's current
+ * centroid, else the focus component, else the origin; nodes that fall out
+ * of the filtered model are simply dropped from the next simulation.nodes()
+ * call. Edge drawing is one small function (positionEdges) so Phase 5 can
+ * swap the straight membership lines for curved branch bundles without
+ * touching the rest of the tick handler.
  */
-export function renderNkpHypergraph(
-  host: HTMLElement,
-  model: NkpHypergraphModel,
-  d3: any,
-  options: HypergraphRenderOptions = {},
-): { stop: () => void } | undefined {
-  if (model.nodes.length === 0) {
-    renderEmpty(host, "No forces or components to draw. Loosen the filters or pick another focus component.");
-    return undefined;
+export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
+  const { host, d3 } = ctx;
+
+  let built:
+    | {
+        svg: any;
+        zoom: any;
+        regionsG: any;
+        fusionG: any;
+        edgesG: any;
+        nodesG: any;
+        labelsGroup: any;
+        sim: any;
+        width: number;
+        height: number;
+        didFit: boolean;
+      }
+    | undefined;
+
+  let nodes: SimNode[] = [];
+  let byId = new Map<string, SimNode>();
+  let links: SimLink[] = [];
+  let bundles: RenderBundle[] = [];
+  let regionSel: any;
+  let fusionSel: any;
+  let bundleTrunkSel: any;
+  let bundleBranchSel: any;
+  let nodeSel: any;
+  let componentLabelSel: any;
+  let forceLabelSel: any;
+  let regionLabelSel: any;
+  let lastSelected: ReadonlySet<EntityKey> = new Set();
+  let lastConnected: ReadonlySet<EntityKey> = new Set();
+  let tickCount = 0;
+  let labelShiftByKey = new Map<string, number>();
+  let groupColorById = new Map<string, string>();
+
+  function colorFor(attractorId: string): string {
+    return groupColorById.get(attractorId) ?? "var(--muted)";
   }
 
-  const side = Math.max(480, Math.round(Math.sqrt(model.nodes.length) * 105));
-  const aspect = host.clientWidth > 0 && host.clientHeight > 0 ? host.clientWidth / host.clientHeight : 1.4;
-  const width = Math.round(side * Math.sqrt(aspect));
-  const height = Math.round(side / Math.sqrt(aspect));
-  const { svg: root, content: svg } = appendZoomableSvg(
-    host,
-    d3,
-    { x: 0, y: 0, width, height },
-    "nkp-hyper",
-    "Forces linked to the components they touch, grouped into attractor regions",
-  );
-  // With names off, a region's name still appears while it is highlighted.
-  root.classed("names-hidden", options.showNames === false);
-
-  const nodes: SimNode[] = model.nodes.map((item) => ({ ...item }));
-  const byId = new Map(nodes.map((item) => [item.id, item]));
-  const links: SimLink[] = model.edges.map((edge) => ({ ...edge }));
-  const groupColor = new Map(model.groups.map((group) => [group.attractorId, group.color]));
-  const colorOf = (attractorId: string): string => groupColor.get(attractorId) ?? "var(--muted)";
-
-  // Seed each attractor's forces around its own spot on a wide ring, so the
-  // simulation starts untangled; after that nothing is pinned.
-  const cx = width / 2;
-  const cy = height / 2;
-  model.groups.forEach((group, index) => {
-    const angle = (index / Math.max(1, model.groups.length)) * Math.PI * 2;
-    const seed = { x: cx + Math.cos(angle) * side * 0.35, y: cy + Math.sin(angle) * side * 0.35 };
-    for (const id of group.forceNodeIds) {
-      const item = byId.get(id);
-      if (!item) continue;
-      item.x = seed.x + (Math.random() - 0.5) * 40;
-      item.y = seed.y + (Math.random() - 0.5) * 40;
-    }
-  });
-
-  const regionLayer = svg.append("g").attr("class", "nkp-hyper-regions");
-  const region = regionLayer.selectAll("g").data(model.groups).join("g")
-    .attr("class", "nkp-hyper-region")
-    .attr("opacity", (group: AttractorGroup) => group.focused ? 0.16 : 0.07);
-  const regionPath = region.append("path")
-    .attr("fill", (group: AttractorGroup) => group.color)
-    .attr("stroke", (group: AttractorGroup) => group.color)
-    .attr("stroke-width", REGION_PADDING * 2)
-    .attr("stroke-linejoin", "round")
-    .attr("stroke-linecap", "round");
-  region.append("title").text((group: AttractorGroup) => group.tooltip);
-
-  const link = svg.append("g").attr("class", "nkp-hyper-edges")
-    .selectAll("line").data(links).join("line")
-    .attr("class", "nkp-hyper-edge")
-    .attr("stroke", (edge: SimLink) => colorOf(edge.attractorId))
-    .attr("stroke-opacity", (edge: SimLink) => edge.focused ? 0.45 : 0.15);
-
-  const regionLabel = svg.append("g").attr("class", "nkp-hyper-region-labels")
-    .selectAll("text").data(model.groups).join("text")
-    .attr("class", "nkp-hyper-region-label")
-    .attr("text-anchor", "middle")
-    .attr("fill", (group: AttractorGroup) => group.color)
-    .attr("opacity", (group: AttractorGroup) => group.focused ? 0.9 : 0.4)
-    .text((group: AttractorGroup) => group.name);
-
-  const node = svg.append("g").attr("class", "nkp-hyper-nodes")
-    .selectAll("g").data(nodes).join("g")
-    .attr("class", (item: SimNode) => `nkp-node nkp-hyper-node nkp-hyper-${item.type}`)
-    .attr("opacity", (item: SimNode) => item.focused ? 1 : 0.45);
-
-  const components = node.filter((item: SimNode) => item.type === "component");
-  components.filter((item: SimNode) => item.type === "component" && item.fissionCandidate).append("circle")
-    .attr("class", "nkp-fission-ring").attr("r", 15).attr("fill", "none")
-    .attr("stroke-dasharray", "3 4");
-  components.append("circle")
-    .attr("class", (item: SimNode) => `nkp-node-dot ${item.type === "component" ? `status-${item.status}` : ""}`)
-    .attr("r", 9);
-  components.append("text")
-    .attr("class", "nkp-node-label").attr("y", (item: SimNode) => item.type === "component" && item.fissionCandidate ? -19 : -13)
-    .attr("text-anchor", "middle")
-    .text((item: SimNode) => item.label);
-
-  const forces = node.filter((item: SimNode) => item.type === "force");
-  forces.append("path")
-    .attr("class", "nkp-hyper-force-dot")
-    // Stressors as diamonds, purposes as circles: both small, coloured by attractor.
-    .attr("d", (item: SimNode) => item.type === "force" && item.kind === "stressor"
-      ? "M0,-5L5,0L0,5L-5,0Z"
-      : "M-4,0a4,4 0 1,0 8,0a4,4 0 1,0 -8,0")
-    .attr("fill", (item: SimNode) => item.type === "force" ? colorOf(item.attractorId) : null);
-  forces.append("text")
-    .attr("class", "nkp-node-label nkp-hyper-force-label").attr("y", -9)
-    .attr("text-anchor", "middle").attr("opacity", 0)
-    .text((item: SimNode) => item.label);
-  node.append("title").text((item: SimNode) => item.tooltip);
-
-  // Hover: highlight the hovered node's neighbourhood and attractor regions.
-  const neighbours = new Map<string, Set<string>>();
-  for (const edge of model.edges) {
-    neighbours.set(edge.source, (neighbours.get(edge.source) ?? new Set()).add(edge.target));
-    neighbours.set(edge.target, (neighbours.get(edge.target) ?? new Set()).add(edge.source));
+  function canvasSize(): { width: number; height: number } {
+    return {
+      width: host.clientWidth > 0 ? host.clientWidth : DEFAULT_CANVAS_WIDTH,
+      height: host.clientHeight > 0 ? host.clientHeight : DEFAULT_CANVAS_HEIGHT,
+    };
   }
-  const attractorOfForce = (id: string): string | undefined => {
-    const item = byId.get(id);
-    return item?.type === "force" ? item.attractorId : undefined;
-  };
-  const highlight = (item: SimNode | undefined): void => {
-    if (!item) {
-      root.classed("nkp-hyper-hovering", false);
-      node.classed("is-lit", false);
-      link.classed("is-lit", false);
-      region.classed("is-lit", false);
-      regionLabel.classed("is-lit", false);
-      forces.select(".nkp-hyper-force-label").attr("opacity", 0);
-      return;
+
+  function pointsOfGroup(group: AttractorGroup): Point[] {
+    return group.forceNodeIds
+      .map((id) => byId.get(id))
+      .filter((item): item is SimNode => item !== undefined)
+      .map((item) => ({ x: item.x ?? 0, y: item.y ?? 0 }));
+  }
+
+  function fitToContent(): void {
+    if (!built || nodes.length === 0) return;
+    const margin = 80;
+    const xs = nodes.map((node) => node.x ?? 0);
+    const ys = nodes.map((node) => node.y ?? 0);
+    const minX = Math.min(...xs) - margin;
+    const maxX = Math.max(...xs) + margin;
+    const minY = Math.min(...ys) - margin;
+    const maxY = Math.max(...ys) + margin;
+    const scale = Math.min(
+      8,
+      Math.max(0.5, Math.min(built.width / Math.max(1, maxX - minX), built.height / Math.max(1, maxY - minY))),
+    );
+    const transform = d3.zoomIdentity
+      .translate(built.width / 2 - scale * ((minX + maxX) / 2), built.height / 2 - scale * ((minY + maxY) / 2))
+      .scale(scale);
+    built.svg.transition().duration(400).call(built.zoom.transform, transform);
+  }
+
+  // --- per-tick drawing, split out so Phase 5 can swap edges/labels cleanly ---
+
+  function positionRegions(): void {
+    regionSel?.select("path").attr("d", (group: AttractorGroup) => regionCorePath(pointsOfGroup(group)));
+  }
+
+  function positionFusionHulls(): void {
+    fusionSel?.attr("d", (item: { ids: string[] }) =>
+      regionCorePath(item.ids.map((id) => {
+        const node = byId.get(id);
+        return { x: node?.x ?? 0, y: node?.y ?? 0 };
+      })));
+  }
+
+  /**
+   * One branchGeometry per bundle per tick: the trunk path goes on the trunk,
+   * each force's branch path on its keyed branch element. Single-force
+   * bundles are just the trunk (branchGeometry returns the same curve for both).
+   */
+  function positionEdges(): void {
+    const geometryByBundle = new Map<string, { trunk: string; width: number; branchByForce: Map<string, string> }>();
+    for (const bundle of bundles) {
+      const component = byId.get(bundle.componentId);
+      if (!component) continue;
+      const placed = bundle.forceIds
+        .map((forceId) => ({ forceId, node: byId.get(`force:${forceId}`) }))
+        .filter((item): item is { forceId: string; node: SimNode } => item.node !== undefined);
+      const geometry = branchGeometry(
+        { x: component.x ?? 0, y: component.y ?? 0 },
+        placed.map(({ node }) => ({ x: node.x ?? 0, y: node.y ?? 0 })),
+      );
+      geometryByBundle.set(bundle.id, {
+        trunk: geometry.trunk,
+        width: geometry.width,
+        branchByForce: new Map(placed.map(({ forceId }, index) => [`force:${forceId}`, geometry.branches[index] ?? ""])),
+      });
     }
-    const lit = new Set([item.id, ...(neighbours.get(item.id) ?? [])]);
-    const forceIds = item.type === "force" ? [item.id] : [...(neighbours.get(item.id) ?? [])];
-    const litAttractors = new Set(forceIds.map(attractorOfForce).filter((id): id is string => id !== undefined));
-    root.classed("nkp-hyper-hovering", true);
-    node.classed("is-lit", (other: SimNode) => lit.has(other.id));
-    link.classed("is-lit", (edge: SimLink) => {
-      const source = typeof edge.source === "string" ? edge.source : edge.source.id;
-      const target = typeof edge.target === "string" ? edge.target : edge.target.id;
-      return source === item.id || target === item.id;
+    bundleTrunkSel
+      ?.attr("d", (bundle: RenderBundle) => geometryByBundle.get(bundle.id)?.trunk ?? "")
+      .attr("stroke-width", (bundle: RenderBundle) => geometryByBundle.get(bundle.id)?.width ?? 1);
+    bundleBranchSel
+      ?.attr("d", (branch: RenderBranch) => geometryByBundle.get(branch.bundleId)?.branchByForce.get(branch.forceId) ?? "")
+      .attr("stroke-width", (branch: RenderBranch) => Math.max(1, (geometryByBundle.get(branch.bundleId)?.width ?? 1) * 0.62));
+  }
+
+  function positionNodes(): void {
+    nodeSel?.attr("transform", (node: SimNode) => `translate(${node.x ?? 0},${node.y ?? 0})`);
+  }
+
+  /**
+   * All text lives outside the node/region groups in g.landscape-labels, so
+   * it has to be positioned every tick too. Phase 5 runs nudgeLabels here to
+   * de-overlap component/force/region labels.
+   */
+  function measureLabelBox(element: SVGTextElement, x: number, y: number, text: string): { x: number; y: number; width: number; height: number } {
+    const fallbackWidth = Math.max(1, text.length * 6.6);
+    const fallbackHeight = 11;
+    const box = typeof element.getBBox === "function" ? element.getBBox() : undefined;
+    if (box && box.width > 0 && box.height > 0) {
+      return { x: box.x, y: box.y, width: box.width, height: box.height };
+    }
+    return {
+      x: x - fallbackWidth / 2,
+      y: y - fallbackHeight * 0.82,
+      width: fallbackWidth,
+      height: fallbackHeight,
+    };
+  }
+
+  function recomputeLabelNudges(force: boolean): void {
+    if (!force && tickCount % 5 !== 0) return;
+    const keyed: { key: string; x: number; y: number; text: string; element: SVGTextElement }[] = [];
+    componentLabelSel?.each(function (this: SVGTextElement, node: SimNode) {
+      keyed.push({
+        key: node.id,
+        x: node.x ?? 0,
+        y: (node.y ?? 0) + (node.type === "component" && node.fissionCandidate ? -19 : -13),
+        text: node.label ?? "",
+        element: this,
+      });
     });
-    region.classed("is-lit", (group: AttractorGroup) => litAttractors.has(group.attractorId));
-    regionLabel.classed("is-lit", (group: AttractorGroup) => litAttractors.has(group.attractorId));
-    forces.select(".nkp-hyper-force-label")
-      .attr("opacity", (other: SimNode) => other.id === item.id ? 1 : 0);
-  };
-  node.on("mouseenter", (_event: unknown, item: SimNode) => highlight(item))
-    .on("mouseleave", () => highlight(undefined));
+    forceLabelSel?.each(function (this: SVGTextElement, node: SimNode) {
+      keyed.push({
+        key: node.id,
+        x: node.x ?? 0,
+        y: (node.y ?? 0) - 9,
+        text: node.label ?? "",
+        element: this,
+      });
+    });
+    regionLabelSel?.each(function (this: SVGTextElement, group: AttractorGroup) {
+      const points = pointsOfGroup(group);
+      const center = centroid(points);
+      if (!center) return;
+      const top = Math.min(...points.map((point) => point.y));
+      keyed.push({
+        key: `attractor:${group.attractorId}`,
+        x: center.x,
+        y: top - REGION_PADDING - 4,
+        text: group.name,
+        element: this,
+      });
+    });
+    const boxes = keyed.map((item) => measureLabelBox(item.element, item.x, item.y, item.text));
+    const shifts = nudgeLabels(boxes);
+    labelShiftByKey = new Map(keyed.map((item, index) => [item.key, shifts[index] ?? 0]));
+  }
 
-  // Hub components (touched by many forces) get longer spokes so their
-  // forces fan out instead of piling onto the hub.
-  const degree = new Map<string, number>();
-  for (const edge of model.edges) degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
-  const sim = d3.forceSimulation(nodes)
-    .force("link", d3.forceLink(links).id((item: SimNode) => item.id)
-      .distance((edge: SimLink) => 45 + Math.sqrt(degree.get(typeof edge.target === "string" ? edge.target : edge.target.id) ?? 1) * 14)
-      .strength(0.18))
-    .force("charge", d3.forceManyBody().strength((item: SimNode) => item.type === "component" ? -650 : -130).distanceMax(side))
-    .force("x", d3.forceX(cx).strength(0.05))
-    .force("y", d3.forceY(cy).strength(0.05))
-    .force("collision", d3.forceCollide().radius((item: SimNode) => item.type === "component" ? 30 : 9))
-    .force("cohesion", createAttractorCohesionForce());
-
-  node.call(d3.drag()
-    .on("start", (event: { active: boolean }, item: SimNode) => {
-      if (!event.active) sim.alphaTarget(0.3).restart();
-      item.fx = item.x; item.fy = item.y;
-    })
-    .on("drag", (event: { x: number; y: number }, item: SimNode) => {
-      item.fx = event.x; item.fy = event.y;
-    })
-    .on("end", (event: { active: boolean }, item: SimNode) => {
-      if (!event.active) sim.alphaTarget(0);
-      item.fx = null; item.fy = null;
-    }));
-
-  const pointsOf = (group: AttractorGroup): Point[] => group.forceNodeIds
-    .map((id) => byId.get(id))
-    .filter((item): item is SimNode => item !== undefined)
-    .map((item) => ({ x: item.x ?? 0, y: item.y ?? 0 }));
-
-  const margin = REGION_PADDING + 30;
-  sim.on("tick", () => {
-    // Keep everything (including region padding and labels) on the canvas.
-    for (const item of nodes) {
-      item.x = Math.min(width - margin, Math.max(margin, item.x ?? cx));
-      item.y = Math.min(height - margin, Math.max(margin, item.y ?? cy));
-    }
-    regionPath.attr("d", (group: AttractorGroup) => regionCorePath(pointsOf(group)));
-    regionLabel.each(function (this: SVGTextElement, group: AttractorGroup) {
-      const points = pointsOf(group);
+  function positionLabels(): void {
+    componentLabelSel
+      ?.attr("x", (node: SimNode) => node.x ?? 0)
+      .attr("y", (node: SimNode) => (node.y ?? 0) + (node.type === "component" && node.fissionCandidate ? -19 : -13));
+    forceLabelSel
+      ?.attr("x", (node: SimNode) => node.x ?? 0)
+      .attr("y", (node: SimNode) => (node.y ?? 0) - 9);
+    regionLabelSel?.each(function (this: SVGTextElement, group: AttractorGroup) {
+      const points = pointsOfGroup(group);
       const center = centroid(points);
       if (!center) return;
       const top = Math.min(...points.map((point) => point.y));
       d3.select(this).attr("x", center.x).attr("y", top - REGION_PADDING - 4);
     });
-    link.attr("x1", (edge: { source: SimNode }) => edge.source.x ?? 0)
-      .attr("y1", (edge: { source: SimNode }) => edge.source.y ?? 0)
-      .attr("x2", (edge: { target: SimNode }) => edge.target.x ?? 0)
-      .attr("y2", (edge: { target: SimNode }) => edge.target.y ?? 0);
-    node.attr("transform", (item: SimNode) => `translate(${item.x ?? 0},${item.y ?? 0})`);
-  });
-  return sim;
+
+    tickCount += 1;
+    recomputeLabelNudges(false);
+
+    componentLabelSel?.attr("y", (node: SimNode) =>
+      (node.y ?? 0) + (node.type === "component" && node.fissionCandidate ? -19 : -13) + (labelShiftByKey.get(node.id) ?? 0));
+    forceLabelSel?.attr("y", (node: SimNode) =>
+      (node.y ?? 0) - 9 + (labelShiftByKey.get(node.id) ?? 0));
+    regionLabelSel?.attr("y", (group: AttractorGroup) => {
+      const points = pointsOfGroup(group);
+      const center = centroid(points);
+      if (!center) return -9999;
+      const top = Math.min(...points.map((point) => point.y));
+      return top - REGION_PADDING - 4 + (labelShiftByKey.get(`attractor:${group.attractorId}`) ?? 0);
+    });
+  }
+
+  function tick(): void {
+    if (!built) return;
+    positionRegions();
+    positionFusionHulls();
+    positionEdges();
+    positionNodes();
+    positionLabels();
+    if (!built.didFit && built.sim.alpha() < 0.05) {
+      built.didFit = true;
+      fitToContent();
+    }
+  }
+
+  function ensureBuilt(): NonNullable<typeof built> {
+    if (built) return built;
+    const { width, height } = canvasSize();
+    const { svg, content, zoom } = appendZoomableSvg(
+      host,
+      d3,
+      { x: 0, y: 0, width, height },
+      "nkp-hyper",
+      "Forces linked to the components they touch, grouped into attractor regions",
+    );
+    const regionsG = content.append("g").attr("class", "nkp-hyper-regions");
+    const fusionG = content.append("g").attr("class", "nkp-hyper-fusion");
+    const edgesG = content.append("g").attr("class", "nkp-hyper-edges");
+    const nodesG = content.append("g").attr("class", "nkp-hyper-nodes");
+    const labelsGroup = svg.append("g").attr("class", "landscape-labels");
+    zoom.on("zoom.labels", (event: { transform: unknown }) => labelsGroup.attr("transform", event.transform));
+    svg.on("dblclick", () => ctx.onClear());
+
+    const sim = d3.forceSimulation([])
+      .force("link", d3.forceLink([]).id((item: SimNode) => item.id).distance(60).strength(0.18))
+      .force("charge", d3.forceManyBody().strength((item: SimNode) => item.type === "component" ? -650 : -130))
+      .force("x", d3.forceX(width / 2).strength(0.05))
+      .force("y", d3.forceY(height / 2).strength(0.05))
+      .force("collision", d3.forceCollide().radius((item: SimNode) => item.type === "component" ? 30 : 9))
+      .force("cohesion", createAttractorCohesionForce())
+      .force("interaction", createForceInteractionForce())
+      .on("tick", tick)
+      .on("end", () => {
+        recomputeLabelNudges(true);
+        positionLabels();
+      })
+      .stop();
+
+    built = { svg, zoom, regionsG, fusionG, edgesG, nodesG, labelsGroup, sim, width, height, didFit: false };
+    return built;
+  }
+
+  /** New force nodes seed near their attractor's current centroid, else the focus component, else the origin. */
+  function seedPosition(
+    item: HyperNode,
+    placed: ReadonlyMap<string, SimNode>,
+    focusComponentId: string | undefined,
+  ): { x: number; y: number } {
+    const jitter = (): number => (Math.random() - 0.5) * 30;
+    if (item.type === "force") {
+      const siblings = [...placed.values()].filter(
+        (node): node is SimForceNode => node.type === "force" && node.attractorId === item.attractorId && node.x !== undefined,
+      );
+      const center = centroid(siblings.map((node) => ({ x: node.x ?? 0, y: node.y ?? 0 })));
+      if (center) return { x: center.x + jitter(), y: center.y + jitter() };
+    }
+    const focus = focusComponentId ? placed.get(focusComponentId) : undefined;
+    if (focus?.x !== undefined) return { x: focus.x + jitter(), y: (focus.y ?? 0) + jitter() };
+    return { x: jitter(), y: jitter() };
+  }
+
+  function applySelectionClasses(): void {
+    if (!built) return;
+    const hasSelection = lastSelected.size > 0;
+    const isSelected = (key: string): boolean => lastSelected.has(key as EntityKey);
+    const isConnected = (key: string): boolean => !isSelected(key) && lastConnected.has(key as EntityKey);
+    const dim = (key: string): boolean => hasSelection && !isSelected(key) && !isConnected(key);
+    const applyToKeyed = (selection: any): void => {
+      selection
+        ?.classed("selected", (node: SimNode) => isSelected(node.id))
+        .classed("connected", (node: SimNode) => isConnected(node.id))
+        .classed("dim", (node: SimNode) => dim(node.id));
+    };
+    applyToKeyed(nodeSel);
+    applyToKeyed(componentLabelSel);
+    applyToKeyed(forceLabelSel);
+
+    const bundleDim = (bundle: RenderBundle): boolean => {
+      if (!hasSelection) return false;
+      const keys = [bundle.componentId, ...bundle.forceIds.map((forceId) => `force:${forceId}`)];
+      return keys.every((key) => !isSelected(key) && !isConnected(key));
+    };
+    bundleTrunkSel?.classed("dim", bundleDim);
+    const bundleById = new Map(bundles.map((bundle) => [bundle.id, bundle]));
+    bundleBranchSel?.classed("dim", (branch: RenderBranch) => {
+      const bundle = bundleById.get(branch.bundleId);
+      return bundle ? bundleDim(bundle) : hasSelection;
+    });
+    const regionDim = (group: AttractorGroup): boolean => {
+      const key = `attractor:${group.attractorId}`;
+      return hasSelection && !(isSelected(key) || isConnected(key));
+    };
+    regionSel?.classed("dim", regionDim);
+    regionLabelSel?.classed("dim", regionDim);
+  }
+
+  function update(state: PendingState, rawOptions: Record<string, unknown> = {}): void {
+    const options = rawOptions as RegionsRenderOptions;
+    const model = buildNkpHypergraphModel(state, options);
+
+    if (model.nodes.length === 0) {
+      if (!built) {
+        renderEmpty(host, "No forces or components to draw. Loosen the filters or pick another focus component.");
+        return;
+      }
+      const b = ensureBuilt();
+      nodes = [];
+      byId = new Map();
+      links = [];
+      bundles = [];
+      b.sim.nodes([]);
+      (b.sim.force("link") as any).links([]);
+      regionSel = b.regionsG.selectAll("g.nkp-hyper-region").data([]).join("g");
+      fusionSel = b.fusionG.selectAll("path.nkp-hyper-fusion-hull").data([]).join("path");
+      bundleTrunkSel = b.edgesG.selectAll("path.nkp-hyper-bundle-trunk").data([]).join("path");
+      bundleBranchSel = b.edgesG.selectAll("path.nkp-hyper-bundle-branch").data([]).join("path");
+      nodeSel = b.nodesG.selectAll("g.nkp-node").data([]).join("g");
+      componentLabelSel = b.labelsGroup.selectAll("text.nkp-hyper-component-label").data([]).join("text");
+      forceLabelSel = b.labelsGroup.selectAll("text.nkp-hyper-force-label").data([]).join("text");
+      regionLabelSel = b.labelsGroup.selectAll("text.nkp-hyper-region-label").data([]).join("text");
+      return;
+    }
+    if (host.querySelector(".landscape-empty")) host.replaceChildren();
+    const b = ensureBuilt();
+
+    const { width, height } = canvasSize();
+    b.width = width;
+    b.height = height;
+    b.svg.attr("viewBox", `0 0 ${width} ${height}`);
+    b.svg.classed("names-hidden", options.showNames === false);
+    (b.sim.force("x") as any).x(width / 2);
+    (b.sim.force("y") as any).y(height / 2);
+
+    groupColorById = new Map(model.groups.map((group) => [group.attractorId, group.color]));
+    const focusComponentId = options.focusComponent ? `component:${options.focusComponent}` : undefined;
+
+    // --- merge nodes by id: survivors keep x/y/vx/vy/fx/fy, newcomers seed, exits just don't reappear ---
+    const prevById = byId;
+    const nextById = new Map<string, SimNode>();
+    nodes = model.nodes.map((item) => {
+      const existing = prevById.get(item.id);
+      const merged: SimNode = existing
+        ? { ...item, x: existing.x, y: existing.y, vx: existing.vx, vy: existing.vy, fx: existing.fx ?? null, fy: existing.fy ?? null }
+        : { ...item, ...seedPosition(item, nextById, focusComponentId), vx: 0, vy: 0 };
+      nextById.set(item.id, merged);
+      return merged;
+    });
+    byId = nextById;
+    links = model.edges.map((edge) => ({ ...edge }));
+    bundles = model.branchBundles.map((bundle) => ({ ...bundle }));
+
+    b.sim.nodes(nodes);
+    (b.sim.force("link") as any).links(links);
+    b.sim.alpha(0.3).restart();
+
+    // --- regions: filled + wide-stroked core (inflates into a blob), draggable to move their forces ---
+    regionSel = b.regionsG.selectAll("g.nkp-hyper-region")
+      .data(model.groups, (group: AttractorGroup) => group.attractorId)
+      .join((enter: any) => {
+        const g = enter.append("g").attr("class", "nkp-hyper-region");
+        g.append("path");
+        g.append("title");
+        return g;
+      });
+    regionSel.attr("opacity", (group: AttractorGroup) => group.focused ? 0.16 : 0.07);
+    regionSel.select("path")
+      .attr("fill", (group: AttractorGroup) => group.color)
+      .attr("stroke", (group: AttractorGroup) => group.color)
+      .attr("stroke-width", REGION_PADDING * 2)
+      .attr("stroke-linejoin", "round")
+      .attr("stroke-linecap", "round");
+    regionSel.select("title").text((group: AttractorGroup) => group.tooltip);
+    regionSel.on("click", (_event: MouseEvent, group: AttractorGroup) => ctx.onToggle(`attractor:${group.attractorId}` as EntityKey));
+    regionSel.call(d3.drag()
+      .on("start", (event: { active: boolean }, group: AttractorGroup) => {
+        if (!event.active) b.sim.alphaTarget(0.15).restart();
+        for (const node of nodes) {
+          if (node.type === "force" && node.attractorId === group.attractorId) { node.fx = node.x; node.fy = node.y; }
+        }
+      })
+      .on("drag", (event: { dx: number; dy: number }, group: AttractorGroup) => {
+        translateGroup(nodes, group.attractorId, event.dx, event.dy);
+        for (const node of nodes) {
+          if (node.type === "force" && node.attractorId === group.attractorId) { node.fx = node.x; node.fy = node.y; }
+        }
+      })
+      .on("end", (event: { active: boolean }, group: AttractorGroup) => {
+        if (!event.active) b.sim.alphaTarget(0);
+        for (const node of nodes) {
+          if (node.type === "force" && node.attractorId === group.attractorId) { node.fx = null; node.fy = null; }
+        }
+      }));
+
+    // --- fusion regions: unfilled dashed hull around fusion-candidate components ---
+    const fusionData = model.fusionGroups.map((ids) => ({ id: [...ids].sort().join("\u0000"), ids }));
+    fusionSel = b.fusionG.selectAll("path.nkp-hyper-fusion-hull")
+      .data(fusionData, (item: { id: string }) => item.id)
+      .join("path")
+      .attr("class", "nkp-hyper-fusion-hull");
+
+    // --- edges: one branch bundle per (component, attractor) ---
+    bundleTrunkSel = b.edgesG.selectAll("path.nkp-hyper-bundle-trunk")
+      .data(bundles, (bundle: RenderBundle) => bundle.id)
+      .join("path")
+      .attr("class", "nkp-hyper-bundle-trunk")
+      .attr("fill", "none")
+      .attr("stroke", (bundle: RenderBundle) => colorFor(bundle.attractorId))
+      .attr("stroke-opacity", (bundle: RenderBundle) => bundle.focused ? 0.45 : 0.15);
+    const branchData: RenderBranch[] = bundles
+      .filter((bundle) => bundle.forceIds.length > 1)
+      .flatMap((bundle) => bundle.forceIds.map((forceId) => ({
+        id: `${bundle.id}:${forceId}`,
+        bundleId: bundle.id,
+        componentId: bundle.componentId,
+        forceId: `force:${forceId}`,
+        attractorId: bundle.attractorId,
+        focused: bundle.focused,
+      })));
+    bundleBranchSel = b.edgesG.selectAll("path.nkp-hyper-bundle-branch")
+      .data(branchData, (branch: RenderBranch) => branch.id)
+      .join("path")
+      .attr("class", "nkp-hyper-bundle-branch")
+      .attr("fill", "none")
+      .attr("stroke", (branch: RenderBranch) => colorFor(branch.attractorId))
+      .attr("stroke-opacity", (branch: RenderBranch) => branch.focused ? 0.45 : 0.15);
+
+    // --- nodes: component (ring + dot) and force (diamond/circle glyph) share one <g> shape ---
+    const nodeJoin = b.nodesG.selectAll("g.nkp-node")
+      .data(nodes, (node: SimNode) => node.id)
+      .join((enter: any) => {
+        const g = enter.append("g");
+        g.append("circle").attr("class", "nkp-fission-ring").attr("r", 15).attr("fill", "none").attr("stroke-dasharray", "3 4");
+        g.append("circle").attr("class", "nkp-node-dot").attr("r", 9);
+        g.append("path").attr("class", "nkp-hyper-force-dot");
+        g.append("title");
+        return g;
+      });
+    nodeSel = nodeJoin
+      .attr("class", (node: SimNode) => `nkp-node nkp-hyper-node nkp-hyper-${node.type}`)
+      .attr("opacity", (node: SimNode) => node.focused ? 1 : 0.45);
+    nodeSel.select(".nkp-fission-ring")
+      .attr("display", (node: SimNode) => node.type === "component" && node.fissionCandidate ? null : "none");
+    nodeSel.select(".nkp-node-dot")
+      .attr("class", (node: SimNode) => node.type === "component" ? `nkp-node-dot status-${node.status}` : "nkp-node-dot")
+      .attr("display", (node: SimNode) => node.type === "component" ? null : "none");
+    nodeSel.select(".nkp-hyper-force-dot")
+      .attr("d", (node: SimNode) => node.type === "force" ? forceGlyphPath(node.kind) : null)
+      .attr("fill", (node: SimNode) => node.type === "force" ? colorFor(node.attractorId) : null)
+      .attr("fill-opacity", (node: SimNode) => node.type === "force" ? forceNodeOpacity(node.kind) : null)
+      .attr("display", (node: SimNode) => node.type === "force" ? null : "none");
+    nodeSel.select("title").text((node: SimNode) => node.tooltip);
+    nodeSel.on("click", (_event: MouseEvent, node: SimNode) => ctx.onToggle(node.id as EntityKey));
+    nodeSel.call(d3.drag()
+      .on("start", (event: { active: boolean }, node: SimNode) => {
+        if (!event.active) b.sim.alphaTarget(0.3).restart();
+        node.fx = node.x; node.fy = node.y;
+      })
+      .on("drag", (event: { x: number; y: number }, node: SimNode) => {
+        node.fx = event.x; node.fy = event.y;
+      })
+      .on("end", (event: { active: boolean }, node: SimNode) => {
+        if (!event.active) b.sim.alphaTarget(0);
+        node.fx = null; node.fy = null;
+      }));
+
+    // --- labels: every text element lives here so it always paints on top ---
+    const componentNodes = nodes.filter((node) => node.type === "component");
+    componentLabelSel = b.labelsGroup.selectAll("text.nkp-hyper-component-label")
+      .data(componentNodes, (node: SimNode) => node.id)
+      .join("text")
+      .attr("class", (node: SimNode) => `nkp-hyper-component nkp-node-label nkp-hyper-component-label${node.type === "component" && node.fissionCandidate ? " fission" : ""}`)
+      .attr("text-anchor", "middle")
+      .text((node: SimNode) => node.label);
+    componentLabelSel.on("click", (_event: MouseEvent, node: SimNode) => ctx.onToggle(node.id as EntityKey));
+
+    const forceNodes = nodes.filter((node): node is SimForceNode => node.type === "force");
+    forceLabelSel = b.labelsGroup.selectAll("text.nkp-hyper-force-label")
+      .data(forceNodes, (node: SimNode) => node.id)
+      .join("text")
+      .attr("class", "nkp-hyper-force nkp-node-label nkp-hyper-force-label")
+      .attr("text-anchor", "middle")
+      .attr("opacity", 0)
+      .text((node: SimNode) => node.label);
+    forceLabelSel.on("click", (_event: MouseEvent, node: SimNode) => ctx.onToggle(node.id as EntityKey));
+
+    regionLabelSel = b.labelsGroup.selectAll("text.nkp-hyper-region-label")
+      .data(model.groups, (group: AttractorGroup) => group.attractorId)
+      .join("text")
+      .attr("class", "nkp-hyper-region-label")
+      .attr("text-anchor", "middle")
+      .attr("fill", (group: AttractorGroup) => group.color)
+      .attr("opacity", (group: AttractorGroup) => group.focused ? 0.9 : 0.4)
+      .text((group: AttractorGroup) => group.name);
+
+    // --- hover: highlight the hovered node's neighbourhood and attractor regions ---
+    const neighbours = new Map<string, Set<string>>();
+    for (const edge of model.edges) {
+      neighbours.set(edge.source, (neighbours.get(edge.source) ?? new Set()).add(edge.target));
+      neighbours.set(edge.target, (neighbours.get(edge.target) ?? new Set()).add(edge.source));
+    }
+    const attractorOfForce = (id: string): string | undefined => {
+      const item = byId.get(id);
+      return item?.type === "force" ? item.attractorId : undefined;
+    };
+    const clearHighlight = (): void => {
+      b.svg.classed("nkp-hyper-hovering", false);
+      nodeSel.classed("is-lit", false);
+      bundleTrunkSel.classed("is-lit", false);
+      bundleBranchSel.classed("is-lit", false);
+      regionSel.classed("is-lit", false);
+      regionLabelSel.classed("is-lit", false);
+      forceLabelSel.attr("opacity", 0);
+    };
+    const highlight = (item: SimNode): void => {
+      const lit = new Set([item.id, ...(neighbours.get(item.id) ?? [])]);
+      const forceIds = item.type === "force" ? [item.id] : [...(neighbours.get(item.id) ?? [])];
+      const litAttractors = new Set(forceIds.map(attractorOfForce).filter((id): id is string => id !== undefined));
+      b.svg.classed("nkp-hyper-hovering", true);
+      nodeSel.classed("is-lit", (other: SimNode) => lit.has(other.id));
+      const branchLit = (bundle: RenderBundle): boolean => {
+        if (item.id === bundle.componentId) return true;
+        return bundle.forceIds.some((forceId) => `force:${forceId}` === item.id);
+      };
+      bundleTrunkSel.classed("is-lit", branchLit);
+      bundleBranchSel.classed("is-lit", (branch: RenderBranch) => {
+        const bundle = bundles.find((candidate) => candidate.id === branch.bundleId);
+        return bundle ? branchLit(bundle) : false;
+      });
+      regionSel.classed("is-lit", (group: AttractorGroup) => litAttractors.has(group.attractorId));
+      regionLabelSel.classed("is-lit", (group: AttractorGroup) => litAttractors.has(group.attractorId));
+      forceLabelSel.attr("opacity", (other: SimNode) => other.id === item.id ? 1 : 0);
+    };
+    nodeSel.on("mouseenter", (_event: unknown, item: SimNode) => highlight(item))
+      .on("mouseleave", clearHighlight);
+
+    applySelectionClasses();
+  }
+
+  function setSelection(selected: ReadonlySet<EntityKey>, connected: ReadonlySet<EntityKey>): void {
+    lastSelected = selected;
+    lastConnected = connected;
+    applySelectionClasses();
+  }
+
+  function resetView(): void {
+    fitToContent();
+  }
+
+  function destroy(): void {
+    built?.sim.stop();
+    built = undefined;
+    nodes = [];
+    byId = new Map();
+    links = [];
+    host.replaceChildren();
+  }
+
+  return {
+    update,
+    setSelection,
+    resetView,
+    destroy,
+    get simulation() {
+      return built?.sim;
+    },
+  };
 }

@@ -32,6 +32,24 @@ export function renderLegend(host: HTMLElement, title: string, entries: readonly
   return legend;
 }
 
+/** Gentler-than-default zoom: the landscape views want 0.6x d3's own wheelDelta magnitude. */
+export const ZOOM_SPEED = 0.6;
+
+/**
+ * d3-zoom's default wheelDelta formula, scaled by ZOOM_SPEED. Same sign and
+ * gesture handling as d3's own default — only the magnitude changes — so the
+ * existing filter (ctrl/meta+wheel, pinch, drag) still decides whether zoom
+ * fires at all.
+ */
+export function zoomWheelDelta(event: { deltaY: number; deltaMode: number; ctrlKey: boolean }): number {
+  return (
+    ZOOM_SPEED *
+    -event.deltaY *
+    (event.deltaMode === 1 ? 0.05 : event.deltaMode ? 1 : 0.002) *
+    (event.ctrlKey ? 10 : 1)
+  );
+}
+
 export function renderEmpty(host: HTMLElement, message: string): void {
   const empty = document.createElement("p");
   empty.className = "landscape-empty";
@@ -42,9 +60,12 @@ export function renderEmpty(host: HTMLElement, message: string): void {
 /**
  * Appends an SVG that fills the rest of `host` (host is a flex column; any
  * legend sits above it) and scales `viewBox` to fit without scrolling.
- * Returns the svg selection and an inner group to draw into, which zoom and
- * pan transform. Ctrl/Cmd+wheel or pinch zooms so plain wheel still scrolls
- * the page; drag pans; double-click resets.
+ * Returns the svg selection, an inner group to draw into (which zoom and pan
+ * transform), and the zoom behaviour itself so the caller can wire its own
+ * `resetView()` through `resetZoom`. Ctrl/Cmd+wheel or pinch zooms, gently
+ * (see `zoomWheelDelta`), so plain wheel still scrolls the page; drag pans.
+ * Double-click is left to the caller — the landscape views use it to clear
+ * selection instead of resetting zoom.
  */
 export function appendZoomableSvg(
   host: HTMLElement,
@@ -52,7 +73,7 @@ export function appendZoomableSvg(
   viewBox: { x: number; y: number; width: number; height: number },
   className: string,
   label: string,
-): { svg: any; content: any } {
+): { svg: any; content: any; zoom: any } {
   const svg = d3.select(host).append("svg")
     .attr("class", `landscape-svg ${className}`)
     .attr("viewBox", `${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`)
@@ -62,12 +83,17 @@ export function appendZoomableSvg(
   const content = svg.append("g").attr("class", "landscape-zoom");
   const zoom = d3.zoom()
     .scaleExtent([0.5, 8])
+    .wheelDelta(zoomWheelDelta)
     .filter((event: WheelEvent | MouseEvent) =>
       event.type === "wheel" ? (event as WheelEvent).ctrlKey || (event as WheelEvent).metaKey : !(event as MouseEvent).button)
     .on("zoom", (event: { transform: unknown }) => content.attr("transform", event.transform));
   svg.call(zoom).on("dblclick.zoom", null);
-  svg.on("dblclick", () => svg.transition().duration(200).call(zoom.transform, d3.zoomIdentity));
-  return { svg, content };
+  return { svg, content, zoom };
+}
+
+/** Animates `svg` back to the identity transform. Views call this from their `resetView()`. */
+export function resetZoom(svg: any, zoom: any, d3: any): void {
+  svg.transition().duration(200).call(zoom.transform, d3.zoomIdentity);
 }
 
 /**

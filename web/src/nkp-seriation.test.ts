@@ -1,7 +1,41 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
+import * as d3 from "d3";
 import type { PendingState, SnapshotComponent, SnapshotForce } from "./model";
 import { attractorColors } from "./nkp-graph";
 import { buildSeriationModel, seriate } from "./nkp-seriation";
+
+/**
+ * createHeatmapView, cellHalf and MIRROR_DIM_OPACITY don't exist yet (Phase
+ * 3). Read off the module's namespace object via a dynamic import instead of
+ * naming them in a static import — Bun's static `import { name } from
+ * "./real-module"` throws a SyntaxError (not `undefined`) when `name` isn't
+ * actually exported yet, which would abort this whole file's test discovery.
+ * See nkp-graph.test.ts for the guarded pattern applied to a module that
+ * doesn't exist at all.
+ */
+interface ViewCtx {
+  host: HTMLElement;
+  d3: unknown;
+  onToggle: (key: string) => void;
+  onClear: () => void;
+}
+interface ViewHandle {
+  update: (state: PendingState, options?: Record<string, unknown>) => void;
+  setSelection: (selected: ReadonlySet<string>, connected: ReadonlySet<string>) => void;
+  resetView: () => void;
+  destroy: () => void;
+}
+type HeatmapViewModule = {
+  createHeatmapView?: (ctx: ViewCtx) => ViewHandle;
+  cellHalf?: (row: number, col: number) => "upper" | "lower" | "diagonal";
+  MIRROR_DIM_OPACITY?: number;
+};
+
+let heatmapModule: HeatmapViewModule = {};
+
+beforeAll(async () => {
+  heatmapModule = (await import("./nkp-seriation").catch(() => ({}))) as HeatmapViewModule;
+});
 
 function component(name: string, status: "actual" | "proposed" = "actual"): SnapshotComponent {
   return { name, description: `${name} component`, status, architectureSet: "runtime" };
@@ -182,5 +216,203 @@ describe("buildSeriationModel", () => {
     const model = buildSeriationModel(next, { minCouplingStrength: 1 });
     expect(names(model)).toContain("lonely");
     expect(model.components.find((item) => item.name === "c")?.k).toBe(2);
+  });
+});
+
+describe("cellHalf", () => {
+  test("col > row is the upper-right triangle", () => {
+    expect(heatmapModule.cellHalf?.(0, 1)).toBe("upper");
+    expect(heatmapModule.cellHalf?.(2, 4)).toBe("upper");
+  });
+
+  test("col < row is the lower-left triangle", () => {
+    expect(heatmapModule.cellHalf?.(1, 0)).toBe("lower");
+    expect(heatmapModule.cellHalf?.(4, 2)).toBe("lower");
+  });
+
+  test("col === row is the diagonal", () => {
+    expect(heatmapModule.cellHalf?.(3, 3)).toBe("diagonal");
+  });
+});
+
+describe("MIRROR_DIM_OPACITY", () => {
+  test("is 0.5", () => {
+    expect(heatmapModule.MIRROR_DIM_OPACITY).toBe(0.5);
+  });
+});
+
+describe("createHeatmapView (persistent view handle, Phase 3)", () => {
+  // Assumed DOM contract for Phase 3 (documented in the Phase 1 report):
+  //   cells:      [data-cell-row="R"][data-cell-col="C"]
+  //   diagonal:   [data-diagonal-index="N"]
+  //   headers:    [data-header-axis="row"|"col"][data-header-index="N"]
+  //   legend:     [data-legend-id="<attractorId>"]  (matches landscape-dom's
+  //               existing renderLegend convention)
+  //   hover uses "mousemove"/"mouseleave" (matches today's renderNkpSeriation)
+  const options = { minCouplingStrength: 1 };
+  const model = buildSeriationModel(blocks, options);
+  const indexOf = (name: string): number => model.components.findIndex((item) => item.name === name);
+
+  function makeCtx(): { ctx: ViewCtx; host: HTMLElement; toggled: string[]; clearCount: () => number } {
+    document.body.innerHTML = `<div data-host></div>`;
+    const host = document.querySelector<HTMLElement>("[data-host]")!;
+    const record = { toggled: [] as string[], cleared: 0 };
+    const ctx: ViewCtx = {
+      host,
+      d3,
+      onToggle: (key) => record.toggled.push(key),
+      onClear: () => { record.cleared += 1; },
+    };
+    return { ctx, host, toggled: record.toggled, clearCount: () => record.cleared };
+  }
+
+  const cellEl = (host: HTMLElement, rowName: string, colName: string): Element | null =>
+    host.querySelector(`[data-cell-row="${indexOf(rowName)}"][data-cell-col="${indexOf(colName)}"]`);
+
+  test("exists and returns the {update, setSelection, resetView, destroy} handle shape", () => {
+    const { ctx } = makeCtx();
+    const handle = heatmapModule.createHeatmapView?.(ctx);
+    expect(handle).toBeDefined();
+    expect(typeof handle?.update).toBe("function");
+    expect(typeof handle?.setSelection).toBe("function");
+    expect(typeof handle?.resetView).toBe("function");
+    expect(typeof handle?.destroy).toBe("function");
+  });
+
+  test("a narrower filter keeps the same <svg>, keeps a keyed header for a surviving component, and removes filtered ones", () => {
+    const { ctx, host } = makeCtx();
+    const handle = heatmapModule.createHeatmapView?.(ctx);
+    handle?.update(blocks, { ...options, hideFiltered: true });
+    const svgBefore = host.querySelector("svg");
+    const aHeaderBefore = host.querySelector(`[data-header-axis="row"][data-header-index="${indexOf("a")}"]`);
+    expect(svgBefore).not.toBeNull();
+    expect(aHeaderBefore).not.toBeNull();
+
+    handle?.update(blocks, {
+      ...options,
+      hideFiltered: true,
+      visibleForceIds: new Set(["S-01", "S-02"]),
+      visibleComponentNames: new Set(["a", "c"]),
+    });
+    expect(host.querySelector("svg")).toBe(svgBefore);
+    expect(host.querySelector(`[data-header-axis="row"][data-header-index="${indexOf("a")}"]`)).toBe(aHeaderBefore);
+    expect(host.querySelector(`[data-header-axis="row"]`)?.textContent).not.toBeNull();
+  });
+
+  test("clicking a row header calls ctx.onToggle with its component key", () => {
+    const { ctx, host, toggled } = makeCtx();
+    const handle = heatmapModule.createHeatmapView?.(ctx);
+    handle?.update(blocks, options);
+    host.querySelector(`[data-header-axis="row"][data-header-index="${indexOf("a")}"]`)
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(toggled).toEqual(["component:a"]);
+  });
+
+  test("clicking a cell toggles every shared force between its row and column", () => {
+    const { ctx, host, toggled } = makeCtx();
+    const handle = heatmapModule.createHeatmapView?.(ctx);
+    handle?.update(blocks, options);
+    cellEl(host, "b", "d")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect([...toggled].sort()).toEqual(["force:S-03", "force:S-04", "force:S-05"]);
+  });
+
+  test("clicking a legend item calls ctx.onToggle with its attractor key", () => {
+    const { ctx, host, toggled } = makeCtx();
+    const handle = heatmapModule.createHeatmapView?.(ctx);
+    handle?.update(blocks, options);
+    host.querySelector(`[data-legend-id="A-01"]`)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(toggled).toEqual(["attractor:A-01"]);
+  });
+
+  test("setSelection marks selected/connected headers and dims everyone else", () => {
+    const { ctx, host } = makeCtx();
+    const handle = heatmapModule.createHeatmapView?.(ctx);
+    handle?.update(blocks, options);
+    handle?.setSelection(new Set(["component:a"]), new Set(["component:a", "component:c"]));
+    const aHeader = host.querySelector(`[data-header-axis="row"][data-header-index="${indexOf("a")}"]`);
+    const cHeader = host.querySelector(`[data-header-axis="row"][data-header-index="${indexOf("c")}"]`);
+    const bHeader = host.querySelector(`[data-header-axis="row"][data-header-index="${indexOf("b")}"]`);
+    expect(aHeader?.classList.contains("selected")).toBe(true);
+    expect(cHeader?.classList.contains("connected")).toBe(true);
+    expect(bHeader?.classList.contains("selected") || bHeader?.classList.contains("connected")).toBe(false);
+  });
+
+  test("all text lives in a last-child g.landscape-labels group", () => {
+    const { ctx, host } = makeCtx();
+    const handle = heatmapModule.createHeatmapView?.(ctx);
+    handle?.update(blocks, options);
+    const svg = host.querySelector("svg");
+    const labelGroup = svg?.querySelector("g.landscape-labels");
+    expect(labelGroup).not.toBeNull();
+    expect(svg?.lastElementChild).toBe(labelGroup ?? null);
+    const allText = svg?.querySelectorAll("text") ?? [];
+    const labelText = labelGroup?.querySelectorAll("text") ?? [];
+    expect(allText.length).toBeGreaterThan(0);
+    expect(allText.length).toBe(labelText.length);
+  });
+
+  describe("heatmap mirror half", () => {
+    test("hovering an upper-triangle cell dims every lower-triangle cell, never the diagonal", () => {
+      const { ctx, host } = makeCtx();
+      const handle = heatmapModule.createHeatmapView?.(ctx);
+      handle?.update(blocks, options);
+      const upperCell = [...host.querySelectorAll<HTMLElement>("[data-cell-row][data-cell-col]")]
+        .find((el) => Number(el.dataset.cellCol) > Number(el.dataset.cellRow));
+      expect(upperCell).toBeDefined();
+      upperCell?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+
+      const cells = [...host.querySelectorAll<HTMLElement>("[data-cell-row][data-cell-col]")];
+      const lower = cells.filter((el) => Number(el.dataset.cellCol) < Number(el.dataset.cellRow));
+      const upper = cells.filter((el) => Number(el.dataset.cellCol) > Number(el.dataset.cellRow));
+      expect(lower.length).toBeGreaterThan(0);
+      expect(lower.every((el) => el.classList.contains("mirror-dim"))).toBe(true);
+      expect(upper.some((el) => el.classList.contains("mirror-dim"))).toBe(false);
+
+      const diagonal = [...host.querySelectorAll<HTMLElement>("[data-diagonal-index]")];
+      expect(diagonal.every((el) => !el.classList.contains("mirror-dim"))).toBe(true);
+    });
+
+    test("mouseleave clears a hover-driven mirror-dim", () => {
+      const { ctx, host } = makeCtx();
+      const handle = heatmapModule.createHeatmapView?.(ctx);
+      handle?.update(blocks, options);
+      const upperCell = [...host.querySelectorAll<HTMLElement>("[data-cell-row][data-cell-col]")]
+        .find((el) => Number(el.dataset.cellCol) > Number(el.dataset.cellRow));
+      upperCell?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+      upperCell?.dispatchEvent(new MouseEvent("mouseleave", { bubbles: true }));
+      const anyDimmed = [...host.querySelectorAll<HTMLElement>("[data-cell-row][data-cell-col]")]
+        .some((el) => el.classList.contains("mirror-dim"));
+      expect(anyDimmed).toBe(false);
+    });
+
+    test("clicking a lower-triangle cell pins mirror-dim on the upper triangle until the selection is cleared", () => {
+      const { ctx, host } = makeCtx();
+      const handle = heatmapModule.createHeatmapView?.(ctx);
+      handle?.update(blocks, options);
+      const lowerCell = [...host.querySelectorAll<HTMLElement>("[data-cell-row][data-cell-col]")]
+        .find((el) => Number(el.dataset.cellCol) < Number(el.dataset.cellRow));
+      expect(lowerCell).toBeDefined();
+      lowerCell?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      // A click pins the half: a mouseleave (unlike plain hover) must not clear it.
+      lowerCell?.dispatchEvent(new MouseEvent("mouseleave", { bubbles: true }));
+
+      const cells = [...host.querySelectorAll<HTMLElement>("[data-cell-row][data-cell-col]")];
+      const upper = cells.filter((el) => Number(el.dataset.cellCol) > Number(el.dataset.cellRow));
+      expect(upper.length).toBeGreaterThan(0);
+      expect(upper.every((el) => el.classList.contains("mirror-dim"))).toBe(true);
+
+      handle?.setSelection(new Set(), new Set());
+      const stillDimmed = [...host.querySelectorAll<HTMLElement>("[data-cell-row][data-cell-col]")]
+        .some((el) => el.classList.contains("mirror-dim"));
+      expect(stillDimmed).toBe(false);
+    });
+  });
+
+  test("destroy removes the drawing from the host", () => {
+    const { ctx, host } = makeCtx();
+    const handle = heatmapModule.createHeatmapView?.(ctx);
+    handle?.update(blocks, options);
+    handle?.destroy();
+    expect(host.querySelector("svg")).toBeNull();
   });
 });

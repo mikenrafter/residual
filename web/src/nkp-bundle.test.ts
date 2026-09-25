@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
+import * as d3 from "d3";
 import type { PendingState, SnapshotAttractor, SnapshotComponent, SnapshotForce } from "./model";
 import type { NkpGraphEdge } from "./nkp-graph";
 import {
@@ -14,6 +15,35 @@ import {
   orderGroups,
   radialLabelTransform,
 } from "./nkp-bundle";
+
+/**
+ * createBundleView does not exist yet (Phase 3). It is read off the module's
+ * namespace object via a dynamic import instead of a static named import:
+ * Bun's static `import { name } from "./real-module"` throws a SyntaxError
+ * (not `undefined`) when `name` isn't actually exported yet, which would
+ * abort this whole file's test discovery — verified empirically while
+ * writing this suite. See nkp-graph.test.ts for the same guarded pattern
+ * applied to a module that doesn't exist at all.
+ */
+interface ViewCtx {
+  host: HTMLElement;
+  d3: unknown;
+  onToggle: (key: string) => void;
+  onClear: () => void;
+}
+interface ViewHandle {
+  update: (state: PendingState, options?: Record<string, unknown>) => void;
+  setSelection: (selected: ReadonlySet<string>, connected: ReadonlySet<string>) => void;
+  resetView: () => void;
+  destroy: () => void;
+}
+type BundleViewModule = { createBundleView?: (ctx: ViewCtx) => ViewHandle };
+
+let bundleViewModule: BundleViewModule = {};
+
+beforeAll(async () => {
+  bundleViewModule = (await import("./nkp-bundle").catch(() => ({}))) as BundleViewModule;
+});
 
 const attractor = (id: string, name: string): SnapshotAttractor => ({
   id,
@@ -328,5 +358,152 @@ describe("rendering helpers", () => {
     expect(strong.width).toBeGreaterThan(weak.width);
     expect(strong.opacity).toBeGreaterThan(weak.opacity);
     expect(bundleEdgeStyle(5, 5, false).opacity).toBeLessThan(strong.opacity);
+  });
+});
+
+describe("createBundleView (persistent view handle, Phase 3)", () => {
+  // auth<->cache and auth<->db each get 2 shared forces so both coupling
+  // edges clear the default minCouplingStrength (2); all three components
+  // dominate the same attractor so they land in one bundle group.
+  const a1 = attractor("A-01", "resilience");
+  const authCache1 = force("A-01", ["auth", "cache"], "ac1");
+  const authCache2 = force("A-01", ["auth", "cache"], "ac2");
+  const authDb1 = force("A-01", ["auth", "db"], "ad1");
+  const authDb2 = force("A-01", ["auth", "db"], "ad2");
+  const fixtureState = state(
+    [authCache1, authCache2, authDb1, authDb2],
+    [component("auth"), component("cache"), component("db")],
+    [a1],
+  );
+
+  function makeCtx(): { ctx: ViewCtx; host: HTMLElement; toggled: string[]; clearCount: () => number } {
+    document.body.innerHTML = `<div data-host></div>`;
+    const host = document.querySelector<HTMLElement>("[data-host]")!;
+    const record = { toggled: [] as string[], cleared: 0 };
+    const ctx: ViewCtx = {
+      host,
+      d3,
+      onToggle: (key) => record.toggled.push(key),
+      onClear: () => { record.cleared += 1; },
+    };
+    return { ctx, host, toggled: record.toggled, clearCount: () => record.cleared };
+  }
+
+  const leafFor = (host: HTMLElement, name: string): SVGGElement | undefined =>
+    [...host.querySelectorAll<SVGGElement>(".nkp-bundle-leaf")].find((g) => g.textContent?.includes(name));
+
+  test("exists and returns the {update, setSelection, resetView, destroy} handle shape", () => {
+    const { ctx } = makeCtx();
+    const handle = bundleViewModule.createBundleView?.(ctx);
+    expect(handle).toBeDefined();
+    expect(typeof handle?.update).toBe("function");
+    expect(typeof handle?.setSelection).toBe("function");
+    expect(typeof handle?.resetView).toBe("function");
+    expect(typeof handle?.destroy).toBe("function");
+  });
+
+  test("update draws one <svg> into the host", () => {
+    const { ctx, host } = makeCtx();
+    const handle = bundleViewModule.createBundleView?.(ctx);
+    handle?.update(fixtureState, {});
+    expect(host.querySelectorAll("svg")).toHaveLength(1);
+  });
+
+  test("a narrower filter keeps the same <svg>, keeps a keyed element for a surviving entity, and removes filtered ones", () => {
+    const { ctx, host } = makeCtx();
+    const handle = bundleViewModule.createBundleView?.(ctx);
+    handle?.update(fixtureState, { hideFiltered: true });
+    const svgBefore = host.querySelector("svg");
+    const authBefore = leafFor(host, "auth");
+    expect(svgBefore).not.toBeNull();
+    expect(authBefore).toBeDefined();
+    expect(leafFor(host, "db")).toBeDefined();
+
+    // Narrow to only the forces coupling auth<->cache: db loses its only
+    // edge and should be dropped, auth/cache should survive with the same
+    // elements (keyed join), and the svg itself should not be recreated.
+    handle?.update(fixtureState, {
+      hideFiltered: true,
+      visibleForceIds: new Set([authCache1.id, authCache2.id]),
+    });
+    expect(host.querySelector("svg")).toBe(svgBefore);
+    expect(leafFor(host, "auth")).toBe(authBefore);
+    expect(leafFor(host, "db")).toBeUndefined();
+  });
+
+  test("clicking a component leaf calls ctx.onToggle with its component key", () => {
+    const { ctx, host, toggled } = makeCtx();
+    const handle = bundleViewModule.createBundleView?.(ctx);
+    handle?.update(fixtureState, {});
+    leafFor(host, "auth")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(toggled).toEqual(["component:auth"]);
+  });
+
+  test("clicking an attractor band calls ctx.onToggle with its attractor key", () => {
+    const { ctx, host, toggled } = makeCtx();
+    const handle = bundleViewModule.createBundleView?.(ctx);
+    handle?.update(fixtureState, {});
+    const band = host.querySelector<SVGGElement>(".nkp-bundle-group");
+    band?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(toggled).toEqual(["attractor:A-01"]);
+  });
+
+  test("clicking an edge toggles every force it represents", () => {
+    const { ctx, host, toggled } = makeCtx();
+    const handle = bundleViewModule.createBundleView?.(ctx);
+    handle?.update(fixtureState, {});
+    const edgePath = host.querySelector<SVGPathElement>(".nkp-bundle-edges path");
+    edgePath?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(toggled).toHaveLength(2);
+    expect(toggled.every((key) => key.startsWith("force:"))).toBe(true);
+    const expectedPairs = [
+      [`force:${authCache1.id}`, `force:${authCache2.id}`].sort(),
+      [`force:${authDb1.id}`, `force:${authDb2.id}`].sort(),
+    ];
+    expect(expectedPairs).toContainEqual([...toggled].sort());
+  });
+
+  test("double-clicking the background calls ctx.onClear", () => {
+    const { ctx, host, clearCount } = makeCtx();
+    const handle = bundleViewModule.createBundleView?.(ctx);
+    handle?.update(fixtureState, {});
+    host.querySelector("svg")?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    expect(clearCount()).toBeGreaterThan(0);
+  });
+
+  test("setSelection marks selected/connected leaves and leaves everyone else unmarked", () => {
+    const { ctx, host } = makeCtx();
+    const handle = bundleViewModule.createBundleView?.(ctx);
+    handle?.update(fixtureState, {});
+    handle?.setSelection(new Set(["component:auth"]), new Set(["component:auth", "component:cache"]));
+    const auth = leafFor(host, "auth");
+    const cache = leafFor(host, "cache");
+    const db = leafFor(host, "db");
+    expect(auth?.classList.contains("selected") || auth?.closest(".selected") !== null).toBe(true);
+    expect(cache?.classList.contains("connected") || cache?.closest(".connected") !== null).toBe(true);
+    expect(db?.classList.contains("selected") || db?.closest(".selected") !== null).toBe(false);
+    expect(db?.classList.contains("connected") || db?.closest(".connected") !== null).toBe(false);
+  });
+
+  test("all text lives in a last-child g.landscape-labels group", () => {
+    const { ctx, host } = makeCtx();
+    const handle = bundleViewModule.createBundleView?.(ctx);
+    handle?.update(fixtureState, {});
+    const svg = host.querySelector("svg");
+    const labelGroup = svg?.querySelector("g.landscape-labels");
+    expect(labelGroup).not.toBeNull();
+    expect(svg?.lastElementChild).toBe(labelGroup ?? null);
+    const allText = svg?.querySelectorAll("text") ?? [];
+    const labelText = labelGroup?.querySelectorAll("text") ?? [];
+    expect(allText.length).toBeGreaterThan(0);
+    expect(allText.length).toBe(labelText.length);
+  });
+
+  test("destroy removes the drawing from the host", () => {
+    const { ctx, host } = makeCtx();
+    const handle = bundleViewModule.createBundleView?.(ctx);
+    handle?.update(fixtureState, {});
+    handle?.destroy();
+    expect(host.querySelector("svg")).toBeNull();
   });
 });
