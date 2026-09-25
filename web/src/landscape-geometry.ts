@@ -176,6 +176,7 @@ export interface TessellationNode extends Point {
   id: string;
   fx?: number;
   fy?: number;
+  radius?: number;
 }
 
 export interface TessellatedNode extends Point {
@@ -212,8 +213,10 @@ export function tessellateNodes(
       }
     }
   };
-  const isClear = (point: Point): boolean => placed.every((other) =>
-    Math.hypot(point.x - other.x, point.y - other.y) + Number.EPSILON >= minDistance);
+  const radiusById = new Map(nodes.map((node) => [node.id, node.radius]));
+  const radiusOf = (id: string): number => radiusById.get(id) ?? minDistance / 2;
+  const isClear = (point: Point, id: string): boolean => placed.every((other) =>
+    Math.hypot(point.x - other.x, point.y - other.y) + Number.EPSILON >= radiusOf(id) + radiusOf(other.id));
 
   const ordered = [...nodes].sort((left, right) => {
     const leftPinned = left.fx !== undefined && left.fy !== undefined;
@@ -248,7 +251,7 @@ export function tessellateNodes(
         - Math.hypot(right.point.x - node.x, right.point.y - node.y)
         || left.column - right.column
         || left.row - right.row);
-      const available = candidates.find((candidate) => !occupied.has(candidate.cell) && isClear(candidate.point));
+      const available = candidates.find((candidate) => !occupied.has(candidate.cell) && isClear(candidate.point, node.id));
       if (available) chosen = available;
     }
     occupied.add(chosen.cell);

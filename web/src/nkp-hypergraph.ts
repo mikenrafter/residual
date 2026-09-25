@@ -330,16 +330,35 @@ export function centroid(points: readonly Point[]): Point | undefined {
 }
 
 /**
+ * Minimum center-to-center separation enforced between component nodes in
+ * the regions view (both by the lattice tessellation and the collision
+ * force). Declared here, ahead of its use in the core zone formulas below;
+ * REGIONS_COMPONENT_COLLISION_RADIUS (declared further down alongside the
+ * other regions layout constants) derives from this same value.
+ */
+export const REGIONS_COMPONENT_MIN_DISTANCE = 60;
+
+/**
  * Core zone geometry: components live in a soft central "core" region that
  * grows sub-linearly with the number of components (sqrt), so a landscape
  * with many components doesn't blow up the core radius proportionally.
  */
-export const CORE_ZONE_BASE_RADIUS = 60;
+export const CORE_ZONE_BASE_RADIUS = REGIONS_COMPONENT_MIN_DISTANCE; // 60
 export const CORE_ZONE_RADIUS_PER_COMPONENT = 8;
 
 export function coreZoneRadius(componentCount: number): number {
   const count = Math.max(0, componentCount);
   return CORE_ZONE_BASE_RADIUS + CORE_ZONE_RADIUS_PER_COMPONENT * Math.sqrt(count);
+}
+
+/**
+ * Bare-minimum radius for radially hex-tessellating `componentCount`
+ * components at REGIONS_COMPONENT_MIN_DISTANCE spacing (centered-hexagonal
+ * lattice rings: ring k holds ~6k slots, cumulative capacity 1+3k(k+1)).
+ * coreZoneRadius() is exactly double this, for comfortable breathing room.
+ */
+export function coreZoneMinimumRadius(componentCount: number): number {
+  return coreZoneRadius(componentCount) / 2;
 }
 
 /**
@@ -462,7 +481,7 @@ const DEFAULT_CANVAS_HEIGHT = 600;
 
 export const REGIONS_LATTICE_CELL_SIZE = 48;
 export const REGIONS_MIN_NODE_DISTANCE = 32;
-export const REGIONS_COMPONENT_COLLISION_RADIUS = 30;
+export const REGIONS_COMPONENT_COLLISION_RADIUS = REGIONS_COMPONENT_MIN_DISTANCE / 2;
 /**
  * Half of REGIONS_MIN_NODE_DISTANCE: forceCollide resolves overlaps every
  * tick (unlike the lattice force, which only relaxes toward a snapshot taken
@@ -896,6 +915,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       id: node.id,
       x: node.x ?? 0,
       y: node.y ?? 0,
+      radius: node.type === "component" ? REGIONS_COMPONENT_COLLISION_RADIUS : REGIONS_FORCE_COLLISION_RADIUS,
       ...(snapIds.has(node.id) ? {} : { fx: node.x ?? 0, fy: node.y ?? 0 }),
     })), {
       cellSize: REGIONS_LATTICE_CELL_SIZE,

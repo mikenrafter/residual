@@ -16,7 +16,7 @@ import type { PendingState } from "./model";
 import { createBundleView, DEFAULT_BUNDLE_TENSION, type BundleViewHandle } from "./nkp-bundle";
 import { createHeatmapView } from "./nkp-seriation";
 import { createRegionsView, type RegionsLockState } from "./nkp-hypergraph";
-import { connectedKeys, entityDetail, toggleSelection, type EntityDetail, type EntityKey } from "./landscape-selection";
+import { directlyConnectedKeys, entityDetail, toggleSelection, type EntityDetail, type EntityKey } from "./landscape-selection";
 import { renderSidebar } from "./landscape-sidebar";
 
 export type LandscapeView = "bundle" | "heatmap" | "regions";
@@ -215,7 +215,7 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
     selected = next;
     if (activate && selected.has(activate)) activeKey = activate;
     if (!activeKey || !selected.has(activeKey)) activeKey = [...selected].at(-1);
-    const connected = connectedKeys(getState(), selected);
+    const connected = directlyConnectedKeys(getState(), selected);
     viewHandle?.setSelection(selected, connected);
     renderSidebarNow();
   };
@@ -296,7 +296,7 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
       }
     }
 
-    const connected = connectedKeys(state, selected);
+    const connected = directlyConnectedKeys(state, selected);
     handle.setSelection(selected, connected);
     renderSidebarNow();
   };

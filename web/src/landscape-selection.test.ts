@@ -21,6 +21,7 @@ export interface EntityDetail {
 type SelectionModule = {
   entityDetail?: (state: PendingState, key: EntityKey) => EntityDetail | undefined;
   connectedKeys?: (state: PendingState, selected: Iterable<EntityKey>) => Set<EntityKey>;
+  directlyConnectedKeys?: (state: PendingState, selected: Iterable<EntityKey>) => Set<EntityKey>;
   toggleSelection?: (current: ReadonlySet<EntityKey>, key: EntityKey) => Set<EntityKey>;
   HOVER_DIM_OPACITY?: number;
   SELECTION_DIM_OPACITY?: number;
@@ -220,6 +221,39 @@ describe("connectedKeys", () => {
 
   test("an empty selection connects to nothing", () => {
     expect(mod.connectedKeys?.(state(), [])).toEqual(new Set());
+  });
+});
+
+describe("directlyConnectedKeys", () => {
+  test("a component reaches only the forces that touch it directly, not the wider closure", () => {
+    const result = mod.directlyConnectedKeys?.(state(), ["component:auth"]);
+    expect(result).toBeDefined();
+    expect([...(result ?? [])].sort()).toEqual(["component:auth", "force:S-01", "force:S-02"].sort());
+    expect(result?.has("attractor:A-01")).toBe(false);
+    expect(result?.has("component:cache")).toBe(false);
+    expect(result?.has("component:db")).toBe(false);
+    expect(result?.has("force:P-01")).toBe(false);
+  });
+
+  test("a force reaches only its own attractor and components, not sibling forces two hops away", () => {
+    const result = mod.directlyConnectedKeys?.(state(), ["force:S-01"]);
+    expect([...(result ?? [])].sort()).toEqual(
+      ["force:S-01", "attractor:A-01", "component:auth", "component:cache"].sort(),
+    );
+    expect(result?.has("force:S-02")).toBe(false);
+    expect(result?.has("component:db")).toBe(false);
+    expect(result?.has("force:P-01")).toBe(false);
+  });
+
+  test("an attractor reaches only its own forces, not those forces' other components", () => {
+    const result = mod.directlyConnectedKeys?.(state(), ["attractor:A-02"]);
+    expect([...(result ?? [])].sort()).toEqual(["attractor:A-02", "force:P-01"].sort());
+    expect(result?.has("component:cache")).toBe(false);
+    expect(result?.has("component:db")).toBe(false);
+  });
+
+  test("an empty selection connects to nothing", () => {
+    expect(mod.directlyConnectedKeys?.(state(), [])).toEqual(new Set());
   });
 });
 

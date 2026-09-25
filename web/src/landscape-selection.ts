@@ -106,8 +106,8 @@ export function entityDetail(state: PendingState, key: EntityKey): EntityDetail 
   return undefined;
 }
 
-/** Full transitive closure over force-component and force-attractor edges. */
-export function connectedKeys(state: PendingState, selected: Iterable<EntityKey>): Set<EntityKey> {
+/** Builds the force-component/force-attractor adjacency map shared by connectedKeys and directlyConnectedKeys. */
+function buildAdjacency(state: PendingState): Map<EntityKey, EntityKey[]> {
   const { forces } = effectiveState(state);
   const adjacency = new Map<EntityKey, EntityKey[]>();
   const connect = (left: EntityKey, right: EntityKey): void => {
@@ -121,6 +121,12 @@ export function connectedKeys(state: PendingState, selected: Iterable<EntityKey>
       connect(forceKey, `component:${component}`);
     }
   }
+  return adjacency;
+}
+
+/** Full transitive closure over force-component and force-attractor edges. */
+export function connectedKeys(state: PendingState, selected: Iterable<EntityKey>): Set<EntityKey> {
+  const adjacency = buildAdjacency(state);
 
   const result = new Set<EntityKey>();
   const queue = [...selected];
@@ -129,6 +135,26 @@ export function connectedKeys(state: PendingState, selected: Iterable<EntityKey>
     result.add(key);
     for (const neighbor of adjacency.get(key) ?? []) {
       if (!result.has(neighbor)) queue.push(neighbor);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * One-hop-only neighbors over the same force-component/force-attractor adjacency relation as
+ * connectedKeys, but without recursively expanding past the first hop. This is what drives the
+ * dim/full-opacity split in the landscape views ("directly connected" in the in-app help), as
+ * opposed to connectedKeys' full transitive closure.
+ */
+export function directlyConnectedKeys(state: PendingState, selected: Iterable<EntityKey>): Set<EntityKey> {
+  const adjacency = buildAdjacency(state);
+
+  const result = new Set<EntityKey>();
+  for (const key of selected) {
+    result.add(key);
+    for (const neighbor of adjacency.get(key) ?? []) {
+      result.add(neighbor);
     }
   }
 
