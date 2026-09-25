@@ -12,8 +12,10 @@ import type { PendingState } from "./model";
 import {
   DEFAULT_MIN_COUPLING_STRENGTH,
   attractorColors,
+  buildNkpGraphModel,
   effectiveState,
   forceLabel,
+  mutedAttractorColor,
   type EffectiveForce,
 } from "./nkp-graph";
 import type { EntityKey } from "./landscape-selection";
@@ -38,6 +40,7 @@ export interface SeriationComponent {
   /** Total forces touching this component (K per node); drawn on the diagonal. */
   k: number;
   dominantAttractorId?: string;
+  color: string;
   fissionCandidate: boolean;
   focused: boolean;
 }
@@ -131,6 +134,9 @@ function keepTopNTiers(counts: number[], topN: number | undefined, direction: "s
 /** Builds the DOM-independent seriated matrix model from the pending state. */
 export function buildSeriationModel(state: PendingState, options: SeriationOptions = {}): SeriationModel {
   const { components, attractors, forces } = effectiveState(state);
+  const sharedComponents = new Map(buildNkpGraphModel(state, { minCouplingStrength: 1 }).nodes
+    .filter((node) => node.type === "component")
+    .map((node) => [node.id, node]));
   const visibleForces = options.visibleForceIds;
   const isVisibleForce = (force: EffectiveForce): boolean => visibleForces === undefined || visibleForces.has(force.key);
   const isVisibleComponent = (name: string): boolean =>
@@ -151,16 +157,8 @@ export function buildSeriationModel(state: PendingState, options: SeriationOptio
   const summaries = components.map((component) => {
     const attached = forcesByComponent.get(component.name) ?? [];
     const focused = (visibleForces === undefined || attached.some(isVisibleForce)) && isVisibleComponent(component.name);
-    const perAttractor = new Map<string, number>();
-    for (const force of attached) perAttractor.set(force.attractorId, (perAttractor.get(force.attractorId) ?? 0) + 1);
-    let dominantAttractorId: string | undefined;
-    let dominantCount = 0;
-    for (const [id, count] of [...perAttractor].sort(([a], [b]) => a.localeCompare(b))) {
-      if (count > dominantCount) {
-        dominantAttractorId = id;
-        dominantCount = count;
-      }
-    }
+    const shared = sharedComponents.get(`component:${component.name}`);
+    const dominantAttractorId = shared?.dominantAttractorId;
     const allAttached = allForcesByComponent.get(component.name) ?? [];
     return {
       name: component.name,
@@ -168,6 +166,7 @@ export function buildSeriationModel(state: PendingState, options: SeriationOptio
       description: component.description,
       k: attached.length,
       ...(dominantAttractorId ? { dominantAttractorId } : {}),
+      color: shared?.color ?? mutedAttractorColor("var(--muted)"),
       fissionCandidate: allAttached.length > (options.fissionThreshold ?? Number.POSITIVE_INFINITY),
       focused,
     } satisfies SeriationComponent;
@@ -420,8 +419,12 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
         item.classList.toggle("selected", state === "selected");
         item.classList.toggle("connected", state === "connected");
         item.classList.toggle("dim", state === "dim");
+        item.style.opacity = state === "dim" ? "0" : "";
       }
     }
+    b.labelsGroup.selectAll("text.nkp-seriation-label")
+      .attr("opacity", (item: { entityKey?: EntityKey }) =>
+        item.entityKey && keyState([item.entityKey]) === "dim" ? 0 : 1);
   }
 
   function componentLines(item: SeriationComponent): string[] {
@@ -448,9 +451,20 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
     host.insertBefore(legend, b.svg.node());
     b.legend = legend;
     for (const item of Array.from(legend.querySelectorAll<HTMLElement>("[data-legend-id]"))) {
+      const id = item.dataset.legendId ?? "";
+      item.setAttribute("aria-label", `Attractor ${model.attractors.find((attractor) => attractor.id === id)?.name ?? id}`);
+      item.tabIndex = 0;
+      const reveal = (event: Event): void => {
+        const attractor = model.attractors.find((candidate) => candidate.id === id);
+        showTooltip(event as MouseEvent, [attractor?.name ?? id, `${attractor?.componentCount ?? 0} components`]);
+      };
+      item.addEventListener("mouseenter", reveal);
+      item.addEventListener("focus", reveal);
+      item.addEventListener("mouseleave", hideTooltip);
+      item.addEventListener("blur", hideTooltip);
       item.addEventListener("click", () => {
-        const id = item.dataset.legendId;
-        if (id) ctx.onToggle(`attractor:${id}` as EntityKey);
+        const selectedId = item.dataset.legendId;
+        if (selectedId) ctx.onToggle(`attractor:${selectedId}` as EntityKey);
       });
     }
   }
@@ -472,6 +486,7 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
       b.rowHeadersLayer.selectAll("g.nkp-seriation-header.row").data([]).join("g");
       b.colHeadersLayer.selectAll("g.nkp-seriation-header.col").data([]).join("g");
       b.labelsGroup.selectAll("text").data([]).join("text");
+      b.labelsGroup.selectAll("g.nkp-seriation-label-anchor").remove();
       hideTooltip();
       return;
     }
@@ -483,7 +498,6 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
     componentByIndex = new Map(model.components.map((item, index) => [index, item]));
 
     const n = model.components.length;
-    const colorFor = new Map(model.attractors.map((attractor) => [attractor.id, attractor.color]));
     const width = LABEL_WIDTH + STRIPE + n * CELL + 8;
     const height = HEADER_HEIGHT + STRIPE + n * CELL + 8;
     const gridX = LABEL_WIDTH + STRIPE;
@@ -503,6 +517,11 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
       .attr("transform", (item: SeriationCell) => `translate(${item.col * CELL},${item.row * CELL})`)
       .attr("data-cell-row", (item: SeriationCell) => String(item.row))
       .attr("data-cell-col", (item: SeriationCell) => String(item.col));
+    cellSelection.attr("aria-label", (item: SeriationCell) => {
+      const rowName = model.components[item.row]?.name ?? "unknown";
+      const colName = model.components[item.col]?.name ?? "unknown";
+      return `${rowName} and ${colName}: ${item.count} shared forces`;
+    }).attr("tabindex", 0);
     cellSelection.select("rect")
       .attr("class", (item: SeriationCell) => `nkp-seriation-heat${item.focused ? "" : " is-faded"}`)
       .attr("width", CELL - 1)
@@ -520,6 +539,7 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
       })
       .attr("transform", (item: SeriationComponent) => `translate(${(indexByName.get(item.name) ?? 0) * CELL},${(indexByName.get(item.name) ?? 0) * CELL})`)
       .attr("data-diagonal-index", (item: SeriationComponent) => String(indexByName.get(item.name) ?? 0));
+    diagonalSelection.attr("aria-label", (item: SeriationComponent) => componentLines(item).join(". ")).attr("tabindex", 0);
     diagonalSelection.select("rect")
       .attr("width", CELL - 1)
       .attr("height", CELL - 1)
@@ -533,11 +553,15 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
         const g = enter.append("g").attr("class", "nkp-seriation-header row");
         g.append("rect").attr("class", "nkp-seriation-hit");
         g.append("rect").attr("class", "nkp-seriation-stripe");
+        g.append("circle").attr("class", "nkp-component-status-glyph").attr("r", 4);
+        g.append("rect").attr("class", "nkp-component-status-glyph").attr("width", 8).attr("height", 8);
         return g;
       })
       .attr("transform", (item: SeriationComponent) => `translate(${-gridX},${(indexByName.get(item.name) ?? 0) * CELL})`)
       .attr("data-header-axis", "row")
-      .attr("data-header-index", (item: SeriationComponent) => String(indexByName.get(item.name) ?? 0));
+      .attr("data-header-index", (item: SeriationComponent) => String(indexByName.get(item.name) ?? 0))
+      .attr("aria-label", (item: SeriationComponent) => componentLines(item).join(". "))
+      .attr("tabindex", 0);
     rowHeaders.select(".nkp-seriation-hit")
       .attr("width", LABEL_WIDTH + STRIPE)
       .attr("height", CELL);
@@ -545,7 +569,17 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
       .attr("x", LABEL_WIDTH)
       .attr("width", STRIPE - 1)
       .attr("height", CELL - 1)
-      .attr("fill", (item: SeriationComponent) => colorFor.get(item.dominantAttractorId ?? "") ?? "var(--line)");
+      .attr("fill", (item: SeriationComponent) => item.color);
+    rowHeaders.select("circle")
+      .attr("cx", 8).attr("cy", CELL / 2)
+      .attr("data-component-status-shape", (item: SeriationComponent) => item.status === "actual" ? "actual" : null)
+      .attr("display", (item: SeriationComponent) => item.status === "actual" ? null : "none")
+      .attr("fill", (item: SeriationComponent) => item.color);
+    rowHeaders.select("rect.nkp-component-status-glyph")
+      .attr("x", 4).attr("y", CELL / 2 - 4)
+      .attr("data-component-status-shape", (item: SeriationComponent) => item.status === "proposed" ? "proposed" : null)
+      .attr("display", (item: SeriationComponent) => item.status === "proposed" ? null : "none")
+      .attr("fill", (item: SeriationComponent) => item.color);
     b.rowHeaders = rowHeaders;
 
     const colHeaders = b.colHeadersLayer
@@ -555,11 +589,15 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
         const g = enter.append("g").attr("class", "nkp-seriation-header col");
         g.append("rect").attr("class", "nkp-seriation-hit");
         g.append("rect").attr("class", "nkp-seriation-stripe");
+        g.append("circle").attr("class", "nkp-component-status-glyph").attr("r", 4);
+        g.append("rect").attr("class", "nkp-component-status-glyph").attr("width", 8).attr("height", 8);
         return g;
       })
       .attr("transform", (item: SeriationComponent) => `translate(${(indexByName.get(item.name) ?? 0) * CELL},${-gridY})`)
       .attr("data-header-axis", "col")
-      .attr("data-header-index", (item: SeriationComponent) => String(indexByName.get(item.name) ?? 0));
+      .attr("data-header-index", (item: SeriationComponent) => String(indexByName.get(item.name) ?? 0))
+      .attr("aria-label", (item: SeriationComponent) => componentLines(item).join(". "))
+      .attr("tabindex", 0);
     colHeaders.select(".nkp-seriation-hit")
       .attr("width", CELL)
       .attr("height", HEADER_HEIGHT + STRIPE);
@@ -567,12 +605,22 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
       .attr("y", HEADER_HEIGHT)
       .attr("width", CELL - 1)
       .attr("height", STRIPE - 1)
-      .attr("fill", (item: SeriationComponent) => colorFor.get(item.dominantAttractorId ?? "") ?? "var(--line)");
+      .attr("fill", (item: SeriationComponent) => item.color);
+    colHeaders.select("circle")
+      .attr("cx", CELL / 2).attr("cy", HEADER_HEIGHT - 8)
+      .attr("data-component-status-shape", (item: SeriationComponent) => item.status === "actual" ? "actual" : null)
+      .attr("display", (item: SeriationComponent) => item.status === "actual" ? null : "none")
+      .attr("fill", (item: SeriationComponent) => item.color);
+    colHeaders.select("rect.nkp-component-status-glyph")
+      .attr("x", CELL / 2 - 4).attr("y", HEADER_HEIGHT - 12)
+      .attr("data-component-status-shape", (item: SeriationComponent) => item.status === "proposed" ? "proposed" : null)
+      .attr("display", (item: SeriationComponent) => item.status === "proposed" ? null : "none")
+      .attr("fill", (item: SeriationComponent) => item.color);
     b.colHeaders = colHeaders;
 
     const countClass = (count: number): string =>
       `nkp-seriation-count${intensity(count, model.maxCount) > 0.6 ? " nkp-seriation-count-strong" : ""}`;
-    const textData: Array<{ id: string; className: string; x: number; y: number; transform?: string; text: string }> = [];
+    const textData: Array<{ id: string; className: string; x: number; y: number; transform?: string; text: string; entityKey?: EntityKey }> = [];
     if (showCounts) {
       for (const item of model.components) {
         const index = indexByName.get(item.name) ?? 0;
@@ -602,6 +650,7 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
         x: LABEL_WIDTH - 4,
         y: gridY + index * CELL + CELL / 2,
         text: headerLabel(item),
+        entityKey: `component:${item.name}` as EntityKey,
       });
       textData.push({
         id: `col:${item.name}`,
@@ -610,6 +659,7 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
         y: HEADER_HEIGHT - 4,
         transform: `rotate(-60 ${gridX + index * CELL + CELL / 2} ${HEADER_HEIGHT - 4})`,
         text: headerLabel(item),
+        entityKey: `component:${item.name}` as EntityKey,
       });
     }
     b.labelsGroup.selectAll("text")
@@ -620,7 +670,25 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
       .attr("y", (item: any) => item.y)
       .attr("transform", (item: any) => item.transform ?? null)
       .attr("text-anchor", (item: any) => (item.id.startsWith("row:") ? "end" : "middle"))
-      .text((item: any) => item.text);
+      .text((item: any) => item.text)
+      .each(function (this: SVGTextElement, item: { id: string }) {
+        if (!item.id.startsWith("row:") && !item.id.startsWith("col:")) return;
+        const axis = item.id.startsWith("row:") ? "row" : "col";
+        const name = item.id.slice(4);
+        let wrapper = this.parentElement;
+        if (!wrapper?.classList.contains("nkp-seriation-label-anchor")) {
+          wrapper = document.createElementNS("http://www.w3.org/2000/svg", "g");
+          wrapper.classList.add("nkp-seriation-label-anchor");
+          this.parentNode?.insertBefore(wrapper, this);
+          wrapper.appendChild(this);
+        }
+        wrapper.setAttribute("data-header-axis", axis);
+        wrapper.setAttribute("data-header-index", String(indexByName.get(name) ?? 0));
+        wrapper.setAttribute("aria-label", `${axis === "row" ? "Row" : "Column"} label ${name}`);
+      });
+    b.labelsGroup.selectAll("g.nkp-seriation-label-anchor")
+      .filter(function (this: SVGGElement) { return this.querySelector("text") === null; })
+      .remove();
 
     cellSelection
       .on("mousemove", (event: MouseEvent, item: SeriationCell) => {
@@ -632,7 +700,12 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
         const colName = componentByIndex.get(item.col)?.name ?? "";
         showTooltip(event, [`${rowName} × ${colName}: ${item.count} shared`, ...item.forces]);
       })
-      .on("mouseleave", clearHover)
+      .on("focus", (event: MouseEvent, item: SeriationCell) => {
+        const rowName = componentByIndex.get(item.row)?.name ?? "";
+        const colName = componentByIndex.get(item.col)?.name ?? "";
+        showTooltip(event, [`${rowName} × ${colName}: ${item.count} shared`, ...item.forces]);
+      })
+      .on("mouseleave blur", clearHover)
       .on("click", (_event: MouseEvent, item: SeriationCell) => {
         for (const key of item.forceKeys) ctx.onToggle(`force:${key}` as EntityKey);
         const half = cellHalf(item.row, item.col);
@@ -646,7 +719,8 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
         applyHeaderBands(index, index);
         showTooltip(event, componentLines(item));
       })
-      .on("mouseleave", clearHover)
+      .on("focus", (event: MouseEvent, item: SeriationComponent) => showTooltip(event, componentLines(item)))
+      .on("mouseleave blur", clearHover)
       .on("click", (_event: MouseEvent, item: SeriationComponent) => ctx.onToggle(`component:${item.name}` as EntityKey));
 
     const headerHandlers = (selection: any): void => {
@@ -656,7 +730,8 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
           applyHeaderBands(index, index);
           showTooltip(event, componentLines(item));
         })
-        .on("mouseleave", clearHover)
+        .on("focus", (event: MouseEvent, item: SeriationComponent) => showTooltip(event, componentLines(item)))
+        .on("mouseleave blur", clearHover)
         .on("click", (_event: MouseEvent, item: SeriationComponent) => ctx.onToggle(`component:${item.name}` as EntityKey));
     };
     headerHandlers(rowHeaders);

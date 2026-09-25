@@ -1,17 +1,17 @@
-// Renders the cross-view selection sidebar: a header (count + deselect-all)
-// followed by one card per selected entity, each showing every field the
-// view tooltips already show plus a per-card deselect control. Pure DOM
-// rendering — the caller (nkp-landscape.ts) owns the selection Set and
-// passes the resolved `EntityDetail[]` in on every change.
+// Renders the cross-view detail card. The caller owns the additive selection
+// and passes the active key separately, so navigation changes the focused
+// detail without changing which entities are selected.
 
 import type { EntityDetail, EntityKey } from "./landscape-selection";
 
 export interface SidebarHandlers {
+  activeKey?: EntityKey;
+  onActivate: (key: EntityKey) => void;
   onDeselect: (key: EntityKey) => void;
   onClearAll: () => void;
 }
 
-/** Replaces `el`'s contents with the sidebar header and one card per detail. */
+/** Replaces `el`'s contents with selection controls and one active detail. */
 export function renderSidebar(el: HTMLElement, details: EntityDetail[], handlers: SidebarHandlers): void {
   el.replaceChildren();
 
@@ -38,46 +38,69 @@ export function renderSidebar(el: HTMLElement, details: EntityDetail[], handlers
     return;
   }
 
-  for (const detail of details) {
-    const card = document.createElement("article");
-    card.className = "landscape-sidebar-card";
-    card.dataset.sidebarCard = "";
-    card.dataset.key = detail.key;
+  const activeIndex = Math.max(0, details.findIndex((detail) => detail.key === handlers.activeKey));
+  const detail = details[activeIndex]!;
+  const navigation = document.createElement("div");
+  navigation.className = "landscape-sidebar-navigation";
+  const previous = document.createElement("button");
+  previous.type = "button";
+  previous.dataset.detailPrev = "";
+  previous.setAttribute("aria-label", "Previous selected detail");
+  previous.textContent = "←";
+  previous.disabled = details.length === 1;
+  previous.addEventListener("click", () => {
+    handlers.onActivate(details[(activeIndex - 1 + details.length) % details.length]!.key);
+  });
+  const next = document.createElement("button");
+  next.type = "button";
+  next.dataset.detailNext = "";
+  next.setAttribute("aria-label", "Next selected detail");
+  next.textContent = "→";
+  next.disabled = details.length === 1;
+  next.addEventListener("click", () => {
+    handlers.onActivate(details[(activeIndex + 1) % details.length]!.key);
+  });
+  navigation.append(previous, next);
+  el.appendChild(navigation);
 
-    const cardHeader = document.createElement("div");
-    cardHeader.className = "landscape-sidebar-card-header";
-    if (detail.color) {
-      const chip = document.createElement("i");
-      chip.className = "landscape-sidebar-chip";
-      chip.style.background = detail.color;
-      cardHeader.appendChild(chip);
-    }
-    const kind = document.createElement("span");
-    kind.className = "landscape-sidebar-kind";
-    kind.textContent = detail.kind;
-    const title = document.createElement("strong");
-    title.className = "landscape-sidebar-title";
-    title.textContent = detail.title;
-    const deselect = document.createElement("button");
-    deselect.type = "button";
-    deselect.className = "landscape-sidebar-deselect";
-    deselect.dataset.sidebarDeselect = "";
-    deselect.setAttribute("aria-label", `Deselect ${detail.title}`);
-    deselect.textContent = "×";
-    deselect.addEventListener("click", () => handlers.onDeselect(detail.key));
-    cardHeader.append(kind, title, deselect);
-    card.appendChild(cardHeader);
+  const card = document.createElement("article");
+  card.className = "landscape-sidebar-card";
+  card.dataset.sidebarCard = "";
+  card.dataset.key = detail.key;
 
-    const fields = document.createElement("dl");
-    fields.className = "landscape-sidebar-fields";
-    for (const field of detail.fields) {
-      const dt = document.createElement("dt");
-      dt.textContent = field.label;
-      const dd = document.createElement("dd");
-      dd.textContent = field.value;
-      fields.append(dt, dd);
-    }
-    card.appendChild(fields);
-    el.appendChild(card);
+  const cardHeader = document.createElement("div");
+  cardHeader.className = "landscape-sidebar-card-header";
+  if (detail.color) {
+    const chip = document.createElement("i");
+    chip.className = "landscape-sidebar-chip";
+    chip.style.background = detail.color;
+    cardHeader.appendChild(chip);
   }
+  const kind = document.createElement("span");
+  kind.className = "landscape-sidebar-kind";
+  kind.textContent = detail.kind;
+  const title = document.createElement("strong");
+  title.className = "landscape-sidebar-title";
+  title.textContent = detail.title;
+  const deselect = document.createElement("button");
+  deselect.type = "button";
+  deselect.className = "landscape-sidebar-deselect";
+  deselect.dataset.sidebarDeselect = "";
+  deselect.setAttribute("aria-label", `Deselect ${detail.title}`);
+  deselect.textContent = "×";
+  deselect.addEventListener("click", () => handlers.onDeselect(detail.key));
+  cardHeader.append(kind, title, deselect);
+  card.appendChild(cardHeader);
+
+  const fields = document.createElement("dl");
+  fields.className = "landscape-sidebar-fields";
+  for (const field of detail.fields) {
+    const dt = document.createElement("dt");
+    dt.textContent = field.label;
+    const dd = document.createElement("dd");
+    dd.textContent = field.value;
+    fields.append(dt, dd);
+  }
+  card.appendChild(fields);
+  el.appendChild(card);
 }

@@ -163,3 +163,165 @@ export function nudgeLabels(boxes: LabelBox[], maxShift = 12): number[] {
 
   return shifts.map((value) => clamp(value, -limit, limit));
 }
+
+export interface TessellationNode extends Point {
+  id: string;
+  fx?: number;
+  fy?: number;
+}
+
+export interface TessellatedNode extends Point {
+  id: string;
+  cell: string;
+}
+
+function latticePoint(column: number, row: number, cellSize: number): Point {
+  return { x: column * cellSize, y: row * cellSize };
+}
+
+/**
+ * Places nodes in exclusive lattice cells. Pinned nodes reserve their nearest
+ * cell but retain their exact anchor. Sorting by id makes placement independent
+ * of input order.
+ */
+export function tessellateNodes(
+  nodes: TessellationNode[],
+  options: { cellSize: number; minDistance: number },
+): TessellatedNode[] {
+  const cellSize = Math.max(Number.EPSILON, options.cellSize);
+  const minDistance = Math.max(0, options.minDistance);
+  const placed: TessellatedNode[] = [];
+  const occupied = new Set<string>();
+  const key = (column: number, row: number): string => `${column}:${row}`;
+  const nearestAvailableCell = (baseColumn: number, baseRow: number): string => {
+    for (let radius = 0; ; radius += 1) {
+      for (let column = baseColumn - radius; column <= baseColumn + radius; column += 1) {
+        for (let row = baseRow - radius; row <= baseRow + radius; row += 1) {
+          if (Math.max(Math.abs(column - baseColumn), Math.abs(row - baseRow)) !== radius) continue;
+          const cell = key(column, row);
+          if (!occupied.has(cell)) return cell;
+        }
+      }
+    }
+  };
+  const isClear = (point: Point): boolean => placed.every((other) =>
+    Math.hypot(point.x - other.x, point.y - other.y) + Number.EPSILON >= minDistance);
+
+  const ordered = [...nodes].sort((left, right) => {
+    const leftPinned = left.fx !== undefined && left.fy !== undefined;
+    const rightPinned = right.fx !== undefined && right.fy !== undefined;
+    return Number(rightPinned) - Number(leftPinned) || left.id.localeCompare(right.id);
+  });
+
+  for (const node of ordered) {
+    const pinned = node.fx !== undefined && node.fy !== undefined;
+    const anchor = pinned ? { x: node.fx!, y: node.fy! } : node;
+    const baseColumn = Math.round(anchor.x / cellSize);
+    const baseRow = Math.round(anchor.y / cellSize);
+    if (pinned) {
+      const cell = nearestAvailableCell(baseColumn, baseRow);
+      occupied.add(cell);
+      placed.push({ id: node.id, x: anchor.x, y: anchor.y, cell });
+      continue;
+    }
+
+    let chosen: { point: Point; cell: string } | undefined;
+    for (let radius = 0; chosen === undefined; radius += 1) {
+      const candidates: { column: number; row: number; point: Point; cell: string }[] = [];
+      for (let column = baseColumn - radius; column <= baseColumn + radius; column += 1) {
+        for (let row = baseRow - radius; row <= baseRow + radius; row += 1) {
+          if (Math.max(Math.abs(column - baseColumn), Math.abs(row - baseRow)) !== radius) continue;
+          const point = latticePoint(column, row, cellSize);
+          candidates.push({ column, row, point, cell: key(column, row) });
+        }
+      }
+      candidates.sort((left, right) =>
+        Math.hypot(left.point.x - node.x, left.point.y - node.y)
+        - Math.hypot(right.point.x - node.x, right.point.y - node.y)
+        || left.column - right.column
+        || left.row - right.row);
+      const available = candidates.find((candidate) => !occupied.has(candidate.cell) && isClear(candidate.point));
+      if (available) chosen = available;
+    }
+    occupied.add(chosen.cell);
+    placed.push({ id: node.id, ...chosen.point, cell: chosen.cell });
+  }
+
+  return placed;
+}
+
+function insideBounds(point: Point, bounds: LabelBox): boolean {
+  return point.x >= bounds.x
+    && point.x <= bounds.x + bounds.width
+    && point.y >= bounds.y
+    && point.y <= bounds.y + bounds.height;
+}
+
+function clipPolygonToBounds(points: readonly Point[], bounds: LabelBox): Point[] {
+  if (points.length < 3) return points.filter((point) => insideBounds(point, bounds));
+  const edges: { inside: (point: Point) => boolean; intersect: (from: Point, to: Point) => Point }[] = [
+    {
+      inside: (point) => point.x >= bounds.x,
+      intersect: (from, to) => {
+        const ratio = (bounds.x - from.x) / (to.x - from.x);
+        return { x: bounds.x, y: from.y + (to.y - from.y) * ratio };
+      },
+    },
+    {
+      inside: (point) => point.x <= bounds.x + bounds.width,
+      intersect: (from, to) => {
+        const x = bounds.x + bounds.width;
+        const ratio = (x - from.x) / (to.x - from.x);
+        return { x, y: from.y + (to.y - from.y) * ratio };
+      },
+    },
+    {
+      inside: (point) => point.y >= bounds.y,
+      intersect: (from, to) => {
+        const ratio = (bounds.y - from.y) / (to.y - from.y);
+        return { x: from.x + (to.x - from.x) * ratio, y: bounds.y };
+      },
+    },
+    {
+      inside: (point) => point.y <= bounds.y + bounds.height,
+      intersect: (from, to) => {
+        const y = bounds.y + bounds.height;
+        const ratio = (y - from.y) / (to.y - from.y);
+        return { x: from.x + (to.x - from.x) * ratio, y };
+      },
+    },
+  ];
+  let clipped = [...points];
+  for (const edge of edges) {
+    const input = clipped;
+    clipped = [];
+    for (let index = 0; index < input.length; index += 1) {
+      const from = input[index]!;
+      const to = input[(index + 1) % input.length]!;
+      const fromInside = edge.inside(from);
+      const toInside = edge.inside(to);
+      if (fromInside && toInside) clipped.push(to);
+      else if (fromInside) clipped.push(edge.intersect(from, to));
+      else if (toInside) clipped.push(edge.intersect(from, to), to);
+    }
+    if (clipped.length === 0) break;
+  }
+  return clipped;
+}
+
+/** Keeps a label anchor visible, preferring a visible part of its region. */
+export function projectLabelAnchor(
+  point: Point,
+  bounds: LabelBox,
+  preferredRegion: readonly Point[] = [],
+): Point {
+  if (insideBounds(point, bounds)) return { ...point };
+  const visibleRegion = clipPolygonToBounds(preferredRegion, bounds);
+  if (visibleRegion.length > 0) {
+    return centroid(visibleRegion) ?? { ...visibleRegion[0]! };
+  }
+  return {
+    x: clamp(point.x, bounds.x, bounds.x + bounds.width),
+    y: clamp(point.y, bounds.y, bounds.y + bounds.height),
+  };
+}

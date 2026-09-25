@@ -2266,6 +2266,15 @@ function edgeMetrics(count) {
 function forceLabel(force) {
   return force.shortname || force.description || force.key;
 }
+function dominantAttractor(forces, componentName) {
+  const counts = new Map;
+  for (const force of forces) {
+    if (!force.components.includes(componentName))
+      continue;
+    counts.set(force.attractorId, (counts.get(force.attractorId) ?? 0) + 1);
+  }
+  return [...counts].sort(([leftId, leftCount], [rightId, rightCount]) => rightCount - leftCount || leftId.localeCompare(rightId))[0]?.[0];
+}
 function applyMinCouplingStrength(edges, minCouplingStrength) {
   return edges.filter((edge) => edge.type === "attractor" || edge.count >= minCouplingStrength);
 }
@@ -2304,6 +2313,7 @@ function dropUnlinkedComponents(nodes, edges) {
 }
 function buildNkpGraphModel(state, options = {}) {
   const { components, attractors, forces } = effectiveState(state);
+  const colors = attractorColors(state);
   const visible = options.visibleForceIds;
   const hasFocusFilter = visible !== undefined;
   const isVisibleForce = (force) => !hasFocusFilter || visible.has(force.key);
@@ -2317,6 +2327,7 @@ function buildNkpGraphModel(state, options = {}) {
     const attached = componentForces.get(component.name) ?? [];
     const focused = (attached.some(isVisibleForce) || !hasFocusFilter) && isVisibleComponent(component.name);
     const fissionCandidate = attached.length > (options.fissionThreshold ?? Number.POSITIVE_INFINITY);
+    const dominantAttractorId = dominantAttractor(forces, component.name);
     return {
       id: `component:${component.name}`,
       type: "component",
@@ -2328,6 +2339,9 @@ function buildNkpGraphModel(state, options = {}) {
       opacity: focused ? 1 : 0.5,
       labelVisible: focused,
       revealLabelOnHover: !focused,
+      shape: component.status === "actual" ? "circle" : "square",
+      color: dominantAttractorId === undefined ? "var(--muted)" : mutedAttractorColor(colors.get(dominantAttractorId) ?? "var(--muted)"),
+      ...dominantAttractorId ? { dominantAttractorId } : {},
       fissionCandidate,
       ...fissionCandidate ? { ringStyle: "dotted" } : {}
     };
@@ -2457,16 +2471,24 @@ function buildNkpGraphModel(state, options = {}) {
     edges: visibleEdges
   };
 }
-var GOLDEN_ANGLE = 137.508;
-function attractorColor(index) {
-  const hue = Math.round((index * GOLDEN_ANGLE + 20) % 360);
-  const lightness = index % 2 === 0 ? 60 : 70;
+function attractorColorForId(id) {
+  let hash = 2166136261;
+  for (let index = 0;index < id.length; index += 1) {
+    hash ^= id.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  const unsigned = hash >>> 0;
+  const hue = unsigned % 360;
+  const lightness = 58 + (unsigned >>> 9) % 3 * 5;
   return `hsl(${hue} 62% ${lightness}%)`;
+}
+function mutedAttractorColor(color) {
+  return `color-mix(in srgb, ${color} 58%, var(--surface))`;
 }
 function attractorColors(state) {
   const { attractors, forces } = effectiveState(state);
   const ids = [...new Set([...attractors.map((attractor) => attractor.id), ...forces.map((force) => force.attractorId)])].sort();
-  return new Map(ids.map((id, index) => [id, attractorColor(index)]));
+  return new Map(ids.map((id) => [id, attractorColorForId(id)]));
 }
 
 // src/landscape-dom.ts
@@ -2510,21 +2532,23 @@ function appendZoomableSvg(host, d3, viewBox, className, label) {
 function resetZoom(svg, zoom, d3) {
   svg.transition().duration(200).call(zoom.transform, d3.zoomIdentity);
 }
-function placeTooltip(host, tip, event) {
+function placeTooltip(_host, tip, _event) {
   tip.hidden = false;
-  const bounds = host.getBoundingClientRect();
-  const x = event.clientX - bounds.left + 14;
-  const y = event.clientY - bounds.top + 14;
-  const maxX = host.clientWidth - tip.offsetWidth - 6;
-  const maxY = host.clientHeight - tip.offsetHeight - 6;
-  tip.style.left = `${Math.max(4, Math.min(x, maxX))}px`;
-  tip.style.top = `${Math.max(4, y > maxY ? y - tip.offsetHeight - 24 : y)}px`;
+  tip.style.removeProperty("left");
+  tip.style.removeProperty("top");
 }
 function createTooltip(host) {
-  const tip = document.createElement("div");
+  const doc = host.ownerDocument;
+  const existing = doc.querySelector("body > .landscape-tip");
+  if (existing)
+    return existing;
+  const tip = doc.createElement("div");
   tip.className = "landscape-tip";
+  tip.setAttribute("role", "tooltip");
+  tip.setAttribute("aria-live", "polite");
+  tip.setAttribute("aria-atomic", "true");
   tip.hidden = true;
-  host.appendChild(tip);
+  doc.body.appendChild(tip);
   return tip;
 }
 function escapeHtml(text) {
@@ -2668,6 +2692,7 @@ function buildNkpBundleModel(state, options = {}) {
       label: node.label,
       groupId,
       ...node.status ? { status: node.status } : {},
+      color: node.color ?? "var(--muted)",
       tooltip: node.tooltip,
       focused: node.focused,
       fissionCandidate: Boolean(node.fissionCandidate),
@@ -2809,8 +2834,9 @@ function createBundleView(ctx) {
     const isConnected = (id) => !isSelected(id) && lastConnected.has(id);
     const dim = (id) => hasSelection && !isSelected(id) && !isConnected(id);
     built.leavesG.selectAll(".nkp-bundle-leaf").classed("selected", (node) => isSelected(node.data.id)).classed("connected", (node) => isConnected(node.data.id)).classed("dim", (node) => dim(node.data.id));
-    built.labelsGroup.selectAll(".nkp-bundle-leaf").classed("selected", (node) => isSelected(node.data.id)).classed("connected", (node) => isConnected(node.data.id)).classed("dim", (node) => dim(node.data.id));
+    built.labelsGroup.selectAll(".nkp-bundle-leaf").classed("selected", (node) => isSelected(node.data.id)).classed("connected", (node) => isConnected(node.data.id)).classed("dim", (node) => dim(node.data.id)).attr("opacity", (node) => dim(node.data.id) ? 0 : 1);
     built.groupsG.selectAll(".nkp-bundle-group").classed("selected", (d) => isSelected(d.group.id)).classed("connected", (d) => isConnected(d.group.id)).classed("dim", (d) => dim(d.group.id));
+    built.labelsGroup.selectAll(".nkp-bundle-group-label").attr("opacity", (d) => dim(d.group.id) ? 0 : 1);
   }
   function update(state, rawOptions = {}) {
     const options = rawOptions;
@@ -2866,7 +2892,7 @@ function createBundleView(ctx) {
       return mid > 90 && mid < 270;
     };
     const edgeData = model.edges.map((edge) => ({ edge, from: leafNodes.get(edge.source), to: leafNodes.get(edge.target) })).filter((item) => item.from && item.to).sort((left, right) => left.edge.count - right.edge.count);
-    const edgePaths = b.edgesG.selectAll("path.nkp-bundle-edge").data(edgeData, (item) => item.edge.id).join("path").attr("class", (item) => `nkp-bundle-edge${item.edge.fusion ? " fusion" : ""}`).attr("d", (item) => line(item.from.path(item.to))).each(function(item) {
+    const edgePaths = b.edgesG.selectAll("path.nkp-bundle-edge").data(edgeData, (item) => item.edge.id).join("path").attr("class", (item) => `nkp-bundle-edge${item.edge.fusion ? " fusion" : ""}`).attr("aria-label", (item) => item.edge.tooltip).attr("tabindex", 0).attr("d", (item) => line(item.from.path(item.to))).each(function(item) {
       const style = bundleEdgeStyle(item.edge.count, model.maxCount, item.edge.focused);
       this.style.strokeWidth = `${style.width}px`;
       this.style.strokeOpacity = String(style.opacity);
@@ -2874,6 +2900,11 @@ function createBundleView(ctx) {
     edgePaths.on("click", (_event, item) => {
       for (const key of item.edge.forceKeys)
         ctx.onToggle(`force:${key}`);
+    }).on("mouseenter focus", (event, item) => {
+      b.tip.textContent = item.edge.tooltip;
+      placeTooltip(host, b.tip, event);
+    }).on("mouseleave blur", () => {
+      b.tip.hidden = true;
     });
     const groupSel = b.groupsG.selectAll("g.nkp-bundle-group").data(groupArcs, (d) => d.group.id).join((enter) => {
       const g = enter.append("g").attr("class", "nkp-bundle-group");
@@ -2883,6 +2914,7 @@ function createBundleView(ctx) {
       g.append("path").attr("class", "nkp-bundle-name-path").attr("fill", "none");
       return g;
     });
+    groupSel.attr("aria-label", (d) => d.group.tooltip).attr("tabindex", 0);
     groupSel.select(".nkp-bundle-band").attr("fill", (d) => d.group.color).attr("d", (d) => band({ startAngle: toRadians(d.start), endAngle: toRadians(d.end) }));
     groupSel.select(".nkp-bundle-guide").attr("fill", (d) => d.group.color).attr("d", (d) => guide({ startAngle: toRadians(d.start), endAngle: toRadians(d.end) }));
     groupSel.select(".nkp-bundle-hit").attr("d", (d) => d3.arc().innerRadius(bandInner).outerRadius(nameRadius + 8)({ startAngle: toRadians(d.start), endAngle: toRadians(d.end) }));
@@ -2900,13 +2932,16 @@ function createBundleView(ctx) {
     });
     const leafSel = b.leavesG.selectAll("g.nkp-bundle-leaf").data(root.leaves(), (node) => node.data.id).join((enter) => {
       const g = enter.append("g");
-      g.append("circle").attr("class", "nkp-bundle-dot").attr("r", 3.2);
+      g.append("circle").attr("class", "nkp-bundle-dot nkp-component-status-glyph").attr("r", 3.2);
+      g.append("rect").attr("class", "nkp-bundle-dot nkp-component-status-glyph").attr("x", -3.2).attr("y", -3.2).attr("width", 6.4).attr("height", 6.4);
       return g;
     });
     leafSel.attr("class", (node) => {
       const leaf = node.data.leaf;
       return `nkp-bundle-leaf${leaf.fissionCandidate ? " fission" : ""}${leaf.focused ? "" : " unfocused"}`;
-    }).select("circle").attr("class", (node) => `nkp-bundle-dot status-${node.data.leaf.status ?? "actual"}`).attr("transform", (node) => `rotate(${node.x - 90}) translate(${node.y},0)`);
+    }).attr("data-component-id", (node) => node.data.id).attr("aria-label", (node) => node.data.leaf.tooltip).attr("tabindex", 0).attr("transform", (node) => `rotate(${node.x - 90}) translate(${node.y},0)`);
+    leafSel.select("circle").attr("data-component-status-shape", (node) => node.data.leaf.status === "proposed" ? null : "actual").attr("display", (node) => node.data.leaf.status === "proposed" ? "none" : null).attr("fill", (node) => node.data.leaf.color);
+    leafSel.select("rect").attr("data-component-status-shape", (node) => node.data.leaf.status === "proposed" ? "proposed" : null).attr("display", (node) => node.data.leaf.status === "proposed" ? null : "none").attr("fill", (node) => node.data.leaf.color);
     leafSel.on("click", (_event, node) => ctx.onToggle(node.data.id));
     const leafLabelSel = b.labelsGroup.selectAll("text.nkp-bundle-label").data(root.leaves(), (node) => node.data.id).join("text").attr("dy", "0.32em");
     leafLabelSel.attr("class", (node) => {
@@ -2933,9 +2968,10 @@ function createBundleView(ctx) {
       leafSel.classed("hl", false);
       leafLabelSel.classed("hl", false);
       groupSel.classed("hl", false);
+      b.labelsGroup.selectAll(".nkp-bundle-group-label").classed("hl", false);
       b.tip.hidden = true;
     };
-    leafSel.on("mouseenter", (event, node) => {
+    const showLeaf = (event, node) => {
       const leaf = node.data.leaf;
       b.svg.classed("hovering", true);
       const neighbours = new Set([leaf.id]);
@@ -2951,17 +2987,20 @@ function createBundleView(ctx) {
       leafSel.classed("hl", (other) => neighbours.has(other.data.id));
       leafLabelSel.classed("hl", (other) => neighbours.has(other.data.id));
       groupSel.classed("hl", (d) => d.group.id === leaf.groupId);
+      b.labelsGroup.selectAll(".nkp-bundle-group-label").classed("hl", (d) => d.group.id === leaf.groupId);
       const summary = leafNeighbourSummary(model, leaf.id);
       const group = model.groups.find((candidate) => candidate.id === leaf.groupId);
       const placement = group && group.label !== leaf.dominantLabel ? `${escapeHtml(group.label)} (own attractor: ${escapeHtml(leaf.dominantLabel)})` : escapeHtml(group?.label ?? "");
       const rows = summary.slice(0, 12).map((item) => `<li><b>${escapeHtml(item.label)}</b> (${item.count}): ${escapeHtml(item.stressors.join(", "))}</li>`).join("");
       b.tip.innerHTML = `<strong>${escapeHtml(leaf.label)}</strong>` + `<div class="muted">${placement}${leaf.fissionCandidate ? " · fission candidate" : ""}</div>` + (rows ? `<ul>${rows}</ul>${summary.length > 12 ? `<div class="muted">+${summary.length - 12} more</div>` : ""}` : `<div class="muted">No visible couplings</div>`);
       placeTooltip(host, b.tip, event);
-    }).on("mouseleave", clearHover);
-    groupSel.on("mouseenter", (event, d) => {
+    };
+    leafSel.on("mouseenter", showLeaf).on("focus", showLeaf).on("mouseleave", clearHover).on("blur", clearHover);
+    const showGroup = (event, d) => {
       const members = new Set(d.group.leaves.map((leaf) => leaf.id));
       b.svg.classed("hovering", true);
       groupSel.classed("hl", (other) => other === d);
+      b.labelsGroup.selectAll(".nkp-bundle-group-label").classed("hl", (other) => other === d);
       const touched = new Set;
       let internal = 0;
       let external = 0;
@@ -2984,7 +3023,8 @@ function createBundleView(ctx) {
       leafLabelSel.classed("hl", (node) => members.has(node.data.id) || touched.has(node.data.id));
       b.tip.innerHTML = `<strong>${escapeHtml(d.group.label)}</strong>` + `<div class="muted">${d.group.leaves.length} component(s) · ${internal} internal, ${external} cross-attractor couplings</div>`;
       placeTooltip(host, b.tip, event);
-    }).on("mouseleave", clearHover);
+    };
+    groupSel.on("mouseenter", showGroup).on("focus", showGroup).on("mouseleave", clearHover).on("blur", clearHover);
     applySelectionClasses();
   }
   function setSelection(selected, connected) {
@@ -3053,6 +3093,7 @@ function keepTopNTiers(counts, topN, direction) {
 }
 function buildSeriationModel(state, options = {}) {
   const { components, attractors, forces } = effectiveState(state);
+  const sharedComponents = new Map(buildNkpGraphModel(state, { minCouplingStrength: 1 }).nodes.filter((node) => node.type === "component").map((node) => [node.id, node]));
   const visibleForces = options.visibleForceIds;
   const isVisibleForce = (force) => visibleForces === undefined || visibleForces.has(force.key);
   const isVisibleComponent = (name) => options.visibleComponentNames === undefined || options.visibleComponentNames.has(name);
@@ -3071,17 +3112,8 @@ function buildSeriationModel(state, options = {}) {
   const summaries = components.map((component) => {
     const attached = forcesByComponent.get(component.name) ?? [];
     const focused = (visibleForces === undefined || attached.some(isVisibleForce)) && isVisibleComponent(component.name);
-    const perAttractor = new Map;
-    for (const force of attached)
-      perAttractor.set(force.attractorId, (perAttractor.get(force.attractorId) ?? 0) + 1);
-    let dominantAttractorId;
-    let dominantCount = 0;
-    for (const [id, count] of [...perAttractor].sort(([a], [b]) => a.localeCompare(b))) {
-      if (count > dominantCount) {
-        dominantAttractorId = id;
-        dominantCount = count;
-      }
-    }
+    const shared2 = sharedComponents.get(`component:${component.name}`);
+    const dominantAttractorId = shared2?.dominantAttractorId;
     const allAttached = allForcesByComponent.get(component.name) ?? [];
     return {
       name: component.name,
@@ -3089,6 +3121,7 @@ function buildSeriationModel(state, options = {}) {
       description: component.description,
       k: attached.length,
       ...dominantAttractorId ? { dominantAttractorId } : {},
+      color: shared2?.color ?? mutedAttractorColor("var(--muted)"),
       fissionCandidate: allAttached.length > (options.fissionThreshold ?? Number.POSITIVE_INFINITY),
       focused
     };
@@ -3276,8 +3309,10 @@ function createHeatmapView(ctx) {
         item.classList.toggle("selected", state === "selected");
         item.classList.toggle("connected", state === "connected");
         item.classList.toggle("dim", state === "dim");
+        item.style.opacity = state === "dim" ? "0" : "";
       }
     }
+    b.labelsGroup.selectAll("text.nkp-seriation-label").attr("opacity", (item) => item.entityKey && keyState([item.entityKey]) === "dim" ? 0 : 1);
   }
   function componentLines(item) {
     return [
@@ -3297,10 +3332,21 @@ function createHeatmapView(ctx) {
     host.insertBefore(legend, b.svg.node());
     b.legend = legend;
     for (const item of Array.from(legend.querySelectorAll("[data-legend-id]"))) {
+      const id = item.dataset.legendId ?? "";
+      item.setAttribute("aria-label", `Attractor ${model.attractors.find((attractor) => attractor.id === id)?.name ?? id}`);
+      item.tabIndex = 0;
+      const reveal = (event) => {
+        const attractor = model.attractors.find((candidate) => candidate.id === id);
+        showTooltip(event, [attractor?.name ?? id, `${attractor?.componentCount ?? 0} components`]);
+      };
+      item.addEventListener("mouseenter", reveal);
+      item.addEventListener("focus", reveal);
+      item.addEventListener("mouseleave", hideTooltip);
+      item.addEventListener("blur", hideTooltip);
       item.addEventListener("click", () => {
-        const id = item.dataset.legendId;
-        if (id)
-          ctx.onToggle(`attractor:${id}`);
+        const selectedId = item.dataset.legendId;
+        if (selectedId)
+          ctx.onToggle(`attractor:${selectedId}`);
       });
     }
   }
@@ -3321,6 +3367,7 @@ function createHeatmapView(ctx) {
       b2.rowHeadersLayer.selectAll("g.nkp-seriation-header.row").data([]).join("g");
       b2.colHeadersLayer.selectAll("g.nkp-seriation-header.col").data([]).join("g");
       b2.labelsGroup.selectAll("text").data([]).join("text");
+      b2.labelsGroup.selectAll("g.nkp-seriation-label-anchor").remove();
       hideTooltip();
       return;
     }
@@ -3332,7 +3379,6 @@ function createHeatmapView(ctx) {
     indexByName = new Map(model.components.map((item, index) => [item.name, index]));
     componentByIndex = new Map(model.components.map((item, index) => [index, item]));
     const n = model.components.length;
-    const colorFor = new Map(model.attractors.map((attractor) => [attractor.id, attractor.color]));
     const width = LABEL_WIDTH + STRIPE + n * CELL + 8;
     const height = HEADER_HEIGHT + STRIPE + n * CELL + 8;
     const gridX = LABEL_WIDTH + STRIPE;
@@ -3345,6 +3391,11 @@ function createHeatmapView(ctx) {
       g.append("rect");
       return g;
     }).attr("transform", (item) => `translate(${item.col * CELL},${item.row * CELL})`).attr("data-cell-row", (item) => String(item.row)).attr("data-cell-col", (item) => String(item.col));
+    cellSelection.attr("aria-label", (item) => {
+      const rowName = model.components[item.row]?.name ?? "unknown";
+      const colName = model.components[item.col]?.name ?? "unknown";
+      return `${rowName} and ${colName}: ${item.count} shared forces`;
+    }).attr("tabindex", 0);
     cellSelection.select("rect").attr("class", (item) => `nkp-seriation-heat${item.focused ? "" : " is-faded"}`).attr("width", CELL - 1).attr("height", CELL - 1).attr("fill-opacity", (item) => intensity(item.count, model.maxCount));
     b.cells = cellSelection;
     const diagonalSelection = b.diagonalLayer.selectAll("g.nkp-seriation-diagonal").data(model.components, (item) => item.name).join((enter) => {
@@ -3352,25 +3403,34 @@ function createHeatmapView(ctx) {
       g.append("rect").attr("class", "nkp-seriation-diag");
       return g;
     }).attr("transform", (item) => `translate(${(indexByName.get(item.name) ?? 0) * CELL},${(indexByName.get(item.name) ?? 0) * CELL})`).attr("data-diagonal-index", (item) => String(indexByName.get(item.name) ?? 0));
+    diagonalSelection.attr("aria-label", (item) => componentLines(item).join(". ")).attr("tabindex", 0);
     diagonalSelection.select("rect").attr("width", CELL - 1).attr("height", CELL - 1).attr("fill-opacity", (item) => intensity(item.k, model.maxK) * (item.focused ? 1 : 0.4));
     b.diagonal = diagonalSelection;
     const rowHeaders = b.rowHeadersLayer.selectAll("g.nkp-seriation-header.row").data(model.components, (item) => item.name).join((enter) => {
       const g = enter.append("g").attr("class", "nkp-seriation-header row");
       g.append("rect").attr("class", "nkp-seriation-hit");
       g.append("rect").attr("class", "nkp-seriation-stripe");
+      g.append("circle").attr("class", "nkp-component-status-glyph").attr("r", 4);
+      g.append("rect").attr("class", "nkp-component-status-glyph").attr("width", 8).attr("height", 8);
       return g;
-    }).attr("transform", (item) => `translate(${-gridX},${(indexByName.get(item.name) ?? 0) * CELL})`).attr("data-header-axis", "row").attr("data-header-index", (item) => String(indexByName.get(item.name) ?? 0));
+    }).attr("transform", (item) => `translate(${-gridX},${(indexByName.get(item.name) ?? 0) * CELL})`).attr("data-header-axis", "row").attr("data-header-index", (item) => String(indexByName.get(item.name) ?? 0)).attr("aria-label", (item) => componentLines(item).join(". ")).attr("tabindex", 0);
     rowHeaders.select(".nkp-seriation-hit").attr("width", LABEL_WIDTH + STRIPE).attr("height", CELL);
-    rowHeaders.select(".nkp-seriation-stripe").attr("x", LABEL_WIDTH).attr("width", STRIPE - 1).attr("height", CELL - 1).attr("fill", (item) => colorFor.get(item.dominantAttractorId ?? "") ?? "var(--line)");
+    rowHeaders.select(".nkp-seriation-stripe").attr("x", LABEL_WIDTH).attr("width", STRIPE - 1).attr("height", CELL - 1).attr("fill", (item) => item.color);
+    rowHeaders.select("circle").attr("cx", 8).attr("cy", CELL / 2).attr("data-component-status-shape", (item) => item.status === "actual" ? "actual" : null).attr("display", (item) => item.status === "actual" ? null : "none").attr("fill", (item) => item.color);
+    rowHeaders.select("rect.nkp-component-status-glyph").attr("x", 4).attr("y", CELL / 2 - 4).attr("data-component-status-shape", (item) => item.status === "proposed" ? "proposed" : null).attr("display", (item) => item.status === "proposed" ? null : "none").attr("fill", (item) => item.color);
     b.rowHeaders = rowHeaders;
     const colHeaders = b.colHeadersLayer.selectAll("g.nkp-seriation-header.col").data(model.components, (item) => item.name).join((enter) => {
       const g = enter.append("g").attr("class", "nkp-seriation-header col");
       g.append("rect").attr("class", "nkp-seriation-hit");
       g.append("rect").attr("class", "nkp-seriation-stripe");
+      g.append("circle").attr("class", "nkp-component-status-glyph").attr("r", 4);
+      g.append("rect").attr("class", "nkp-component-status-glyph").attr("width", 8).attr("height", 8);
       return g;
-    }).attr("transform", (item) => `translate(${(indexByName.get(item.name) ?? 0) * CELL},${-gridY})`).attr("data-header-axis", "col").attr("data-header-index", (item) => String(indexByName.get(item.name) ?? 0));
+    }).attr("transform", (item) => `translate(${(indexByName.get(item.name) ?? 0) * CELL},${-gridY})`).attr("data-header-axis", "col").attr("data-header-index", (item) => String(indexByName.get(item.name) ?? 0)).attr("aria-label", (item) => componentLines(item).join(". ")).attr("tabindex", 0);
     colHeaders.select(".nkp-seriation-hit").attr("width", CELL).attr("height", HEADER_HEIGHT + STRIPE);
-    colHeaders.select(".nkp-seriation-stripe").attr("y", HEADER_HEIGHT).attr("width", CELL - 1).attr("height", STRIPE - 1).attr("fill", (item) => colorFor.get(item.dominantAttractorId ?? "") ?? "var(--line)");
+    colHeaders.select(".nkp-seriation-stripe").attr("y", HEADER_HEIGHT).attr("width", CELL - 1).attr("height", STRIPE - 1).attr("fill", (item) => item.color);
+    colHeaders.select("circle").attr("cx", CELL / 2).attr("cy", HEADER_HEIGHT - 8).attr("data-component-status-shape", (item) => item.status === "actual" ? "actual" : null).attr("display", (item) => item.status === "actual" ? null : "none").attr("fill", (item) => item.color);
+    colHeaders.select("rect.nkp-component-status-glyph").attr("x", CELL / 2 - 4).attr("y", HEADER_HEIGHT - 12).attr("data-component-status-shape", (item) => item.status === "proposed" ? "proposed" : null).attr("display", (item) => item.status === "proposed" ? null : "none").attr("fill", (item) => item.color);
     b.colHeaders = colHeaders;
     const countClass = (count) => `nkp-seriation-count${intensity(count, model.maxCount) > 0.6 ? " nkp-seriation-count-strong" : ""}`;
     const textData = [];
@@ -3402,7 +3462,8 @@ function createHeatmapView(ctx) {
         className: headerClass(item),
         x: LABEL_WIDTH - 4,
         y: gridY + index * CELL + CELL / 2,
-        text: headerLabel(item)
+        text: headerLabel(item),
+        entityKey: `component:${item.name}`
       });
       textData.push({
         id: `col:${item.name}`,
@@ -3410,10 +3471,29 @@ function createHeatmapView(ctx) {
         x: gridX + index * CELL + CELL / 2,
         y: HEADER_HEIGHT - 4,
         transform: `rotate(-60 ${gridX + index * CELL + CELL / 2} ${HEADER_HEIGHT - 4})`,
-        text: headerLabel(item)
+        text: headerLabel(item),
+        entityKey: `component:${item.name}`
       });
     }
-    b.labelsGroup.selectAll("text").data(textData, (item) => item.id).join("text").attr("class", (item) => item.className).attr("x", (item) => item.x).attr("y", (item) => item.y).attr("transform", (item) => item.transform ?? null).attr("text-anchor", (item) => item.id.startsWith("row:") ? "end" : "middle").text((item) => item.text);
+    b.labelsGroup.selectAll("text").data(textData, (item) => item.id).join("text").attr("class", (item) => item.className).attr("x", (item) => item.x).attr("y", (item) => item.y).attr("transform", (item) => item.transform ?? null).attr("text-anchor", (item) => item.id.startsWith("row:") ? "end" : "middle").text((item) => item.text).each(function(item) {
+      if (!item.id.startsWith("row:") && !item.id.startsWith("col:"))
+        return;
+      const axis = item.id.startsWith("row:") ? "row" : "col";
+      const name = item.id.slice(4);
+      let wrapper = this.parentElement;
+      if (!wrapper?.classList.contains("nkp-seriation-label-anchor")) {
+        wrapper = document.createElementNS("http://www.w3.org/2000/svg", "g");
+        wrapper.classList.add("nkp-seriation-label-anchor");
+        this.parentNode?.insertBefore(wrapper, this);
+        wrapper.appendChild(this);
+      }
+      wrapper.setAttribute("data-header-axis", axis);
+      wrapper.setAttribute("data-header-index", String(indexByName.get(name) ?? 0));
+      wrapper.setAttribute("aria-label", `${axis === "row" ? "Row" : "Column"} label ${name}`);
+    });
+    b.labelsGroup.selectAll("g.nkp-seriation-label-anchor").filter(function() {
+      return this.querySelector("text") === null;
+    }).remove();
     cellSelection.on("mousemove", (event, item) => {
       const half = cellHalf(item.row, item.col);
       hoverMirrorHalf = half === "diagonal" ? undefined : half;
@@ -3422,7 +3502,11 @@ function createHeatmapView(ctx) {
       const rowName = componentByIndex.get(item.row)?.name ?? "";
       const colName = componentByIndex.get(item.col)?.name ?? "";
       showTooltip(event, [`${rowName} × ${colName}: ${item.count} shared`, ...item.forces]);
-    }).on("mouseleave", clearHover).on("click", (_event, item) => {
+    }).on("focus", (event, item) => {
+      const rowName = componentByIndex.get(item.row)?.name ?? "";
+      const colName = componentByIndex.get(item.col)?.name ?? "";
+      showTooltip(event, [`${rowName} × ${colName}: ${item.count} shared`, ...item.forces]);
+    }).on("mouseleave blur", clearHover).on("click", (_event, item) => {
       for (const key of item.forceKeys)
         ctx.onToggle(`force:${key}`);
       const half = cellHalf(item.row, item.col);
@@ -3434,13 +3518,13 @@ function createHeatmapView(ctx) {
       const index = indexByName.get(item.name);
       applyHeaderBands(index, index);
       showTooltip(event, componentLines(item));
-    }).on("mouseleave", clearHover).on("click", (_event, item) => ctx.onToggle(`component:${item.name}`));
+    }).on("focus", (event, item) => showTooltip(event, componentLines(item))).on("mouseleave blur", clearHover).on("click", (_event, item) => ctx.onToggle(`component:${item.name}`));
     const headerHandlers = (selection) => {
       selection.on("mousemove", (event, item) => {
         const index = indexByName.get(item.name);
         applyHeaderBands(index, index);
         showTooltip(event, componentLines(item));
-      }).on("mouseleave", clearHover).on("click", (_event, item) => ctx.onToggle(`component:${item.name}`));
+      }).on("focus", (event, item) => showTooltip(event, componentLines(item))).on("mouseleave blur", clearHover).on("click", (_event, item) => ctx.onToggle(`component:${item.name}`));
     };
     headerHandlers(rowHeaders);
     headerHandlers(colHeaders);
@@ -3607,6 +3691,137 @@ function nudgeLabels(boxes, maxShift = 12) {
   }
   return shifts.map((value) => clamp(value, -limit, limit));
 }
+function latticePoint(column, row, cellSize) {
+  return { x: column * cellSize, y: row * cellSize };
+}
+function tessellateNodes(nodes, options) {
+  const cellSize = Math.max(Number.EPSILON, options.cellSize);
+  const minDistance = Math.max(0, options.minDistance);
+  const placed = [];
+  const occupied = new Set;
+  const key = (column, row) => `${column}:${row}`;
+  const nearestAvailableCell = (baseColumn, baseRow) => {
+    for (let radius = 0;; radius += 1) {
+      for (let column = baseColumn - radius;column <= baseColumn + radius; column += 1) {
+        for (let row = baseRow - radius;row <= baseRow + radius; row += 1) {
+          if (Math.max(Math.abs(column - baseColumn), Math.abs(row - baseRow)) !== radius)
+            continue;
+          const cell = key(column, row);
+          if (!occupied.has(cell))
+            return cell;
+        }
+      }
+    }
+  };
+  const isClear = (point) => placed.every((other) => Math.hypot(point.x - other.x, point.y - other.y) + Number.EPSILON >= minDistance);
+  const ordered = [...nodes].sort((left, right) => {
+    const leftPinned = left.fx !== undefined && left.fy !== undefined;
+    const rightPinned = right.fx !== undefined && right.fy !== undefined;
+    return Number(rightPinned) - Number(leftPinned) || left.id.localeCompare(right.id);
+  });
+  for (const node of ordered) {
+    const pinned = node.fx !== undefined && node.fy !== undefined;
+    const anchor = pinned ? { x: node.fx, y: node.fy } : node;
+    const baseColumn = Math.round(anchor.x / cellSize);
+    const baseRow = Math.round(anchor.y / cellSize);
+    if (pinned) {
+      const cell = nearestAvailableCell(baseColumn, baseRow);
+      occupied.add(cell);
+      placed.push({ id: node.id, x: anchor.x, y: anchor.y, cell });
+      continue;
+    }
+    let chosen;
+    for (let radius = 0;chosen === undefined; radius += 1) {
+      const candidates = [];
+      for (let column = baseColumn - radius;column <= baseColumn + radius; column += 1) {
+        for (let row = baseRow - radius;row <= baseRow + radius; row += 1) {
+          if (Math.max(Math.abs(column - baseColumn), Math.abs(row - baseRow)) !== radius)
+            continue;
+          const point = latticePoint(column, row, cellSize);
+          candidates.push({ column, row, point, cell: key(column, row) });
+        }
+      }
+      candidates.sort((left, right) => Math.hypot(left.point.x - node.x, left.point.y - node.y) - Math.hypot(right.point.x - node.x, right.point.y - node.y) || left.column - right.column || left.row - right.row);
+      const available = candidates.find((candidate) => !occupied.has(candidate.cell) && isClear(candidate.point));
+      if (available)
+        chosen = available;
+    }
+    occupied.add(chosen.cell);
+    placed.push({ id: node.id, ...chosen.point, cell: chosen.cell });
+  }
+  return placed;
+}
+function insideBounds(point, bounds) {
+  return point.x >= bounds.x && point.x <= bounds.x + bounds.width && point.y >= bounds.y && point.y <= bounds.y + bounds.height;
+}
+function clipPolygonToBounds(points, bounds) {
+  if (points.length < 3)
+    return points.filter((point) => insideBounds(point, bounds));
+  const edges = [
+    {
+      inside: (point) => point.x >= bounds.x,
+      intersect: (from, to) => {
+        const ratio = (bounds.x - from.x) / (to.x - from.x);
+        return { x: bounds.x, y: from.y + (to.y - from.y) * ratio };
+      }
+    },
+    {
+      inside: (point) => point.x <= bounds.x + bounds.width,
+      intersect: (from, to) => {
+        const x = bounds.x + bounds.width;
+        const ratio = (x - from.x) / (to.x - from.x);
+        return { x, y: from.y + (to.y - from.y) * ratio };
+      }
+    },
+    {
+      inside: (point) => point.y >= bounds.y,
+      intersect: (from, to) => {
+        const ratio = (bounds.y - from.y) / (to.y - from.y);
+        return { x: from.x + (to.x - from.x) * ratio, y: bounds.y };
+      }
+    },
+    {
+      inside: (point) => point.y <= bounds.y + bounds.height,
+      intersect: (from, to) => {
+        const y = bounds.y + bounds.height;
+        const ratio = (y - from.y) / (to.y - from.y);
+        return { x: from.x + (to.x - from.x) * ratio, y };
+      }
+    }
+  ];
+  let clipped = [...points];
+  for (const edge of edges) {
+    const input = clipped;
+    clipped = [];
+    for (let index = 0;index < input.length; index += 1) {
+      const from = input[index];
+      const to = input[(index + 1) % input.length];
+      const fromInside = edge.inside(from);
+      const toInside = edge.inside(to);
+      if (fromInside && toInside)
+        clipped.push(to);
+      else if (fromInside)
+        clipped.push(edge.intersect(from, to));
+      else if (toInside)
+        clipped.push(edge.intersect(from, to), to);
+    }
+    if (clipped.length === 0)
+      break;
+  }
+  return clipped;
+}
+function projectLabelAnchor(point, bounds, preferredRegion = []) {
+  if (insideBounds(point, bounds))
+    return { ...point };
+  const visibleRegion = clipPolygonToBounds(preferredRegion, bounds);
+  if (visibleRegion.length > 0) {
+    return centroid(visibleRegion) ?? { ...visibleRegion[0] };
+  }
+  return {
+    x: clamp(point.x, bounds.x, bounds.x + bounds.width),
+    y: clamp(point.y, bounds.y, bounds.y + bounds.height)
+  };
+}
 
 // src/nkp-hypergraph.ts
 function forceNodeId(force) {
@@ -3614,6 +3829,7 @@ function forceNodeId(force) {
 }
 function buildNkpHypergraphModel(state, options = {}) {
   const { components, attractors, forces } = effectiveState(state);
+  const sharedComponents = new Map(buildNkpGraphModel(state, { minCouplingStrength: 1 }).nodes.filter((node) => node.type === "component").map((node) => [node.id, node]));
   const visible = options.visibleForceIds;
   const isVisibleForce = (force) => visible === undefined || visible.has(force.key);
   const isVisibleComponent = (name) => options.visibleComponentNames === undefined || options.visibleComponentNames.has(name);
@@ -3630,11 +3846,15 @@ function buildNkpHypergraphModel(state, options = {}) {
   const componentNodes = components.map((component) => {
     const attached = componentForces.get(component.name) ?? [];
     const focused = (visible === undefined || attached.some(isVisibleForce)) && isVisibleComponent(component.name);
+    const shared = sharedComponents.get(`component:${component.name}`);
     return {
       id: `component:${component.name}`,
       type: "component",
       label: component.name,
       status: component.status,
+      shape: shared?.shape ?? (component.status === "actual" ? "circle" : "square"),
+      color: shared?.color ?? "var(--muted)",
+      ...shared?.dominantAttractorId ? { dominantAttractorId: shared.dominantAttractorId } : {},
       tooltip: [component.name, component.description, `Status: ${component.status}`, `Forces: ${attached.length}`].join(`
 `),
       focused,
@@ -3650,6 +3870,7 @@ function buildNkpHypergraphModel(state, options = {}) {
     label: forceLabel(force),
     kind: force.kind,
     attractorId: force.attractorId,
+    componentIds: [...new Set(force.components)].map((name) => `component:${name}`),
     tooltip: [
       `${force.key} ${force.shortname}`.trim(),
       force.description,
@@ -3787,6 +4008,18 @@ function regionCorePath(points) {
   }
   return `M${hull.map((point) => `${fmt2(point.x)},${fmt2(point.y)}`).join("L")}Z`;
 }
+function paddedRegionPath(points, padding) {
+  const radius = Math.max(0, padding);
+  if (points.length === 0)
+    return "";
+  const expanded = points.flatMap((point) => [
+    { x: point.x - radius, y: point.y - radius },
+    { x: point.x + radius, y: point.y - radius },
+    { x: point.x + radius, y: point.y + radius },
+    { x: point.x - radius, y: point.y + radius }
+  ]);
+  return regionCorePath(expanded);
+}
 function centroid2(points) {
   if (points.length === 0)
     return;
@@ -3823,8 +4056,13 @@ function createAttractorCohesionForce(strength = 0.3) {
   return force;
 }
 var REGION_PADDING = 22;
+var FUSION_REGION_PADDING = 18;
 var DEFAULT_CANVAS_WIDTH = 800;
 var DEFAULT_CANVAS_HEIGHT = 600;
+var REGIONS_LATTICE_CELL_SIZE = 40;
+var REGIONS_MIN_NODE_DISTANCE = 32;
+var REGIONS_COMPONENT_COLLISION_RADIUS = 30;
+var REGIONS_FORCE_COLLISION_RADIUS = 9;
 var FORCE_NODE_SCALE = 1.3;
 var FORCE_DIAMOND_HALF_DIAGONAL = 5 * FORCE_NODE_SCALE;
 var FORCE_CIRCLE_RADIUS = 4 * FORCE_NODE_SCALE;
@@ -3844,9 +4082,12 @@ var FORCE_INTERACTION_PURPOSE_STRENGTH = 42;
 var FORCE_INTERACTION_STRESSOR_STRENGTH = 16;
 function forceInteractionDelta(source, target, params) {
   const zero = { vx: 0, vy: 0 };
-  if (source.attractorId === undefined || target.attractorId === undefined || source.attractorId === target.attractorId) {
+  const targetIsComponent = target.type === "component" || target.id?.startsWith("component:") === true;
+  const targetIsForce = target.type === "force" || target.id?.startsWith("force:") === true;
+  const directlyConnected = target.id !== undefined && (source.componentIds ?? []).includes(target.id);
+  const interacts = source.kind === "stressor" ? targetIsForce && source.attractorId !== undefined && target.attractorId === source.attractorId || targetIsComponent && directlyConnected : targetIsForce && source.attractorId !== undefined && target.attractorId !== undefined && target.attractorId !== source.attractorId || targetIsComponent && !directlyConnected;
+  if (!interacts)
     return zero;
-  }
   const dx = (target.x ?? 0) - (source.x ?? 0);
   const dy = (target.y ?? 0) - (source.y ?? 0);
   const distance = Math.hypot(dx, dy);
@@ -3859,14 +4100,16 @@ function forceInteractionDelta(source, target, params) {
   return { vx: dx / distance * strength * sign, vy: dy / distance * strength * sign };
 }
 function createForceInteractionForce(distanceMax = FORCE_INTERACTION_DISTANCE_MAX) {
-  let forceNodes = [];
+  let interactionNodes = [];
   const force = (alpha) => {
-    for (const target of forceNodes) {
+    for (const target of interactionNodes) {
       if (target.fx != null)
         continue;
       let dvx = 0;
       let dvy = 0;
-      for (const source of forceNodes) {
+      for (const source of interactionNodes) {
+        if (source.type !== "force")
+          continue;
         if (source === target)
           continue;
         const delta = forceInteractionDelta(source, target, { distanceMax });
@@ -3878,7 +4121,7 @@ function createForceInteractionForce(distanceMax = FORCE_INTERACTION_DISTANCE_MA
     }
   };
   force.initialize = (nodes) => {
-    forceNodes = nodes.filter((node) => node.type === "force");
+    interactionNodes = nodes;
   };
   return force;
 }
@@ -3890,8 +4133,44 @@ function translateGroup(nodes, attractorId, dx, dy) {
     node.y = (node.y ?? 0) + dy;
   }
 }
+function captureRegionLock(nodes, attractorId) {
+  const members = nodes.filter((node) => node.type === "force" && node.attractorId === attractorId);
+  const points = members.map((node) => ({ x: node.x ?? 0, y: node.y ?? 0 }));
+  const anchor = centroid2(points);
+  if (anchor === undefined)
+    return;
+  return {
+    attractorId,
+    anchor,
+    offsets: new Map(members.map((node) => [node.id, {
+      x: (node.x ?? 0) - anchor.x,
+      y: (node.y ?? 0) - anchor.y
+    }]))
+  };
+}
+function applyRegionLock(lock, nodes) {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  for (const [id, offset] of lock.offsets) {
+    const node = byId.get(id);
+    if (node === undefined || node.type !== "force")
+      continue;
+    node.x = lock.anchor.x + offset.x;
+    node.y = lock.anchor.y + offset.y;
+  }
+}
+function moveRegionLock(lock, anchor) {
+  return { ...lock, anchor: { ...anchor }, offsets: new Map(lock.offsets) };
+}
+function editRegionForceOffset(lock, forceId, point) {
+  if (!lock.offsets.has(forceId))
+    return { ...lock, offsets: new Map(lock.offsets) };
+  const offsets = new Map(lock.offsets);
+  offsets.set(forceId, { x: point.x - lock.anchor.x, y: point.y - lock.anchor.y });
+  return { ...lock, offsets };
+}
 function createRegionsView(ctx) {
   const { host, d3 } = ctx;
+  const lockState = ctx.lockState ?? { enabled: false, locks: new Map };
   let built;
   let nodes = [];
   let byId = new Map;
@@ -3910,6 +4189,115 @@ function createRegionsView(ctx) {
   let tickCount = 0;
   let labelShiftByKey = new Map;
   let groupColorById = new Map;
+  let latticeTargets = new Map;
+  const regionPinnedIds = new Set;
+  const draggingNodeIds = new Set;
+  const draggingRegionIds = new Set;
+  const latticeForce = (alpha) => {
+    const strength = Math.min(0.35, 0.18 + alpha * 0.2);
+    for (const node of nodes) {
+      if (node.fx != null || node.fy != null)
+        continue;
+      const target = latticeTargets.get(node.id);
+      if (!target)
+        continue;
+      node.vx = (node.vx ?? 0) + (target.x - (node.x ?? 0)) * strength * alpha;
+      node.vy = (node.vy ?? 0) + (target.y - (node.y ?? 0)) * strength * alpha;
+    }
+  };
+  latticeForce.initialize = () => {};
+  function deterministicOffset(id) {
+    let hash = 2166136261;
+    for (let index = 0;index < id.length; index += 1) {
+      hash ^= id.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    const angle = (hash >>> 0) / 4294967295 * Math.PI * 2;
+    const radius = 8 + (hash >>> 8 & 15);
+    return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
+  }
+  function refreshLatticeTargets(snapIds = new Set) {
+    const placed = tessellateNodes(nodes.map((node) => ({
+      id: node.id,
+      x: node.x ?? 0,
+      y: node.y ?? 0,
+      ...snapIds.has(node.id) ? {} : { fx: node.x ?? 0, fy: node.y ?? 0 }
+    })), {
+      cellSize: REGIONS_LATTICE_CELL_SIZE,
+      minDistance: REGIONS_MIN_NODE_DISTANCE
+    });
+    latticeTargets = new Map(placed.map((item) => [item.id, { x: item.x, y: item.y }]));
+    for (const node of nodes) {
+      if (!snapIds.has(node.id))
+        continue;
+      const point = latticeTargets.get(node.id);
+      if (!point)
+        continue;
+      node.x = point.x;
+      node.y = point.y;
+      node.vx = 0;
+      node.vy = 0;
+    }
+  }
+  function pinLockedMembers(lock) {
+    applyRegionLock(lock, nodes);
+    for (const node of nodes) {
+      if (node.type !== "force" || node.attractorId !== lock.attractorId || !lock.offsets.has(node.id))
+        continue;
+      node.fx = node.x;
+      node.fy = node.y;
+      regionPinnedIds.add(node.id);
+    }
+  }
+  function includeNewLockMembers(lock) {
+    let next = lock;
+    const additions = nodes.filter((node) => node.type === "force" && node.attractorId === lock.attractorId && !lock.offsets.has(node.id)).sort((left, right) => left.id.localeCompare(right.id));
+    for (const node of additions) {
+      const offset = deterministicOffset(node.id);
+      node.x = next.anchor.x + offset.x;
+      node.y = next.anchor.y + offset.y;
+      refreshLatticeTargets(new Set([node.id]));
+      next = {
+        ...next,
+        offsets: new Map(next.offsets).set(node.id, {
+          x: (node.x ?? 0) - next.anchor.x,
+          y: (node.y ?? 0) - next.anchor.y
+        })
+      };
+    }
+    return next;
+  }
+  function syncRegionLocks(groups, enabled) {
+    const wasEnabled = lockState.enabled;
+    lockState.enabled = enabled;
+    if (!enabled) {
+      for (const id of regionPinnedIds) {
+        if (draggingNodeIds.has(id))
+          continue;
+        const node = byId.get(id);
+        if (node?.type === "force" && draggingRegionIds.has(node.attractorId))
+          continue;
+        if (node) {
+          node.fx = null;
+          node.fy = null;
+        }
+      }
+      regionPinnedIds.clear();
+      if (wasEnabled)
+        lockState.locks.clear();
+      return;
+    }
+    for (const group of groups) {
+      let lock = lockState.locks.get(group.attractorId) ?? captureRegionLock(nodes, group.attractorId);
+      if (!lock)
+        continue;
+      applyRegionLock(lock, nodes);
+      lock = includeNewLockMembers(lock);
+      lockState.locks.set(group.attractorId, lock);
+      pinLockedMembers(lock);
+    }
+    refreshLatticeTargets();
+  }
   function colorFor(attractorId) {
     return groupColorById.get(attractorId) ?? "var(--muted)";
   }
@@ -3940,10 +4328,10 @@ function createRegionsView(ctx) {
     regionSel?.select("path").attr("d", (group) => regionCorePath(pointsOfGroup(group)));
   }
   function positionFusionHulls() {
-    fusionSel?.attr("d", (item) => regionCorePath(item.ids.map((id) => {
+    fusionSel?.attr("d", (item) => paddedRegionPath(item.ids.map((id) => {
       const node = byId.get(id);
       return { x: node?.x ?? 0, y: node?.y ?? 0 };
-    })));
+    }), FUSION_REGION_PADDING));
   }
   function positionEdges() {
     const geometryByBundle = new Map;
@@ -4020,27 +4408,40 @@ function createRegionsView(ctx) {
     labelShiftByKey = new Map(keyed.map((item, index) => [item.key, shifts[index] ?? 0]));
   }
   function positionLabels() {
-    componentLabelSel?.attr("x", (node) => node.x ?? 0).attr("y", (node) => (node.y ?? 0) + (node.type === "component" && node.fissionCandidate ? -19 : -13));
-    forceLabelSel?.attr("x", (node) => node.x ?? 0).attr("y", (node) => (node.y ?? 0) - 9);
+    if (!built)
+      return;
+    const bounds = { x: 8, y: 8, width: Math.max(0, built.width - 16), height: Math.max(0, built.height - 16) };
+    componentLabelSel?.attr("x", (node) => projectLabelAnchor({ x: node.x ?? 0, y: (node.y ?? 0) + (node.type === "component" && node.fissionCandidate ? -19 : -13) }, bounds).x).attr("y", (node) => projectLabelAnchor({ x: node.x ?? 0, y: (node.y ?? 0) + (node.type === "component" && node.fissionCandidate ? -19 : -13) }, bounds).y);
+    forceLabelSel?.attr("x", (node) => projectLabelAnchor({ x: node.x ?? 0, y: (node.y ?? 0) - 9 }, bounds).x).attr("y", (node) => projectLabelAnchor({ x: node.x ?? 0, y: (node.y ?? 0) - 9 }, bounds).y);
     regionLabelSel?.each(function(group) {
       const points = pointsOfGroup(group);
       const center = centroid2(points);
       if (!center)
         return;
       const top = Math.min(...points.map((point) => point.y));
-      d3.select(this).attr("x", center.x).attr("y", top - REGION_PADDING - 4);
+      const preferredRegion = convexHull(points);
+      const anchor = projectLabelAnchor({ x: center.x, y: top - REGION_PADDING - 4 }, bounds, preferredRegion.length >= 3 ? preferredRegion : []);
+      d3.select(this).attr("x", anchor.x).attr("y", anchor.y);
     });
     tickCount += 1;
     recomputeLabelNudges(false);
-    componentLabelSel?.attr("y", (node) => (node.y ?? 0) + (node.type === "component" && node.fissionCandidate ? -19 : -13) + (labelShiftByKey.get(node.id) ?? 0));
-    forceLabelSel?.attr("y", (node) => (node.y ?? 0) - 9 + (labelShiftByKey.get(node.id) ?? 0));
+    componentLabelSel?.attr("y", (node) => {
+      const base = projectLabelAnchor({ x: node.x ?? 0, y: (node.y ?? 0) + (node.type === "component" && node.fissionCandidate ? -19 : -13) }, bounds);
+      return projectLabelAnchor({ x: base.x, y: base.y + (labelShiftByKey.get(node.id) ?? 0) }, bounds).y;
+    });
+    forceLabelSel?.attr("y", (node) => {
+      const base = projectLabelAnchor({ x: node.x ?? 0, y: (node.y ?? 0) - 9 }, bounds);
+      return projectLabelAnchor({ x: base.x, y: base.y + (labelShiftByKey.get(node.id) ?? 0) }, bounds).y;
+    });
     regionLabelSel?.attr("y", (group) => {
       const points = pointsOfGroup(group);
       const center = centroid2(points);
       if (!center)
         return -9999;
       const top = Math.min(...points.map((point) => point.y));
-      return top - REGION_PADDING - 4 + (labelShiftByKey.get(`attractor:${group.attractorId}`) ?? 0);
+      const preferredRegion = convexHull(points);
+      const anchor = projectLabelAnchor({ x: center.x, y: top - REGION_PADDING - 4 + (labelShiftByKey.get(`attractor:${group.attractorId}`) ?? 0) }, bounds, preferredRegion.length >= 3 ? preferredRegion : []);
+      return anchor.y;
     });
   }
   function tick() {
@@ -4068,25 +4469,26 @@ function createRegionsView(ctx) {
     const labelsGroup = svg.append("g").attr("class", "landscape-labels");
     zoom.on("zoom.labels", (event) => labelsGroup.attr("transform", event.transform));
     svg.on("dblclick", () => ctx.onClear());
-    const sim = d3.forceSimulation([]).force("link", d3.forceLink([]).id((item) => item.id).distance(60).strength(0.18)).force("charge", d3.forceManyBody().strength((item) => item.type === "component" ? -650 : -130)).force("x", d3.forceX(width / 2).strength(0.05)).force("y", d3.forceY(height / 2).strength(0.05)).force("collision", d3.forceCollide().radius((item) => item.type === "component" ? 30 : 9)).force("cohesion", createAttractorCohesionForce()).force("interaction", createForceInteractionForce()).on("tick", tick).on("end", () => {
+    const sim = d3.forceSimulation([]).force("link", d3.forceLink([]).id((item) => item.id).distance(60).strength(0.18)).force("charge", d3.forceManyBody().strength((item) => item.type === "component" ? -650 : -130)).force("x", d3.forceX(width / 2).strength(0.05)).force("y", d3.forceY(height / 2).strength(0.05)).force("collision", d3.forceCollide().radius((item) => item.type === "component" ? REGIONS_COMPONENT_COLLISION_RADIUS : REGIONS_FORCE_COLLISION_RADIUS)).force("lattice", latticeForce).force("cohesion", createAttractorCohesionForce()).force("interaction", createForceInteractionForce()).on("tick", tick).on("end", () => {
       recomputeLabelNudges(true);
       positionLabels();
     }).stop();
-    built = { svg, zoom, regionsG, fusionG, edgesG, nodesG, labelsGroup, sim, width, height, didFit: false };
+    built = { svg, zoom, regionsG, fusionG, edgesG, nodesG, labelsGroup, sim, width, height, didFit: false, tip: createTooltip(host) };
     return built;
   }
   function seedPosition(item, placed, focusComponentId) {
-    const jitter = () => (Math.random() - 0.5) * 30;
+    const offset = deterministicOffset(item.id);
     if (item.type === "force") {
       const siblings = [...placed.values()].filter((node) => node.type === "force" && node.attractorId === item.attractorId && node.x !== undefined);
       const center = centroid2(siblings.map((node) => ({ x: node.x ?? 0, y: node.y ?? 0 })));
       if (center)
-        return { x: center.x + jitter(), y: center.y + jitter() };
+        return { x: center.x + offset.x, y: center.y + offset.y };
     }
     const focus = focusComponentId ? placed.get(focusComponentId) : undefined;
     if (focus?.x !== undefined)
-      return { x: focus.x + jitter(), y: (focus.y ?? 0) + jitter() };
-    return { x: jitter(), y: jitter() };
+      return { x: focus.x + offset.x, y: (focus.y ?? 0) + offset.y };
+    const { width, height } = canvasSize();
+    return { x: width / 2 + offset.x, y: height / 2 + offset.y };
   }
   function applySelectionClasses() {
     if (!built)
@@ -4101,6 +4503,8 @@ function createRegionsView(ctx) {
     applyToKeyed(nodeSel);
     applyToKeyed(componentLabelSel);
     applyToKeyed(forceLabelSel);
+    componentLabelSel?.attr("opacity", (node) => dim(node.id) ? 0 : 1);
+    forceLabelSel?.attr("opacity", (node) => hasSelection && !dim(node.id) ? 1 : 0);
     const bundleDim = (bundle) => {
       if (!hasSelection)
         return false;
@@ -4118,7 +4522,7 @@ function createRegionsView(ctx) {
       return hasSelection && !(isSelected(key) || isConnected(key));
     };
     regionSel?.classed("dim", regionDim);
-    regionLabelSel?.classed("dim", regionDim);
+    regionLabelSel?.classed("dim", regionDim).attr("opacity", (group) => regionDim(group) ? 0 : group.focused ? 0.9 : 0.4);
   }
   function update(state, rawOptions = {}) {
     const options = rawOptions;
@@ -4135,6 +4539,7 @@ function createRegionsView(ctx) {
       bundles = [];
       b2.sim.nodes([]);
       b2.sim.force("link").links([]);
+      syncRegionLocks([], options.lockRegions === true);
       regionSel = b2.regionsG.selectAll("g.nkp-hyper-region").data([]).join("g");
       fusionSel = b2.fusionG.selectAll("path.nkp-hyper-fusion-hull").data([]).join("path");
       bundleTrunkSel = b2.edgesG.selectAll("path.nkp-hyper-bundle-trunk").data([]).join("path");
@@ -4159,8 +4564,11 @@ function createRegionsView(ctx) {
     const focusComponentId = options.focusComponent ? `component:${options.focusComponent}` : undefined;
     const prevById = byId;
     const nextById = new Map;
+    const newcomerIds = new Set;
     nodes = model.nodes.map((item) => {
       const existing = prevById.get(item.id);
+      if (!existing)
+        newcomerIds.add(item.id);
       const merged = existing ? { ...item, x: existing.x, y: existing.y, vx: existing.vx, vy: existing.vy, fx: existing.fx ?? null, fy: existing.fy ?? null } : { ...item, ...seedPosition(item, nextById, focusComponentId), vx: 0, vy: 0 };
       nextById.set(item.id, merged);
       return merged;
@@ -4168,22 +4576,32 @@ function createRegionsView(ctx) {
     byId = nextById;
     links = model.edges.map((edge) => ({ ...edge }));
     bundles = model.branchBundles.map((bundle) => ({ ...bundle }));
+    refreshLatticeTargets(newcomerIds);
     b.sim.nodes(nodes);
     b.sim.force("link").links(links);
+    syncRegionLocks(model.groups, options.lockRegions === true);
     b.sim.alpha(0.3).restart();
     regionSel = b.regionsG.selectAll("g.nkp-hyper-region").data(model.groups, (group) => group.attractorId).join((enter) => {
       const g = enter.append("g").attr("class", "nkp-hyper-region");
       g.append("path");
-      g.append("title");
       return g;
     });
-    regionSel.attr("opacity", (group) => group.focused ? 0.16 : 0.07);
+    regionSel.attr("opacity", (group) => group.focused ? 0.16 : 0.07).attr("aria-label", (group) => group.tooltip).attr("tabindex", 0);
     regionSel.select("path").attr("fill", (group) => group.color).attr("stroke", (group) => group.color).attr("stroke-width", REGION_PADDING * 2).attr("stroke-linejoin", "round").attr("stroke-linecap", "round");
-    regionSel.select("title").text((group) => group.tooltip);
     regionSel.on("click", (_event, group) => ctx.onToggle(`attractor:${group.attractorId}`));
     regionSel.call(d3.drag().on("start", (event, group) => {
       if (!event.active)
         b.sim.alphaTarget(0.15).restart();
+      draggingRegionIds.add(group.attractorId);
+      if (lockState.enabled) {
+        let lock = lockState.locks.get(group.attractorId) ?? captureRegionLock(nodes, group.attractorId);
+        if (lock) {
+          lock = includeNewLockMembers(lock);
+          lockState.locks.set(group.attractorId, lock);
+          pinLockedMembers(lock);
+        }
+        return;
+      }
       for (const node of nodes) {
         if (node.type === "force" && node.attractorId === group.attractorId) {
           node.fx = node.x;
@@ -4191,6 +4609,20 @@ function createRegionsView(ctx) {
         }
       }
     }).on("drag", (event, group) => {
+      if (lockState.enabled) {
+        const lock = lockState.locks.get(group.attractorId);
+        if (!lock)
+          return;
+        const moved = moveRegionLock(lock, {
+          x: lock.anchor.x + event.dx,
+          y: lock.anchor.y + event.dy
+        });
+        lockState.locks.set(group.attractorId, moved);
+        pinLockedMembers(moved);
+        refreshLatticeTargets();
+        tick();
+        return;
+      }
       translateGroup(nodes, group.attractorId, event.dx, event.dy);
       for (const node of nodes) {
         if (node.type === "force" && node.attractorId === group.attractorId) {
@@ -4198,9 +4630,17 @@ function createRegionsView(ctx) {
           node.fy = node.y;
         }
       }
+      tick();
     }).on("end", (event, group) => {
       if (!event.active)
         b.sim.alphaTarget(0);
+      draggingRegionIds.delete(group.attractorId);
+      const memberIds = new Set(nodes.filter((node) => node.type === "force" && node.attractorId === group.attractorId).map((node) => node.id));
+      if (lockState.enabled) {
+        refreshLatticeTargets();
+        return;
+      }
+      refreshLatticeTargets(memberIds);
       for (const node of nodes) {
         if (node.type === "force" && node.attractorId === group.attractorId) {
           node.fx = null;
@@ -4209,8 +4649,8 @@ function createRegionsView(ctx) {
       }
     }));
     const fusionData = model.fusionGroups.map((ids) => ({ id: [...ids].sort().join("\x00"), ids }));
-    fusionSel = b.fusionG.selectAll("path.nkp-hyper-fusion-hull").data(fusionData, (item) => item.id).join("path").attr("class", "nkp-hyper-fusion-hull");
-    bundleTrunkSel = b.edgesG.selectAll("path.nkp-hyper-bundle-trunk").data(bundles, (bundle) => bundle.id).join("path").attr("class", "nkp-hyper-bundle-trunk").attr("fill", "none").attr("stroke", (bundle) => colorFor(bundle.attractorId)).attr("stroke-opacity", (bundle) => bundle.focused ? 0.45 : 0.15);
+    fusionSel = b.fusionG.selectAll("path.nkp-hyper-fusion-hull").data(fusionData, (item) => item.id).join("path").attr("class", "nkp-hyper-fusion-hull").attr("data-fusion-region", "true").attr("role", "img").attr("aria-label", (item) => `Fusion candidate region for ${item.ids.join(", ")}`).attr("fill", "#808080").attr("fill-opacity", 0.14).attr("stroke", "var(--warn)").attr("stroke-width", 2).attr("stroke-dasharray", "3 4").attr("stroke-linejoin", "round");
+    bundleTrunkSel = b.edgesG.selectAll("path.nkp-hyper-bundle-trunk").data(bundles, (bundle) => bundle.id).join("path").attr("class", "nkp-hyper-bundle-trunk").attr("fill", "none").attr("stroke", (bundle) => colorFor(bundle.attractorId)).attr("aria-label", (bundle) => `${bundle.componentId} linked to attractor ${bundle.attractorId}`).attr("stroke-opacity", (bundle) => bundle.focused ? 0.45 : 0.15);
     const branchData = bundles.filter((bundle) => bundle.forceIds.length > 1).flatMap((bundle) => bundle.forceIds.map((forceId) => ({
       id: `${bundle.id}:${forceId}`,
       bundleId: bundle.id,
@@ -4219,32 +4659,49 @@ function createRegionsView(ctx) {
       attractorId: bundle.attractorId,
       focused: bundle.focused
     })));
-    bundleBranchSel = b.edgesG.selectAll("path.nkp-hyper-bundle-branch").data(branchData, (branch) => branch.id).join("path").attr("class", "nkp-hyper-bundle-branch").attr("fill", "none").attr("stroke", (branch) => colorFor(branch.attractorId)).attr("stroke-opacity", (branch) => branch.focused ? 0.45 : 0.15);
+    bundleBranchSel = b.edgesG.selectAll("path.nkp-hyper-bundle-branch").data(branchData, (branch) => branch.id).join("path").attr("class", "nkp-hyper-bundle-branch").attr("fill", "none").attr("stroke", (branch) => colorFor(branch.attractorId)).attr("aria-label", (branch) => `${branch.componentId} linked to ${branch.forceId}`).attr("stroke-opacity", (branch) => branch.focused ? 0.45 : 0.15);
     const nodeJoin = b.nodesG.selectAll("g.nkp-node").data(nodes, (node) => node.id).join((enter) => {
       const g = enter.append("g");
       g.append("circle").attr("class", "nkp-fission-ring").attr("r", 15).attr("fill", "none").attr("stroke-dasharray", "3 4");
-      g.append("circle").attr("class", "nkp-node-dot").attr("r", 9);
+      g.append("circle").attr("class", "nkp-node-dot nkp-component-status-glyph").attr("r", 9);
+      g.append("rect").attr("class", "nkp-node-dot nkp-component-status-glyph").attr("x", -9).attr("y", -9).attr("width", 18).attr("height", 18);
       g.append("path").attr("class", "nkp-hyper-force-dot");
-      g.append("title");
       return g;
     });
-    nodeSel = nodeJoin.attr("class", (node) => `nkp-node nkp-hyper-node nkp-hyper-${node.type}`).attr("opacity", (node) => node.focused ? 1 : 0.45);
+    nodeSel = nodeJoin.attr("class", (node) => `nkp-node nkp-hyper-node nkp-hyper-${node.type}`).attr("opacity", (node) => node.focused ? 1 : 0.45).attr("aria-label", (node) => node.tooltip).attr("tabindex", 0);
     nodeSel.select(".nkp-fission-ring").attr("display", (node) => node.type === "component" && node.fissionCandidate ? null : "none");
-    nodeSel.select(".nkp-node-dot").attr("class", (node) => node.type === "component" ? `nkp-node-dot status-${node.status}` : "nkp-node-dot").attr("display", (node) => node.type === "component" ? null : "none");
-    nodeSel.select(".nkp-hyper-force-dot").attr("d", (node) => node.type === "force" ? forceGlyphPath(node.kind) : null).attr("fill", (node) => node.type === "force" ? colorFor(node.attractorId) : null).attr("fill-opacity", (node) => node.type === "force" ? forceNodeOpacity(node.kind) : null).attr("display", (node) => node.type === "force" ? null : "none");
-    nodeSel.select("title").text((node) => node.tooltip);
+    nodeSel.select("circle.nkp-node-dot").attr("data-component-status-shape", (node) => node.type === "component" && node.shape === "circle" ? "actual" : null).attr("display", (node) => node.type === "component" && node.shape === "circle" ? null : "none").attr("fill", (node) => node.type === "component" ? node.color : null);
+    nodeSel.select("rect.nkp-node-dot").attr("data-component-status-shape", (node) => node.type === "component" && node.shape === "square" ? "proposed" : null).attr("display", (node) => node.type === "component" && node.shape === "square" ? null : "none").attr("fill", (node) => node.type === "component" ? node.color : null);
+    nodeSel.select(".nkp-hyper-force-dot").attr("d", (node) => node.type === "force" ? forceGlyphPath(node.kind) : null).attr("fill", (node) => node.type === "force" ? colorFor(node.attractorId) : null).attr("fill-opacity", (node) => node.type === "force" ? forceNodeOpacity(node.kind) : null).attr("data-force-kind-glyph", (node) => node.type === "force" ? node.kind : null).attr("display", (node) => node.type === "force" ? null : "none");
     nodeSel.on("click", (_event, node) => ctx.onToggle(node.id));
     nodeSel.call(d3.drag().on("start", (event, node) => {
       if (!event.active)
         b.sim.alphaTarget(0.3).restart();
+      draggingNodeIds.add(node.id);
       node.fx = node.x;
       node.fy = node.y;
     }).on("drag", (event, node) => {
       node.fx = event.x;
       node.fy = event.y;
+      node.x = event.x;
+      node.y = event.y;
+      tick();
     }).on("end", (event, node) => {
       if (!event.active)
         b.sim.alphaTarget(0);
+      draggingNodeIds.delete(node.id);
+      refreshLatticeTargets(new Set([node.id]));
+      if (lockState.enabled && node.type === "force") {
+        const lock = lockState.locks.get(node.attractorId);
+        if (lock) {
+          const edited = editRegionForceOffset(lock, node.id, { x: node.x ?? 0, y: node.y ?? 0 });
+          lockState.locks.set(node.attractorId, edited);
+          node.fx = node.x;
+          node.fy = node.y;
+          regionPinnedIds.add(node.id);
+          return;
+        }
+      }
       node.fx = null;
       node.fy = null;
     }));
@@ -4271,7 +4728,8 @@ function createRegionsView(ctx) {
       bundleBranchSel.classed("is-lit", false);
       regionSel.classed("is-lit", false);
       regionLabelSel.classed("is-lit", false);
-      forceLabelSel.attr("opacity", 0);
+      b.tip.hidden = true;
+      applySelectionClasses();
     };
     const highlight = (item) => {
       const lit = new Set([item.id, ...neighbours.get(item.id) ?? []]);
@@ -4291,9 +4749,28 @@ function createRegionsView(ctx) {
       });
       regionSel.classed("is-lit", (group) => litAttractors.has(group.attractorId));
       regionLabelSel.classed("is-lit", (group) => litAttractors.has(group.attractorId));
-      forceLabelSel.attr("opacity", (other) => other.id === item.id ? 1 : 0);
+      componentLabelSel.attr("opacity", (other) => lit.has(other.id) ? 1 : 0);
+      forceLabelSel.attr("opacity", (other) => lit.has(other.id) ? 1 : 0);
     };
-    nodeSel.on("mouseenter", (_event, item) => highlight(item)).on("mouseleave", clearHighlight);
+    const showNode = (event, item) => {
+      highlight(item);
+      b.tip.textContent = item.tooltip;
+      placeTooltip(host, b.tip, event);
+    };
+    nodeSel.on("mouseenter", showNode).on("focus", showNode).on("mouseleave", clearHighlight).on("blur", clearHighlight);
+    const showRegion = (event, group) => {
+      const lit = new Set([...group.forceNodeIds, ...group.componentNodeIds]);
+      b.svg.classed("nkp-hyper-hovering", true);
+      nodeSel.classed("is-lit", (node) => lit.has(node.id));
+      componentLabelSel.attr("opacity", (node) => lit.has(node.id) ? 1 : 0);
+      forceLabelSel.attr("opacity", (node) => lit.has(node.id) ? 1 : 0);
+      regionSel.classed("is-lit", (other) => other.attractorId === group.attractorId);
+      regionLabelSel.classed("is-lit", (other) => other.attractorId === group.attractorId);
+      b.tip.textContent = group.tooltip;
+      placeTooltip(host, b.tip, event);
+    };
+    regionSel.on("mouseenter.tooltip", showRegion).on("focus.tooltip", showRegion).on("mouseleave.tooltip", clearHighlight).on("blur.tooltip", clearHighlight);
+    tick();
     applySelectionClasses();
   }
   function setSelection(selected, connected) {
@@ -4324,8 +4801,6 @@ function createRegionsView(ctx) {
 }
 
 // src/landscape-selection.ts
-var HOVER_DIM_OPACITY = 0.12;
-var SELECTION_DIM_OPACITY = 1 - 0.6 * (1 - HOVER_DIM_OPACITY);
 function keyKind(key) {
   if (key.startsWith("component:"))
     return "component";
@@ -4405,32 +4880,27 @@ function entityDetail(state, key) {
 }
 function connectedKeys(state, selected) {
   const { forces } = effectiveState(state);
-  const forceByKey = new Map(forces.map((force) => [force.key, force]));
+  const adjacency = new Map;
+  const connect = (left, right) => {
+    adjacency.set(left, [...adjacency.get(left) ?? [], right]);
+    adjacency.set(right, [...adjacency.get(right) ?? [], left]);
+  };
+  for (const force of forces) {
+    const forceKey = `force:${force.key}`;
+    connect(forceKey, `attractor:${force.attractorId}`);
+    for (const component of new Set(force.components)) {
+      connect(forceKey, `component:${component}`);
+    }
+  }
   const result = new Set;
-  for (const key of selected) {
+  const queue = [...selected];
+  for (const key of queue) {
+    if (result.has(key))
+      continue;
     result.add(key);
-    const kind = keyKind(key);
-    const id = keyId(key);
-    if (kind === "component") {
-      for (const force of forces.filter((candidate) => candidate.components.includes(id))) {
-        result.add(`force:${force.key}`);
-        result.add(`attractor:${force.attractorId}`);
-        for (const name of force.components)
-          result.add(`component:${name}`);
-      }
-    } else if (kind === "force") {
-      const force = forceByKey.get(id);
-      if (force) {
-        result.add(`attractor:${force.attractorId}`);
-        for (const name of force.components)
-          result.add(`component:${name}`);
-      }
-    } else if (kind === "attractor") {
-      for (const force of forces.filter((candidate) => candidate.attractorId === id)) {
-        result.add(`force:${force.key}`);
-        for (const name of force.components)
-          result.add(`component:${name}`);
-      }
+    for (const neighbor of adjacency.get(key) ?? []) {
+      if (!result.has(neighbor))
+        queue.push(neighbor);
     }
   }
   return result;
@@ -4468,46 +4938,68 @@ function renderSidebar(el, details, handlers) {
     el.appendChild(empty);
     return;
   }
-  for (const detail of details) {
-    const card = document.createElement("article");
-    card.className = "landscape-sidebar-card";
-    card.dataset.sidebarCard = "";
-    card.dataset.key = detail.key;
-    const cardHeader = document.createElement("div");
-    cardHeader.className = "landscape-sidebar-card-header";
-    if (detail.color) {
-      const chip = document.createElement("i");
-      chip.className = "landscape-sidebar-chip";
-      chip.style.background = detail.color;
-      cardHeader.appendChild(chip);
-    }
-    const kind = document.createElement("span");
-    kind.className = "landscape-sidebar-kind";
-    kind.textContent = detail.kind;
-    const title = document.createElement("strong");
-    title.className = "landscape-sidebar-title";
-    title.textContent = detail.title;
-    const deselect = document.createElement("button");
-    deselect.type = "button";
-    deselect.className = "landscape-sidebar-deselect";
-    deselect.dataset.sidebarDeselect = "";
-    deselect.setAttribute("aria-label", `Deselect ${detail.title}`);
-    deselect.textContent = "×";
-    deselect.addEventListener("click", () => handlers.onDeselect(detail.key));
-    cardHeader.append(kind, title, deselect);
-    card.appendChild(cardHeader);
-    const fields = document.createElement("dl");
-    fields.className = "landscape-sidebar-fields";
-    for (const field of detail.fields) {
-      const dt = document.createElement("dt");
-      dt.textContent = field.label;
-      const dd = document.createElement("dd");
-      dd.textContent = field.value;
-      fields.append(dt, dd);
-    }
-    card.appendChild(fields);
-    el.appendChild(card);
+  const activeIndex = Math.max(0, details.findIndex((detail2) => detail2.key === handlers.activeKey));
+  const detail = details[activeIndex];
+  const navigation = document.createElement("div");
+  navigation.className = "landscape-sidebar-navigation";
+  const previous = document.createElement("button");
+  previous.type = "button";
+  previous.dataset.detailPrev = "";
+  previous.setAttribute("aria-label", "Previous selected detail");
+  previous.textContent = "←";
+  previous.disabled = details.length === 1;
+  previous.addEventListener("click", () => {
+    handlers.onActivate(details[(activeIndex - 1 + details.length) % details.length].key);
+  });
+  const next = document.createElement("button");
+  next.type = "button";
+  next.dataset.detailNext = "";
+  next.setAttribute("aria-label", "Next selected detail");
+  next.textContent = "→";
+  next.disabled = details.length === 1;
+  next.addEventListener("click", () => {
+    handlers.onActivate(details[(activeIndex + 1) % details.length].key);
+  });
+  navigation.append(previous, next);
+  el.appendChild(navigation);
+  const card = document.createElement("article");
+  card.className = "landscape-sidebar-card";
+  card.dataset.sidebarCard = "";
+  card.dataset.key = detail.key;
+  const cardHeader = document.createElement("div");
+  cardHeader.className = "landscape-sidebar-card-header";
+  if (detail.color) {
+    const chip = document.createElement("i");
+    chip.className = "landscape-sidebar-chip";
+    chip.style.background = detail.color;
+    cardHeader.appendChild(chip);
   }
+  const kind = document.createElement("span");
+  kind.className = "landscape-sidebar-kind";
+  kind.textContent = detail.kind;
+  const title = document.createElement("strong");
+  title.className = "landscape-sidebar-title";
+  title.textContent = detail.title;
+  const deselect = document.createElement("button");
+  deselect.type = "button";
+  deselect.className = "landscape-sidebar-deselect";
+  deselect.dataset.sidebarDeselect = "";
+  deselect.setAttribute("aria-label", `Deselect ${detail.title}`);
+  deselect.textContent = "×";
+  deselect.addEventListener("click", () => handlers.onDeselect(detail.key));
+  cardHeader.append(kind, title, deselect);
+  card.appendChild(cardHeader);
+  const fields = document.createElement("dl");
+  fields.className = "landscape-sidebar-fields";
+  for (const field of detail.fields) {
+    const dt = document.createElement("dt");
+    dt.textContent = field.label;
+    const dd = document.createElement("dd");
+    dd.textContent = field.value;
+    fields.append(dt, dd);
+  }
+  card.appendChild(fields);
+  el.appendChild(card);
 }
 
 // src/nkp-landscape.ts
@@ -4595,7 +5087,8 @@ var CONTROL_SELECTOR = [
   "[data-bundle-tension-input]",
   "[data-heatmap-counts-toggle]",
   "[data-regions-focus]",
-  "[data-regions-names-toggle]"
+  "[data-regions-names-toggle]",
+  "[data-regions-lock-toggle]"
 ].join(", ");
 function fitViewportHeight(windowHeight, toolbarHeight, chrome, bottomPadding) {
   return Math.max(320, Math.floor(windowHeight - toolbarHeight - chrome - bottomPadding));
@@ -4610,6 +5103,9 @@ function mountLandscape(container, getState, d3) {
   let activeView;
   let viewHandle;
   let selected = new Set;
+  let activeKey;
+  const regionsLockState = { enabled: false, locks: new Map };
+  const panelIsHidden = () => Boolean(card?.closest("[hidden]"));
   const currentView = () => parseLandscapeView(container.querySelector("[data-landscape-view-input]:checked")?.value);
   const toolbar = container.querySelector("[data-view-toolbar]");
   const fitViewport = () => {
@@ -4630,28 +5126,50 @@ function mountLandscape(container, getState, d3) {
       if (detail)
         details.push(detail);
     }
+    sidebarEl.hidden = details.length === 0 || !card?.open || panelIsHidden();
     renderSidebar(sidebarEl, details, {
+      activeKey,
+      onActivate: (key) => {
+        if (!selected.has(key))
+          return;
+        activeKey = key;
+        renderSidebarNow();
+      },
       onDeselect: (key) => applySelection(toggleSelection(selected, key)),
       onClearAll: clearSelection
     });
   };
-  const applySelection = (next) => {
+  const applySelection = (next, activate) => {
     selected = next;
+    if (activate && selected.has(activate))
+      activeKey = activate;
+    if (!activeKey || !selected.has(activeKey))
+      activeKey = [...selected].at(-1);
     const connected = connectedKeys(getState(), selected);
     viewHandle?.setSelection(selected, connected);
     renderSidebarNow();
   };
-  const onEntityToggle = (key) => applySelection(toggleSelection(selected, key));
+  const onEntityToggle = (key) => {
+    const wasSelected = selected.has(key);
+    applySelection(toggleSelection(selected, key), wasSelected ? undefined : key);
+  };
   function clearSelection() {
     if (selected.size === 0)
       return;
+    activeKey = undefined;
     applySelection(new Set);
   }
   const ensureViewHandle = (view, viewportHost) => {
     if (viewHandle && activeView === view)
       return viewHandle;
     viewHandle?.destroy();
-    viewHandle = view === "bundle" ? createBundleView({ host: viewportHost, d3, onToggle: onEntityToggle, onClear: clearSelection }) : view === "heatmap" ? createHeatmapView({ host: viewportHost, d3, onToggle: onEntityToggle, onClear: clearSelection }) : createRegionsView({ host: viewportHost, d3, onToggle: onEntityToggle, onClear: clearSelection });
+    viewHandle = view === "bundle" ? createBundleView({ host: viewportHost, d3, onToggle: onEntityToggle, onClear: clearSelection }) : view === "heatmap" ? createHeatmapView({ host: viewportHost, d3, onToggle: onEntityToggle, onClear: clearSelection }) : createRegionsView({
+      host: viewportHost,
+      d3,
+      onToggle: onEntityToggle,
+      onClear: clearSelection,
+      lockState: regionsLockState
+    });
     activeView = view;
     return viewHandle;
   };
@@ -4663,8 +5181,10 @@ function mountLandscape(container, getState, d3) {
     for (const control of Array.from(container.querySelectorAll("[data-landscape-for]"))) {
       control.hidden = !controlAppliesTo(control.getAttribute("data-landscape-for"), view);
     }
-    if (card && !card.open) {
+    if (card && (!card.open || panelIsHidden())) {
       stale = true;
+      if (sidebarEl)
+        sidebarEl.hidden = true;
       return;
     }
     stale = false;
@@ -4676,7 +5196,8 @@ function mountLandscape(container, getState, d3) {
     if (view === "regions") {
       const focusComponent = syncFocusOptions(container.querySelector("[data-regions-focus]"), state);
       const showNames = container.querySelector("[data-regions-names-toggle]")?.checked ?? true;
-      handle.update(state, { ...filters, hideFiltered, showNames, ...focusComponent ? { focusComponent } : {} });
+      const lockRegions = container.querySelector("[data-regions-lock-toggle]")?.checked ?? false;
+      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, ...focusComponent ? { focusComponent } : {} });
     } else {
       const minCouplingStrength = syncMinCouplingStrength(container, state, filters);
       if (view === "heatmap") {
@@ -4716,12 +5237,17 @@ function mountLandscape(container, getState, d3) {
     queueMicrotask(sync);
   };
   const onCardToggle = () => {
-    if (!card?.open)
+    if (!card?.open || panelIsHidden()) {
+      stale = true;
+      if (sidebarEl)
+        sidebarEl.hidden = true;
       return;
+    }
     if (stale)
       sync();
     card.scrollIntoView({ block: "start", behavior: "smooth" });
   };
+  const onPanelVisible = () => sync();
   const onHostDblClick = () => clearSelection();
   const onDeselectAllClick = () => clearSelection();
   const onResetViewClick = () => viewHandle?.resetView();
@@ -4738,6 +5264,7 @@ function mountLandscape(container, getState, d3) {
   container.addEventListener("input", onControl);
   container.addEventListener("change", onControl);
   card?.addEventListener("toggle", onCardToggle);
+  container.addEventListener("landscape-panel-visible", onPanelVisible);
   host?.addEventListener("dblclick", onHostDblClick);
   deselectAllButton?.addEventListener("click", onDeselectAllClick);
   resetViewButton?.addEventListener("click", onResetViewClick);
@@ -4751,6 +5278,7 @@ function mountLandscape(container, getState, d3) {
       container.removeEventListener("input", onControl);
       container.removeEventListener("change", onControl);
       card?.removeEventListener("toggle", onCardToggle);
+      container.removeEventListener("landscape-panel-visible", onPanelVisible);
       host?.removeEventListener("dblclick", onHostDblClick);
       deselectAllButton?.removeEventListener("click", onDeselectAllClick);
       resetViewButton?.removeEventListener("click", onResetViewClick);

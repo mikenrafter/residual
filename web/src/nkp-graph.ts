@@ -16,6 +16,9 @@ export interface NkpGraphNode {
   opacity: number;
   labelVisible: boolean;
   revealLabelOnHover: boolean;
+  shape?: "circle" | "square";
+  color?: string;
+  dominantAttractorId?: string;
   fissionCandidate?: boolean;
   ringStyle?: "dotted";
 }
@@ -101,6 +104,24 @@ export function forceLabel(force: EffectiveForce): string {
   return force.shortname || force.description || force.key;
 }
 
+function dominantAttractor(
+  forces: readonly EffectiveForce[],
+  componentName: string,
+): string | undefined {
+  const counts = new Map<string, number>();
+  for (const force of forces) {
+    if (!force.components.includes(componentName)) continue;
+    counts.set(force.attractorId, (counts.get(force.attractorId) ?? 0) + 1);
+  }
+  return [...counts]
+    .sort(([leftId, leftCount], [rightId, rightCount]) => rightCount - leftCount || leftId.localeCompare(rightId))[0]?.[0];
+}
+
+/** Dominant attractor computed from the full effective state, independent of view filters. */
+export function dominantAttractorForComponent(state: PendingState, componentName: string): string | undefined {
+  return dominantAttractor(effectiveState(state).forces, componentName);
+}
+
 function applyMinCouplingStrength(edges: NkpGraphEdge[], minCouplingStrength: number): NkpGraphEdge[] {
   return edges.filter((edge) => edge.type === "attractor" || edge.count >= minCouplingStrength);
 }
@@ -163,6 +184,7 @@ function dropUnlinkedComponents(nodes: NkpGraphNode[], edges: NkpGraphEdge[]): N
 /** Builds the DOM-independent coupling graph that the landscape views draw from. */
 export function buildNkpGraphModel(state: PendingState, options: NkpGraphOptions = {}): NkpGraphModel {
   const { components, attractors, forces } = effectiveState(state);
+  const colors = attractorColors(state);
   const visible = options.visibleForceIds;
   const hasFocusFilter = visible !== undefined;
   const isVisibleForce = (force: EffectiveForce): boolean => !hasFocusFilter || visible.has(force.key);
@@ -180,6 +202,7 @@ export function buildNkpGraphModel(state: PendingState, options: NkpGraphOptions
       (attached.some(isVisibleForce) || !hasFocusFilter) &&
       isVisibleComponent(component.name);
     const fissionCandidate = attached.length > (options.fissionThreshold ?? Number.POSITIVE_INFINITY);
+    const dominantAttractorId = dominantAttractor(forces, component.name);
     return {
       id: `component:${component.name}`,
       type: "component",
@@ -190,6 +213,11 @@ export function buildNkpGraphModel(state: PendingState, options: NkpGraphOptions
       opacity: focused ? 1 : 0.5,
       labelVisible: focused,
       revealLabelOnHover: !focused,
+      shape: component.status === "actual" ? "circle" : "square",
+      color: dominantAttractorId === undefined
+        ? "var(--muted)"
+        : mutedAttractorColor(colors.get(dominantAttractorId) ?? "var(--muted)"),
+      ...(dominantAttractorId ? { dominantAttractorId } : {}),
       fissionCandidate,
       ...(fissionCandidate ? { ringStyle: "dotted" as const } : {}),
     };
@@ -350,12 +378,30 @@ export function attractorColor(index: number): string {
   return `hsl(${hue} 62% ${lightness}%)`;
 }
 
+/** Stable categorical colour derived only from an attractor id. */
+export function attractorColorForId(id: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < id.length; index += 1) {
+    hash ^= id.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  const unsigned = hash >>> 0;
+  const hue = unsigned % 360;
+  const lightness = 58 + ((unsigned >>> 9) % 3) * 5;
+  return `hsl(${hue} 62% ${lightness}%)`;
+}
+
+/** A component fill that keeps its attractor hue without competing with force glyphs. */
+export function mutedAttractorColor(color: string): string {
+  return `color-mix(in srgb, ${color} 58%, var(--surface))`;
+}
+
 /**
- * One colour per attractor, keyed by attractor id and assigned in id order,
- * so every landscape view paints the same attractor the same colour.
+ * One colour per attractor, keyed and derived from its id so insertion and
+ * sort order cannot change colors already in use.
  */
 export function attractorColors(state: PendingState): Map<string, string> {
   const { attractors, forces } = effectiveState(state);
   const ids = [...new Set([...attractors.map((attractor) => attractor.id), ...forces.map((force) => force.attractorId)])].sort();
-  return new Map(ids.map((id, index) => [id, attractorColor(index)]));
+  return new Map(ids.map((id) => [id, attractorColorForId(id)]));
 }

@@ -337,6 +337,42 @@ describe("createHeatmapView (persistent view handle, Phase 3)", () => {
     expect(bHeader?.classList.contains("selected") || bHeader?.classList.contains("connected")).toBe(false);
   });
 
+  test("focus leaves labels visible only for selected and connected entities", () => {
+    const { ctx, host } = makeCtx();
+    const handle = heatmapModule.createHeatmapView?.(ctx);
+    handle?.update(blocks, options);
+    handle?.setSelection(new Set(["component:a"]), new Set(["component:a", "component:c", "attractor:A-01"]));
+    const headerLabel = (name: string) => {
+      const index = indexOf(name);
+      return host.querySelector<SVGTextElement>(`[data-header-axis="row"][data-header-index="${index}"] .nkp-seriation-label`);
+    };
+    expect(headerLabel("a")?.getAttribute("opacity")).not.toBe("0");
+    expect(headerLabel("c")?.getAttribute("opacity")).not.toBe("0");
+    expect(headerLabel("b")?.getAttribute("opacity")).toBe("0");
+  });
+
+  test("row and column headers show circle/square implementation-status glyphs", () => {
+    const pending = state([component("actual", "actual"), component("proposed", "proposed")], [
+      force("S-10", "A-01", ["actual", "proposed"]),
+    ]);
+    const { ctx, host } = makeCtx();
+    const handle = heatmapModule.createHeatmapView?.(ctx);
+    handle?.update(pending, { minCouplingStrength: 1 });
+    for (const axis of ["row", "col"]) {
+      expect(host.querySelector(`[data-header-axis="${axis}"] [data-component-status-shape="actual"]`)?.tagName.toLowerCase()).toBe("circle");
+      expect(host.querySelector(`[data-header-axis="${axis}"] [data-component-status-shape="proposed"]`)?.tagName.toLowerCase()).toBe("rect");
+    }
+  });
+
+  test("uses accessible labels instead of native SVG title tooltips", () => {
+    const { ctx, host } = makeCtx();
+    const handle = heatmapModule.createHeatmapView?.(ctx);
+    handle?.update(blocks, options);
+    expect(host.querySelector("svg title")).toBeNull();
+    expect([...host.querySelectorAll<SVGElement>("[data-header-axis], [data-cell-row], [data-legend-id]")]
+      .every((item) => Boolean(item.getAttribute("aria-label")))).toBe(true);
+  });
+
   test("all text lives in a last-child g.landscape-labels group", () => {
     const { ctx, host } = makeCtx();
     const handle = heatmapModule.createHeatmapView?.(ctx);

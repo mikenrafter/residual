@@ -24,8 +24,8 @@ export interface EntityDetail {
 
 /** Hover focus dims non-lit items to this opacity (matches the existing bundle/regions hover behaviour). */
 export const HOVER_DIM_OPACITY = 0.12;
-/** Selection focus is 60% as strong as hover focus. */
-export const SELECTION_DIM_OPACITY = 1 - 0.6 * (1 - HOVER_DIM_OPACITY);
+/** Selection and hover use the same dimming strength. */
+export const SELECTION_DIM_OPACITY = HOVER_DIM_OPACITY;
 
 function keyKind(key: EntityKey): "component" | "force" | "attractor" | undefined {
   if (key.startsWith("component:")) return "component";
@@ -106,41 +106,29 @@ export function entityDetail(state: PendingState, key: EntityKey): EntityDetail 
   return undefined;
 }
 
-/**
- * Everything that lights up alongside `selected`, per the locked contract:
- * component -> its forces, their attractors, and components sharing any of
- * those forces; force -> its attractor and its components (not sibling
- * forces); attractor -> its forces and the components they touch. A
- * multi-select unions each entity's own connections, and every selected
- * entity is always part of its own connection set.
- */
+/** Full transitive closure over force-component and force-attractor edges. */
 export function connectedKeys(state: PendingState, selected: Iterable<EntityKey>): Set<EntityKey> {
   const { forces } = effectiveState(state);
-  const forceByKey = new Map(forces.map((force) => [force.key, force]));
+  const adjacency = new Map<EntityKey, EntityKey[]>();
+  const connect = (left: EntityKey, right: EntityKey): void => {
+    adjacency.set(left, [...(adjacency.get(left) ?? []), right]);
+    adjacency.set(right, [...(adjacency.get(right) ?? []), left]);
+  };
+  for (const force of forces) {
+    const forceKey: EntityKey = `force:${force.key}`;
+    connect(forceKey, `attractor:${force.attractorId}`);
+    for (const component of new Set(force.components)) {
+      connect(forceKey, `component:${component}`);
+    }
+  }
+
   const result = new Set<EntityKey>();
-
-  for (const key of selected) {
+  const queue = [...selected];
+  for (const key of queue) {
+    if (result.has(key)) continue;
     result.add(key);
-    const kind = keyKind(key);
-    const id = keyId(key);
-
-    if (kind === "component") {
-      for (const force of forces.filter((candidate) => candidate.components.includes(id))) {
-        result.add(`force:${force.key}`);
-        result.add(`attractor:${force.attractorId}`);
-        for (const name of force.components) result.add(`component:${name}`);
-      }
-    } else if (kind === "force") {
-      const force = forceByKey.get(id);
-      if (force) {
-        result.add(`attractor:${force.attractorId}`);
-        for (const name of force.components) result.add(`component:${name}`);
-      }
-    } else if (kind === "attractor") {
-      for (const force of forces.filter((candidate) => candidate.attractorId === id)) {
-        result.add(`force:${force.key}`);
-        for (const name of force.components) result.add(`component:${name}`);
-      }
+    for (const neighbor of adjacency.get(key) ?? []) {
+      if (!result.has(neighbor)) queue.push(neighbor);
     }
   }
 

@@ -12,6 +12,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 type DomModule = {
   ZOOM_SPEED?: number;
   zoomWheelDelta?: (event: { deltaY: number; deltaMode: number; ctrlKey: boolean }) => number;
+  createTooltip?: (host: HTMLElement) => HTMLElement;
 };
 
 let mod: DomModule = {};
@@ -65,5 +66,29 @@ describe("zoomWheelDelta", () => {
   test("sign follows -deltaY (scrolling down zooms out, i.e. positive delta shrinks)", () => {
     expect(mod.zoomWheelDelta?.({ deltaY: -100, deltaMode: 0, ctrlKey: false })).toBeGreaterThan(0);
     expect(mod.zoomWheelDelta?.({ deltaY: 100, deltaMode: 0, ctrlKey: false })).toBeLessThan(0);
+  });
+});
+
+describe("shared landscape tooltip", () => {
+  test("all views reuse one document-level tooltip", () => {
+    document.body.innerHTML = `<div data-view-a></div><div data-view-b></div>`;
+    const a = document.querySelector<HTMLElement>("[data-view-a]")!;
+    const b = document.querySelector<HTMLElement>("[data-view-b]")!;
+    const first = mod.createTooltip?.(a);
+    const second = mod.createTooltip?.(b);
+    expect(first).toBeDefined();
+    expect(second).toBe(first);
+    expect(document.querySelectorAll(".landscape-tip")).toHaveLength(1);
+    expect(first?.parentElement).toBe(document.body);
+  });
+
+  test("the tooltip is fixed at the top right and announced accessibly", async () => {
+    const shell = await Bun.file("../src/view/shell.html").text();
+    expect(shell).toMatch(/\.landscape-tip\s*\{[^}]*position:\s*fixed/s);
+    expect(shell).toMatch(/\.landscape-tip\s*\{[^}]*top:/s);
+    expect(shell).toMatch(/\.landscape-tip\s*\{[^}]*right:/s);
+    document.body.innerHTML = `<div data-view></div>`;
+    const tip = mod.createTooltip?.(document.querySelector<HTMLElement>("[data-view]")!);
+    expect(tip?.getAttribute("role")).toBe("tooltip");
   });
 });

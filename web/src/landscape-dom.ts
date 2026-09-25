@@ -96,26 +96,26 @@ export function resetZoom(svg: any, zoom: any, d3: any): void {
   svg.transition().duration(200).call(zoom.transform, d3.zoomIdentity);
 }
 
-/**
- * Positions a tooltip element inside `host` near the pointer, kept within
- * the host's box so it never causes overflow.
- */
-export function placeTooltip(host: HTMLElement, tip: HTMLElement, event: MouseEvent): void {
+/** Shows the page-level tooltip. Its fixed top-right position comes from the shell. */
+export function placeTooltip(_host: HTMLElement, tip: HTMLElement, _event: MouseEvent): void {
   tip.hidden = false;
-  const bounds = host.getBoundingClientRect();
-  const x = event.clientX - bounds.left + 14;
-  const y = event.clientY - bounds.top + 14;
-  const maxX = host.clientWidth - tip.offsetWidth - 6;
-  const maxY = host.clientHeight - tip.offsetHeight - 6;
-  tip.style.left = `${Math.max(4, Math.min(x, maxX))}px`;
-  tip.style.top = `${Math.max(4, y > maxY ? y - tip.offsetHeight - 24 : y)}px`;
+  tip.style.removeProperty("left");
+  tip.style.removeProperty("top");
 }
 
+/** Returns the one shared tooltip for `host`'s document. */
 export function createTooltip(host: HTMLElement): HTMLElement {
-  const tip = document.createElement("div");
+  const doc = host.ownerDocument;
+  const existing = doc.querySelector<HTMLElement>("body > .landscape-tip");
+  if (existing) return existing;
+
+  const tip = doc.createElement("div");
   tip.className = "landscape-tip";
+  tip.setAttribute("role", "tooltip");
+  tip.setAttribute("aria-live", "polite");
+  tip.setAttribute("aria-atomic", "true");
   tip.hidden = true;
-  host.appendChild(tip);
+  doc.body.appendChild(tip);
   return tip;
 }
 

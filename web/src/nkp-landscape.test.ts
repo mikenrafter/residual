@@ -43,6 +43,7 @@ function fixture(open: boolean): void {
         <label data-landscape-for="bundle" data-test="tension"></label>
         <label data-landscape-for="heatmap" data-test="counts"></label>
         <label data-landscape-for="regions" data-test="focus"></label>
+        <label data-landscape-for="regions" data-test="lock"><input type="checkbox" data-regions-lock-toggle /></label>
         <button type="button" data-landscape-reset-view>reset view</button>
         <button type="button" data-landscape-deselect-all>deselect all</button>
       </div>
@@ -103,6 +104,11 @@ function selectionFixture(): { state: PendingState } {
 function authLeaf(): SVGGElement | undefined {
   const host = document.querySelector<HTMLElement>("[data-landscape]")!;
   return [...host.querySelectorAll<SVGGElement>(".nkp-bundle-leaf")].find((g) => g.textContent?.includes("auth"));
+}
+
+function bundleLeaf(name: string): SVGGElement | undefined {
+  const host = document.querySelector<HTMLElement>("[data-landscape]")!;
+  return [...host.querySelectorAll<SVGGElement>(".nkp-bundle-leaf")].find((g) => g.textContent?.includes(name));
 }
 
 function sidebarText(): string {
@@ -169,6 +175,20 @@ describe("landscape controls", () => {
     expect(document.querySelector("[data-landscape] .landscape-empty")?.textContent).toContain("No components");
     opened.destroy();
   });
+
+  test("treats an open landscape inside a hidden panel as stale until it becomes visible", () => {
+    fixture(true);
+    const card = document.querySelector<HTMLDetailsElement>('details[data-view="landscape"]')!;
+    card.hidden = true;
+    const host = document.querySelector<HTMLElement>("[data-landscape]")!;
+    const handle = mountLandscape(document.body, emptyState, noDrawing);
+    expect(host.childElementCount).toBe(0);
+
+    card.hidden = false;
+    document.body.dispatchEvent(new CustomEvent("landscape-panel-visible", { bubbles: true }));
+    expect(host.querySelector(".landscape-empty")?.textContent).toContain("No components");
+    handle.destroy();
+  });
 });
 
 describe("rendered-page integration", () => {
@@ -197,6 +217,23 @@ describe("rendered-page integration", () => {
     expect(shell).toContain("data-landscape-deselect-all");
     expect(shell).toContain("data-landscape-reset-view");
   });
+
+  test("the regions toolbar exposes attractor-region locking", async () => {
+    const shell = await Bun.file("../src/view/shell.html").text();
+    expect(shell).toContain("data-regions-lock-toggle");
+  });
+
+  test("defines connected and directly connected in the visible in-app help", async () => {
+    const shell = await Bun.file("../src/view/shell.html").text();
+    expect(shell).toMatch(/directly connected[\s\S]{0,500}force[^<]*component|force[^<]*component[\s\S]{0,500}directly connected/i);
+    expect(shell).toMatch(/connected[\s\S]{0,500}(?:transitive|reachable|path)/i);
+  });
+
+  test("the focused detail card is fixed bottom-right on desktop and returns to document flow on mobile", async () => {
+    const shell = await Bun.file("../src/view/shell.html").text();
+    expect(shell).toMatch(/\.landscape-sidebar\s*\{[^}]*position:\s*fixed[^}]*right:[^}]*bottom:/s);
+    expect(shell).toMatch(/@media[^\{]*max-width[^\{]*\{[\s\S]*?\.landscape-sidebar\s*\{[^}]*position:\s*(?:static|relative)/s);
+  });
 });
 
 describe("cross-view selection (Phase 2)", () => {
@@ -218,6 +255,51 @@ describe("cross-view selection (Phase 2)", () => {
     authLeaf()?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await Promise.resolve();
     expect(sidebarText()).not.toContain("auth");
+    handle.destroy();
+  });
+
+  test("new selections become active while the detail UI keeps exactly one card", async () => {
+    const { state } = selectionFixture();
+    const handle = mountLandscape(document.body, () => state, d3);
+    bundleLeaf("auth")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    bundleLeaf("cache")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await Promise.resolve();
+    expect(document.querySelectorAll("[data-sidebar-card]")).toHaveLength(1);
+    expect(document.querySelector<HTMLElement>("[data-sidebar-card]")?.dataset.key).toBe("component:cache");
+    document.querySelector<HTMLButtonElement>("[data-detail-prev]")?.click();
+    expect(document.querySelector<HTMLElement>("[data-sidebar-card]")?.dataset.key).toBe("component:auth");
+    handle.destroy();
+  });
+
+  test("removing the active selection chooses a deterministic remaining card", async () => {
+    const { state } = selectionFixture();
+    const handle = mountLandscape(document.body, () => state, d3);
+    bundleLeaf("auth")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    bundleLeaf("cache")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    document.querySelector<SVGGElement>(".nkp-bundle-group")
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await Promise.resolve();
+    expect(document.querySelector<HTMLElement>("[data-sidebar-card]")?.dataset.key).toBe("attractor:A-01");
+    document.querySelector<SVGGElement>(".nkp-bundle-group")
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await Promise.resolve();
+    expect(document.querySelectorAll("[data-sidebar-card]")).toHaveLength(1);
+    expect(document.querySelector<HTMLElement>("[data-sidebar-card]")?.dataset.key).toBe("component:cache");
+    handle.destroy();
+  });
+
+  test("the detail card is hidden with no focus and while the landscape card is collapsed", async () => {
+    const { state } = selectionFixture();
+    const card = document.querySelector<HTMLDetailsElement>('details[data-view="landscape"]')!;
+    const sidebar = document.querySelector<HTMLElement>("[data-landscape-sidebar]")!;
+    const handle = mountLandscape(document.body, () => state, d3);
+    expect(sidebar.hidden).toBe(true);
+    bundleLeaf("auth")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await Promise.resolve();
+    expect(sidebar.hidden).toBe(false);
+    card.open = false;
+    card.dispatchEvent(new Event("toggle"));
+    expect(sidebar.hidden).toBe(true);
     handle.destroy();
   });
 

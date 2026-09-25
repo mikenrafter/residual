@@ -20,6 +20,15 @@ interface Box {
 type GeometryModule = {
   branchGeometry?: (from: Point, to: Point[], splitFraction?: number) => { trunk: string; branches: string[]; width: number };
   nudgeLabels?: (boxes: Box[], maxShift?: number) => number[];
+  tessellateNodes?: (
+    nodes: { id: string; x: number; y: number; fx?: number; fy?: number }[],
+    options: { cellSize: number; minDistance: number },
+  ) => { id: string; x: number; y: number; cell: string }[];
+  projectLabelAnchor?: (
+    point: Point,
+    bounds: Box,
+    preferredRegion?: readonly Point[],
+  ) => Point;
 };
 
 let mod: GeometryModule = {};
@@ -161,5 +170,68 @@ describe("nudgeLabels", () => {
     const withDefault = mod.nudgeLabels?.(boxes) ?? [];
     const withExplicit = mod.nudgeLabels?.(boxes, 12) ?? [];
     expect(withDefault).toEqual(withExplicit);
+  });
+});
+
+describe("tessellated node placement", () => {
+  const nodes = [
+    { id: "force:b", x: 18, y: 19 },
+    { id: "component:a", x: 20, y: 20 },
+    { id: "component:c", x: 22, y: 21 },
+    { id: "force:pinned", x: 40, y: 40, fx: 40, fy: 40 },
+  ];
+
+  test("snaps every node to a deterministic hex/lattice cell with exclusive occupancy", () => {
+    const first = mod.tessellateNodes?.(nodes, { cellSize: 20, minDistance: 18 });
+    const second = mod.tessellateNodes?.([...nodes].reverse(), { cellSize: 20, minDistance: 18 });
+    expect(first).toBeDefined();
+    expect(first?.map((item) => item.cell).every(Boolean)).toBe(true);
+    expect(new Set(first?.map((item) => item.cell)).size).toBe(nodes.length);
+    const sorted = (items: typeof first) => [...(items ?? [])].sort((a, b) => a.id.localeCompare(b.id));
+    expect(sorted(first)).toEqual(sorted(second));
+  });
+
+  test("enforces the minimum distance for every pair", () => {
+    const placed = mod.tessellateNodes?.(nodes, { cellSize: 20, minDistance: 18 }) ?? [];
+    expect(placed).toHaveLength(nodes.length);
+    for (let i = 0; i < placed.length; i += 1) {
+      for (let j = i + 1; j < placed.length; j += 1) {
+        expect(Math.hypot(placed[i]!.x - placed[j]!.x, placed[i]!.y - placed[j]!.y)).toBeGreaterThanOrEqual(18);
+      }
+    }
+  });
+
+  test("a pinned node keeps its anchor and reserves its cell", () => {
+    const placed = mod.tessellateNodes?.(nodes, { cellSize: 20, minDistance: 18 }) ?? [];
+    const pinned = placed.find((item) => item.id === "force:pinned");
+    expect(pinned).toMatchObject({ x: 40, y: 40 });
+    expect(placed.filter((item) => item.cell === pinned?.cell)).toHaveLength(1);
+  });
+});
+
+describe("visible label anchors", () => {
+  const bounds = { x: 0, y: 0, width: 200, height: 100 };
+
+  test("keeps an onscreen anchor unchanged", () => {
+    expect(mod.projectLabelAnchor?.({ x: 80, y: 40 }, bounds)).toEqual({ x: 80, y: 40 });
+  });
+
+  test("projects an offscreen anchor onto the visible graph", () => {
+    const projected = mod.projectLabelAnchor?.({ x: 500, y: -300 }, bounds);
+    expect(projected).toBeDefined();
+    expect(projected!.x).toBeGreaterThanOrEqual(bounds.x);
+    expect(projected!.x).toBeLessThanOrEqual(bounds.x + bounds.width);
+    expect(projected!.y).toBeGreaterThanOrEqual(bounds.y);
+    expect(projected!.y).toBeLessThanOrEqual(bounds.y + bounds.height);
+  });
+
+  test("prefers a visible point in an attractor region before projecting to graph bounds", () => {
+    const region = [{ x: 160, y: 20 }, { x: 195, y: 20 }, { x: 180, y: 70 }];
+    const projected = mod.projectLabelAnchor?.({ x: 500, y: 500 }, bounds, region);
+    expect(projected).toBeDefined();
+    expect(projected!.x).toBeGreaterThanOrEqual(160);
+    expect(projected!.x).toBeLessThanOrEqual(195);
+    expect(projected!.y).toBeGreaterThanOrEqual(20);
+    expect(projected!.y).toBeLessThanOrEqual(70);
   });
 });

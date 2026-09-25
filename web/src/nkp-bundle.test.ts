@@ -485,6 +485,43 @@ describe("createBundleView (persistent view handle, Phase 3)", () => {
     expect(db?.classList.contains("connected") || db?.closest(".connected") !== null).toBe(false);
   });
 
+  test("focus leaves labels persistently visible only for selected and connected entities", () => {
+    const { ctx, host } = makeCtx();
+    const handle = bundleViewModule.createBundleView?.(ctx);
+    handle?.update(fixtureState, {});
+    handle?.setSelection(new Set(["component:auth"]), new Set(["component:auth", "component:cache", "attractor:A-01"]));
+    const label = (name: string) => [...host.querySelectorAll<SVGTextElement>(".nkp-bundle-label")]
+      .find((item) => item.textContent?.includes(name));
+    expect(label("auth")?.getAttribute("opacity")).not.toBe("0");
+    expect(label("cache")?.getAttribute("opacity")).not.toBe("0");
+    expect(label("db")?.getAttribute("opacity")).toBe("0");
+    label("cache")?.dispatchEvent(new MouseEvent("mouseleave", { bubbles: true }));
+    expect(label("cache")?.getAttribute("opacity")).not.toBe("0");
+  });
+
+  test("uses accessible labels instead of native SVG title tooltips", () => {
+    const { ctx, host } = makeCtx();
+    const handle = bundleViewModule.createBundleView?.(ctx);
+    handle?.update(fixtureState, {});
+    expect(host.querySelector("svg title")).toBeNull();
+    expect([...host.querySelectorAll<SVGElement>(".nkp-bundle-leaf, .nkp-bundle-group, .nkp-bundle-edge")]
+      .filter((item) => item.tagName.toLowerCase() !== "text")
+      .every((item) => Boolean(item.getAttribute("aria-label")))).toBe(true);
+  });
+
+  test("renders actual components as circles and proposed components as squares", () => {
+    const { ctx, host } = makeCtx();
+    const handle = bundleViewModule.createBundleView?.(ctx);
+    const pending = state(
+      [authCache1, authCache2],
+      [component("auth", "actual"), component("cache", "proposed")],
+      [a1],
+    );
+    handle?.update(pending, {});
+    expect(host.querySelector('[data-component-id="component:auth"] [data-component-status-shape="actual"]')?.tagName.toLowerCase()).toBe("circle");
+    expect(host.querySelector('[data-component-id="component:cache"] [data-component-status-shape="proposed"]')?.tagName.toLowerCase()).toBe("rect");
+  });
+
   test("all text lives in a last-child g.landscape-labels group", () => {
     const { ctx, host } = makeCtx();
     const handle = bundleViewModule.createBundleView?.(ctx);

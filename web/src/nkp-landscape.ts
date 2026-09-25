@@ -15,7 +15,7 @@ import { effectiveState, buildNkpGraphModel, DEFAULT_MIN_COUPLING_STRENGTH } fro
 import type { PendingState } from "./model";
 import { createBundleView, DEFAULT_BUNDLE_TENSION, type BundleViewHandle } from "./nkp-bundle";
 import { createHeatmapView } from "./nkp-seriation";
-import { createRegionsView } from "./nkp-hypergraph";
+import { createRegionsView, type RegionsLockState } from "./nkp-hypergraph";
 import { connectedKeys, entityDetail, toggleSelection, type EntityDetail, type EntityKey } from "./landscape-selection";
 import { renderSidebar } from "./landscape-sidebar";
 
@@ -141,6 +141,7 @@ const CONTROL_SELECTOR = [
   "[data-heatmap-counts-toggle]",
   "[data-regions-focus]",
   "[data-regions-names-toggle]",
+  "[data-regions-lock-toggle]",
 ].join(", ");
 
 /**
@@ -171,6 +172,10 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
   let activeView: LandscapeView | undefined;
   let viewHandle: BundleViewHandle | undefined;
   let selected = new Set<EntityKey>();
+  let activeKey: EntityKey | undefined;
+  const regionsLockState: RegionsLockState = { enabled: false, locks: new Map() };
+
+  const panelIsHidden = (): boolean => Boolean(card?.closest("[hidden]"));
 
   const currentView = (): LandscapeView =>
     parseLandscapeView(container.querySelector<HTMLInputElement>("[data-landscape-view-input]:checked")?.value);
@@ -192,23 +197,36 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
       const detail = entityDetail(state, key);
       if (detail) details.push(detail);
     }
+    sidebarEl.hidden = details.length === 0 || !card?.open || panelIsHidden();
     renderSidebar(sidebarEl, details, {
+      activeKey,
+      onActivate: (key) => {
+        if (!selected.has(key)) return;
+        activeKey = key;
+        renderSidebarNow();
+      },
       onDeselect: (key) => applySelection(toggleSelection(selected, key)),
       onClearAll: clearSelection,
     });
   };
 
   /** Re-applies `next` as the selection: pushes it to the active view and re-renders the sidebar. */
-  const applySelection = (next: Set<EntityKey>): void => {
+  const applySelection = (next: Set<EntityKey>, activate?: EntityKey): void => {
     selected = next;
+    if (activate && selected.has(activate)) activeKey = activate;
+    if (!activeKey || !selected.has(activeKey)) activeKey = [...selected].at(-1);
     const connected = connectedKeys(getState(), selected);
     viewHandle?.setSelection(selected, connected);
     renderSidebarNow();
   };
 
-  const onEntityToggle = (key: EntityKey): void => applySelection(toggleSelection(selected, key));
+  const onEntityToggle = (key: EntityKey): void => {
+    const wasSelected = selected.has(key);
+    applySelection(toggleSelection(selected, key), wasSelected ? undefined : key);
+  };
   function clearSelection(): void {
     if (selected.size === 0) return;
+    activeKey = undefined;
     applySelection(new Set());
   }
 
@@ -220,7 +238,13 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
       ? createBundleView({ host: viewportHost, d3, onToggle: onEntityToggle, onClear: clearSelection })
       : view === "heatmap"
         ? createHeatmapView({ host: viewportHost, d3, onToggle: onEntityToggle, onClear: clearSelection })
-        : createRegionsView({ host: viewportHost, d3, onToggle: onEntityToggle, onClear: clearSelection });
+        : createRegionsView({
+            host: viewportHost,
+            d3,
+            onToggle: onEntityToggle,
+            onClear: clearSelection,
+            lockState: regionsLockState,
+          });
     activeView = view;
     return viewHandle;
   };
@@ -232,8 +256,9 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
     for (const control of Array.from(container.querySelectorAll<HTMLElement>("[data-landscape-for]"))) {
       control.hidden = !controlAppliesTo(control.getAttribute("data-landscape-for"), view);
     }
-    if (card && !card.open) {
+    if (card && (!card.open || panelIsHidden())) {
       stale = true;
+      if (sidebarEl) sidebarEl.hidden = true;
       return;
     }
     stale = false;
@@ -247,7 +272,8 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
     if (view === "regions") {
       const focusComponent = syncFocusOptions(container.querySelector<HTMLSelectElement>("[data-regions-focus]"), state);
       const showNames = container.querySelector<HTMLInputElement>("[data-regions-names-toggle]")?.checked ?? true;
-      handle.update(state, { ...filters, hideFiltered, showNames, ...(focusComponent ? { focusComponent } : {}) });
+      const lockRegions = container.querySelector<HTMLInputElement>("[data-regions-lock-toggle]")?.checked ?? false;
+      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, ...(focusComponent ? { focusComponent } : {}) });
     } else {
       const minCouplingStrength = syncMinCouplingStrength(container, state, filters);
       if (view === "heatmap") {
@@ -286,10 +312,15 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
     queueMicrotask(sync);
   };
   const onCardToggle = (): void => {
-    if (!card?.open) return;
+    if (!card?.open || panelIsHidden()) {
+      stale = true;
+      if (sidebarEl) sidebarEl.hidden = true;
+      return;
+    }
     if (stale) sync();
     card.scrollIntoView({ block: "start", behavior: "smooth" });
   };
+  const onPanelVisible = (): void => sync();
   const onHostDblClick = (): void => clearSelection();
   const onDeselectAllClick = (): void => clearSelection();
   const onResetViewClick = (): void => viewHandle?.resetView();
@@ -307,6 +338,7 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
   container.addEventListener("input", onControl);
   container.addEventListener("change", onControl);
   card?.addEventListener("toggle", onCardToggle);
+  container.addEventListener("landscape-panel-visible", onPanelVisible);
   host?.addEventListener("dblclick", onHostDblClick);
   deselectAllButton?.addEventListener("click", onDeselectAllClick);
   resetViewButton?.addEventListener("click", onResetViewClick);
@@ -321,6 +353,7 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
       container.removeEventListener("input", onControl);
       container.removeEventListener("change", onControl);
       card?.removeEventListener("toggle", onCardToggle);
+      container.removeEventListener("landscape-panel-visible", onPanelVisible);
       host?.removeEventListener("dblclick", onHostDblClick);
       deselectAllButton?.removeEventListener("click", onDeselectAllClick);
       resetViewButton?.removeEventListener("click", onResetViewClick);

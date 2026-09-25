@@ -146,31 +146,9 @@ describe("entityDetail", () => {
 });
 
 describe("connectedKeys", () => {
-  test("a component connects to its forces, their attractors, and components sharing any of those forces", () => {
+  test("a component reaches the full transitive entity component", () => {
     const result = mod.connectedKeys?.(state(), ["component:auth"]);
     expect(result).toBeDefined();
-    expect([...(result ?? [])].sort()).toEqual(
-      ["attractor:A-01", "component:auth", "component:cache", "force:S-01", "force:S-02"].sort(),
-    );
-  });
-
-  test("a force connects to its attractor and its components (not to sibling forces)", () => {
-    const result = mod.connectedKeys?.(state(), ["force:S-01"]);
-    expect([...(result ?? [])].sort()).toEqual(
-      ["attractor:A-01", "component:auth", "component:cache", "force:S-01"].sort(),
-    );
-    expect(result?.has("force:S-02")).toBe(false);
-  });
-
-  test("an attractor connects to its forces and the components they touch", () => {
-    const result = mod.connectedKeys?.(state(), ["attractor:A-02"]);
-    expect([...(result ?? [])].sort()).toEqual(
-      ["attractor:A-02", "component:cache", "component:db", "force:P-01"].sort(),
-    );
-  });
-
-  test("multi-select unions each entity's connections", () => {
-    const result = mod.connectedKeys?.(state(), ["component:auth", "component:db"]);
     expect([...(result ?? [])].sort()).toEqual(
       [
         "attractor:A-01", "attractor:A-02",
@@ -178,6 +156,61 @@ describe("connectedKeys", () => {
         "force:S-01", "force:S-02", "force:P-01",
       ].sort(),
     );
+  });
+
+  test("a force reaches sibling forces and entities through force-component and force-attractor edges", () => {
+    const result = mod.connectedKeys?.(state(), ["force:S-01"]);
+    expect([...(result ?? [])].sort()).toEqual(
+      [
+        "attractor:A-01", "attractor:A-02",
+        "component:auth", "component:cache", "component:db",
+        "force:S-01", "force:S-02", "force:P-01",
+      ].sort(),
+    );
+    expect(result?.has("force:S-02")).toBe(true);
+  });
+
+  test("an attractor reaches entities beyond its direct force members", () => {
+    const result = mod.connectedKeys?.(state(), ["attractor:A-02"]);
+    expect([...(result ?? [])].sort()).toEqual(
+      [
+        "attractor:A-01", "attractor:A-02",
+        "component:auth", "component:cache", "component:db",
+        "force:S-01", "force:S-02", "force:P-01",
+      ].sort(),
+    );
+  });
+
+  test("does not cross into a disconnected entity component", () => {
+    const isolated = state({
+      baseAttractors: [...attractors, { id: "A-03", name: "isolated", description: "", positiveState: "", negativeState: "" }],
+      baseComponents: [...components, { name: "worker", description: "", status: "actual", architectureSet: "jobs" }],
+      baseForces: [...forces, {
+        id: "S-03", kind: "stressor", shortname: "isolated-force", description: "", attractorId: "A-03",
+        naiveChangeOrFeature: "", outcomes: "", components: ["worker"],
+      }],
+    });
+    const result = mod.connectedKeys?.(isolated, ["component:auth"]);
+    expect(result?.has("component:worker")).toBe(false);
+    expect(result?.has("force:S-03")).toBe(false);
+    expect(result?.has("attractor:A-03")).toBe(false);
+  });
+
+  test("multiple selected seeds union their full reachable closures", () => {
+    const isolated = state({
+      baseAttractors: [...attractors, { id: "A-03", name: "isolated", description: "", positiveState: "", negativeState: "" }],
+      baseComponents: [...components, { name: "worker", description: "", status: "actual", architectureSet: "jobs" }],
+      baseForces: [...forces, {
+        id: "S-03", kind: "stressor", shortname: "isolated-force", description: "", attractorId: "A-03",
+        naiveChangeOrFeature: "", outcomes: "", components: ["worker"],
+      }],
+    });
+    const result = mod.connectedKeys?.(isolated, ["component:auth", "component:worker"]);
+    expect(result).toEqual(new Set([
+      "component:auth", "force:S-01", "component:cache", "attractor:A-01", "force:S-02",
+      "force:P-01", "component:db", "attractor:A-02",
+      "component:worker", "force:S-03", "attractor:A-03",
+    ]));
   });
 
   test("selected entities are always part of their own connection set", () => {
@@ -201,7 +234,7 @@ describe("toggleSelection", () => {
     expect(result).toEqual(new Set());
   });
 
-  test("toggling is always additive: an unrelated key already selected stays selected", () => {
+  test("clicking a different entity adds it to the current selection", () => {
     const result = mod.toggleSelection?.(new Set(["component:auth"]), "force:S-01");
     expect(result).toEqual(new Set(["component:auth", "force:S-01"]));
   });
@@ -218,8 +251,13 @@ describe("dim opacity constants", () => {
     expect(mod.HOVER_DIM_OPACITY).toBe(0.12);
   });
 
-  test("SELECTION_DIM_OPACITY is 60% as strong as hover dimming: 1 - 0.6 * (1 - 0.12)", () => {
-    expect(mod.SELECTION_DIM_OPACITY).toBeCloseTo(0.472, 10);
-    expect(mod.SELECTION_DIM_OPACITY).toBeCloseTo(1 - 0.6 * (1 - (mod.HOVER_DIM_OPACITY ?? 0.12)), 10);
+  test("SELECTION_DIM_OPACITY exactly matches hover dimming", () => {
+    expect(mod.SELECTION_DIM_OPACITY).toBe(0.12);
+    expect(mod.SELECTION_DIM_OPACITY).toBe(mod.HOVER_DIM_OPACITY);
+  });
+
+  test("the CSS selection variable matches the shared opacity", async () => {
+    const shell = await Bun.file("../src/view/shell.html").text();
+    expect(shell).toMatch(/--selection-dim-opacity:\s*0\.12\s*;/);
   });
 });

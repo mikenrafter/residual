@@ -17,8 +17,8 @@
         --danger: #e6453e;
         --mono: "IBM Plex Mono", "JetBrains Mono", "SF Mono", ui-monospace, monospace;
         --sans: "IBM Plex Sans", "Source Sans 3", "Segoe UI", sans-serif;
-        /* Selection focus is 60% as strong as hover focus (landscape-selection.ts SELECTION_DIM_OPACITY). */
-        --selection-dim-opacity: 0.472;
+        /* Matches landscape-selection.ts SELECTION_DIM_OPACITY. */
+        --selection-dim-opacity: 0.12;
       }
       * { box-sizing: border-box; }
       html { background: var(--bg); }
@@ -154,10 +154,7 @@
       .landscape-tabs label:has(input:checked) { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--ink); }
       .landscape-tabs label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
       .landscape-hint { font-size: 11.5px; color: var(--muted); margin-left: auto; }
-      /* Viewport and sidebar side by side; sidebar drops below under 900px.
-         The viewport itself never scrolls either way — only the sidebar does. */
-      .landscape-stage { display: flex; align-items: stretch; gap: 0.75rem; }
-      .landscape-stage > .landscape-viewport { flex: 1 1 auto; min-width: 0; }
+      .landscape-stage { width: 100%; min-width: 0; }
       .landscape-viewport {
         position: relative;
         display: flex;
@@ -172,8 +169,12 @@
       .landscape-svg { display: block; flex: 1 1 auto; min-height: 0; width: 100%; height: 100%; cursor: grab; touch-action: none; }
       .landscape-svg:active { cursor: grabbing; }
       .landscape-sidebar {
-        flex: 0 0 18rem;
-        max-width: 18rem;
+        position: fixed;
+        right: 1rem;
+        bottom: 1rem;
+        z-index: 25;
+        width: min(22rem, calc(100vw - 2rem));
+        max-height: min(32rem, calc(100dvh - 2rem));
         display: flex;
         flex-direction: column;
         gap: 0.5rem;
@@ -181,7 +182,9 @@
         border: 1px solid var(--line);
         background: var(--surface);
         padding: 0.6rem;
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
       }
+      .landscape-sidebar[hidden] { display: none; }
       .landscape-sidebar-header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
       .landscape-sidebar-count { font: 600 0.72rem/1 var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
       .landscape-sidebar-clear, .landscape-sidebar-deselect {
@@ -196,12 +199,19 @@
       .landscape-sidebar-kind { font: 600 0.68rem/1 var(--mono); text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
       .landscape-sidebar-title { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
       .landscape-sidebar-deselect { padding: 0.1rem 0.4rem; }
+      .landscape-sidebar-navigation { display: flex; justify-content: space-between; gap: 0.5rem; }
+      .landscape-sidebar-navigation button { flex: 1 1 0; }
       .landscape-sidebar-fields { margin: 0.4rem 0 0; display: grid; grid-template-columns: auto 1fr; gap: 0.15rem 0.5rem; font-size: 12px; }
       .landscape-sidebar-fields dt { color: var(--muted); }
       .landscape-sidebar-fields dd { margin: 0; overflow-wrap: anywhere; }
       @media (max-width: 900px) {
-        .landscape-stage { flex-direction: column; }
-        .landscape-sidebar { flex: 0 0 auto; max-width: none; max-height: 14rem; }
+        .landscape-sidebar {
+          position: static;
+          width: 100%;
+          max-height: none;
+          margin-top: 0.75rem;
+          box-shadow: none;
+        }
       }
       .landscape-empty { margin: auto; padding: 1rem; color: var(--muted); text-align: center; }
       .landscape-legend { display: flex; flex-wrap: wrap; gap: 0.25rem 0.8rem; padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--line); font: 11px/1.35 var(--sans); color: var(--muted); }
@@ -210,7 +220,7 @@
       .landscape-legend-item i { display: inline-block; width: 0.65rem; height: 0.65rem; border-radius: 2px; }
       .landscape-legend-warn { color: var(--warn); }
       .landscape-tip {
-        position: absolute; z-index: 5; max-width: min(26rem, 90%); pointer-events: none;
+        position: fixed; top: 1rem; right: 1rem; z-index: 40; max-width: min(26rem, calc(100vw - 2rem)); pointer-events: none;
         padding: 0.45rem 0.6rem; border: 1px solid var(--line); border-radius: 6px;
         background: var(--surface); color: var(--ink); font: 12px/1.4 var(--sans);
         box-shadow: 0 6px 20px color-mix(in srgb, var(--bg) 70%, transparent);
@@ -226,8 +236,7 @@
       .nkp-bundle-svg.hovering .nkp-bundle-edge { stroke-opacity: 0.04 !important; }
       .nkp-bundle-svg.hovering .nkp-bundle-edge.hl-a { stroke: var(--accent); stroke-opacity: 0.95 !important; }
       .nkp-bundle-svg.hovering .nkp-bundle-edge.hl-b { stroke: var(--coupled); stroke-opacity: 0.85 !important; }
-      .nkp-bundle-dot { fill: var(--accent); }
-      .nkp-bundle-dot.status-proposed { fill: var(--coupled); }
+      .nkp-component-status-glyph { stroke: var(--bg); stroke-width: 1.5px; }
       .nkp-bundle-label { fill: var(--ink); font: 11px var(--mono); }
       .nkp-bundle-leaf { cursor: pointer; }
       .nkp-bundle-leaf.unfocused { opacity: 0.45; }
@@ -242,6 +251,7 @@
       .nkp-bundle-guide { opacity: 0.45; }
       .nkp-bundle-hit { fill: transparent; cursor: pointer; }
       .nkp-bundle-group-label { font: 600 10.5px var(--mono); letter-spacing: 0.02em; pointer-events: none; }
+      .nkp-bundle-svg.hovering .nkp-bundle-group-label.hl { opacity: 1; }
       .nkp-bundle-svg.hovering .nkp-bundle-group:not(.hl) { opacity: 0.35; }
 
       /* heatmap view (web/src/nkp-seriation.ts) */
@@ -270,8 +280,7 @@
       /* regions view (web/src/nkp-hypergraph.ts) */
       .nkp-node { cursor: grab; }
       .nkp-node:active { cursor: grabbing; }
-      .nkp-node-dot { fill: var(--accent); stroke: var(--bg); stroke-width: 2px; }
-      .nkp-node-dot.status-proposed { fill: var(--coupled); }
+      .nkp-node-dot { stroke: var(--bg); stroke-width: 2px; }
       .nkp-fission-ring { stroke: var(--warn); stroke-width: 1.5px; }
       .nkp-node-label { fill: var(--ink); font: 11px var(--mono); pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
       .nkp-hyper-bundle-trunk,
@@ -296,7 +305,7 @@
       .nkp-hyper-hovering .nkp-hyper-region-label.is-lit { opacity: 1 !important; }
       .nkp-hyper-region { cursor: grab; }
       .nkp-hyper-region:active { cursor: grabbing; }
-      .nkp-hyper-fusion-hull { fill: none; stroke: var(--warn); stroke-width: 3px; stroke-dasharray: 5 4; stroke-linejoin: round; pointer-events: none; }
+      .nkp-hyper-fusion-hull { fill: #808080; fill-opacity: 0.14; stroke: var(--warn); stroke-width: 2px; stroke-dasharray: 3 4; stroke-linejoin: round; pointer-events: none; }
       .nkp-hyper-component.selected .nkp-node-dot,
       .nkp-hyper-force.selected .nkp-hyper-force-dot { stroke: var(--accent); stroke-width: 2.5px; }
       .nkp-hyper-component.dim, .nkp-hyper-force.dim,
@@ -409,8 +418,6 @@
         border-radius: 50%;
         margin-right: 0.35rem;
       }
-      .status-dot.status-proposed { background: var(--coupled); }
-      .status-dot.status-actual { background: var(--accent); }
       .status-dot.status-deprecated { background: var(--warn); }
       .status-dot.status-other { background: var(--muted); }
       .force-accordion-toggle {
@@ -622,6 +629,9 @@
               <select data-regions-focus><option value="">all components</option></select>
             </label>
             <label data-landscape-for="regions" hidden><input type="checkbox" data-regions-names-toggle /> attractor names</label>
+            <label data-landscape-for="regions" hidden title="Keep each attractor region's force nodes in their current arrangement">
+              <input type="checkbox" data-regions-lock-toggle aria-label="Lock attractor regions" /> lock attractor regions
+            </label>
             <button type="button" data-landscape-reset-view>reset view</button>
             <button type="button" data-landscape-deselect-all>deselect all</button>
             <span class="landscape-hint">pinch or ctrl+scroll to zoom · drag to pan · double-click clears selection</span>

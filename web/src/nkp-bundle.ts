@@ -32,6 +32,7 @@ export interface BundleLeaf {
   label: string;
   groupId: string;
   status?: "actual" | "proposed";
+  color: string;
   tooltip: string;
   focused: boolean;
   fissionCandidate: boolean;
@@ -246,6 +247,7 @@ export function buildNkpBundleModel(state: PendingState, options: NkpBundleOptio
       label: node.label,
       groupId,
       ...(node.status ? { status: node.status } : {}),
+      color: node.color ?? "var(--muted)",
       tooltip: node.tooltip,
       focused: node.focused,
       fissionCandidate: Boolean(node.fissionCandidate),
@@ -515,11 +517,14 @@ export function createBundleView(ctx: BundleViewCtx): BundleViewHandle {
     built.labelsGroup.selectAll(".nkp-bundle-leaf")
       .classed("selected", (node: any) => isSelected(node.data.id))
       .classed("connected", (node: any) => isConnected(node.data.id))
-      .classed("dim", (node: any) => dim(node.data.id));
+      .classed("dim", (node: any) => dim(node.data.id))
+      .attr("opacity", (node: any) => dim(node.data.id) ? 0 : 1);
     built.groupsG.selectAll(".nkp-bundle-group")
       .classed("selected", (d: any) => isSelected(d.group.id))
       .classed("connected", (d: any) => isConnected(d.group.id))
       .classed("dim", (d: any) => dim(d.group.id));
+    built.labelsGroup.selectAll(".nkp-bundle-group-label")
+      .attr("opacity", (d: any) => dim(d.group.id) ? 0 : 1);
   }
 
   function update(state: PendingState, rawOptions: Record<string, unknown> = {}): void {
@@ -613,6 +618,8 @@ export function createBundleView(ctx: BundleViewCtx): BundleViewHandle {
       .data(edgeData, (item: any) => item.edge.id)
       .join("path")
       .attr("class", (item: any) => `nkp-bundle-edge${item.edge.fusion ? " fusion" : ""}`)
+      .attr("aria-label", (item: any) => item.edge.tooltip)
+      .attr("tabindex", 0)
       .attr("d", (item: any) => line(item.from.path(item.to)))
       .each(function (this: SVGPathElement, item: any) {
         const style = bundleEdgeStyle(item.edge.count, model.maxCount, item.edge.focused);
@@ -621,6 +628,11 @@ export function createBundleView(ctx: BundleViewCtx): BundleViewHandle {
       });
     edgePaths.on("click", (_event: MouseEvent, item: any) => {
       for (const key of item.edge.forceKeys as string[]) ctx.onToggle(`force:${key}` as EntityKey);
+    }).on("mouseenter focus", (event: MouseEvent, item: any) => {
+      b.tip.textContent = item.edge.tooltip;
+      placeTooltip(host, b.tip, event);
+    }).on("mouseleave blur", () => {
+      b.tip.hidden = true;
     });
 
     // --- groups/bands, keyed by attractor id ---
@@ -634,6 +646,9 @@ export function createBundleView(ctx: BundleViewCtx): BundleViewHandle {
         g.append("path").attr("class", "nkp-bundle-name-path").attr("fill", "none");
         return g;
       });
+    groupSel
+      .attr("aria-label", (d: any) => d.group.tooltip)
+      .attr("tabindex", 0);
     groupSel.select(".nkp-bundle-band")
       .attr("fill", (d: any) => d.group.color)
       .attr("d", (d: any) => band({ startAngle: toRadians(d.start), endAngle: toRadians(d.end) }));
@@ -664,7 +679,8 @@ export function createBundleView(ctx: BundleViewCtx): BundleViewHandle {
       .data(root.leaves(), (node: any) => node.data.id)
       .join((enter: any) => {
         const g = enter.append("g");
-        g.append("circle").attr("class", "nkp-bundle-dot").attr("r", 3.2);
+        g.append("circle").attr("class", "nkp-bundle-dot nkp-component-status-glyph").attr("r", 3.2);
+        g.append("rect").attr("class", "nkp-bundle-dot nkp-component-status-glyph").attr("x", -3.2).attr("y", -3.2).attr("width", 6.4).attr("height", 6.4);
         return g;
       });
     leafSel
@@ -672,9 +688,18 @@ export function createBundleView(ctx: BundleViewCtx): BundleViewHandle {
         const leaf = node.data.leaf as BundleLeaf;
         return `nkp-bundle-leaf${leaf.fissionCandidate ? " fission" : ""}${leaf.focused ? "" : " unfocused"}`;
       })
-      .select("circle")
-      .attr("class", (node: any) => `nkp-bundle-dot status-${node.data.leaf.status ?? "actual"}`)
+      .attr("data-component-id", (node: any) => node.data.id)
+      .attr("aria-label", (node: any) => node.data.leaf.tooltip)
+      .attr("tabindex", 0)
       .attr("transform", (node: any) => `rotate(${node.x - 90}) translate(${node.y},0)`);
+    leafSel.select("circle")
+      .attr("data-component-status-shape", (node: any) => node.data.leaf.status === "proposed" ? null : "actual")
+      .attr("display", (node: any) => node.data.leaf.status === "proposed" ? "none" : null)
+      .attr("fill", (node: any) => node.data.leaf.color);
+    leafSel.select("rect")
+      .attr("data-component-status-shape", (node: any) => node.data.leaf.status === "proposed" ? "proposed" : null)
+      .attr("display", (node: any) => node.data.leaf.status === "proposed" ? null : "none")
+      .attr("fill", (node: any) => node.data.leaf.color);
     leafSel.on("click", (_event: MouseEvent, node: any) => ctx.onToggle(node.data.id as EntityKey));
 
     // --- labels: every text element, leaf and group-name, lives here so it
@@ -725,11 +750,11 @@ export function createBundleView(ctx: BundleViewCtx): BundleViewHandle {
       leafSel.classed("hl", false);
       leafLabelSel.classed("hl", false);
       groupSel.classed("hl", false);
+      b.labelsGroup.selectAll(".nkp-bundle-group-label").classed("hl", false);
       b.tip.hidden = true;
     };
 
-    leafSel
-      .on("mouseenter", (event: MouseEvent, node: any) => {
+    const showLeaf = (event: MouseEvent, node: any): void => {
         const leaf = node.data.leaf as BundleLeaf;
         b.svg.classed("hovering", true);
         const neighbours = new Set<string>([leaf.id]);
@@ -745,6 +770,7 @@ export function createBundleView(ctx: BundleViewCtx): BundleViewHandle {
         leafSel.classed("hl", (other: any) => neighbours.has(other.data.id));
         leafLabelSel.classed("hl", (other: any) => neighbours.has(other.data.id));
         groupSel.classed("hl", (d: any) => d.group.id === leaf.groupId);
+        b.labelsGroup.selectAll(".nkp-bundle-group-label").classed("hl", (d: any) => d.group.id === leaf.groupId);
         const summary = leafNeighbourSummary(model, leaf.id);
         const group = model.groups.find((candidate) => candidate.id === leaf.groupId);
         const placement = group && group.label !== leaf.dominantLabel
@@ -756,14 +782,18 @@ export function createBundleView(ctx: BundleViewCtx): BundleViewHandle {
           + `<div class="muted">${placement}${leaf.fissionCandidate ? " · fission candidate" : ""}</div>`
           + (rows ? `<ul>${rows}</ul>${summary.length > 12 ? `<div class="muted">+${summary.length - 12} more</div>` : ""}` : `<div class="muted">No visible couplings</div>`);
         placeTooltip(host, b.tip, event);
-      })
-      .on("mouseleave", clearHover);
+      };
+    leafSel
+      .on("mouseenter", showLeaf)
+      .on("focus", showLeaf)
+      .on("mouseleave", clearHover)
+      .on("blur", clearHover);
 
-    groupSel
-      .on("mouseenter", (event: MouseEvent, d: any) => {
+    const showGroup = (event: MouseEvent, d: any): void => {
         const members = new Set(d.group.leaves.map((leaf: BundleLeaf) => leaf.id));
         b.svg.classed("hovering", true);
         groupSel.classed("hl", (other: any) => other === d);
+        b.labelsGroup.selectAll(".nkp-bundle-group-label").classed("hl", (other: any) => other === d);
         const touched = new Set<string>();
         let internal = 0;
         let external = 0;
@@ -788,8 +818,12 @@ export function createBundleView(ctx: BundleViewCtx): BundleViewHandle {
         b.tip.innerHTML = `<strong>${escapeHtml(d.group.label)}</strong>`
           + `<div class="muted">${d.group.leaves.length} component(s) · ${internal} internal, ${external} cross-attractor couplings</div>`;
         placeTooltip(host, b.tip, event);
-      })
-      .on("mouseleave", clearHover);
+      };
+    groupSel
+      .on("mouseenter", showGroup)
+      .on("focus", showGroup)
+      .on("mouseleave", clearHover)
+      .on("blur", clearHover);
 
     applySelectionClasses();
   }

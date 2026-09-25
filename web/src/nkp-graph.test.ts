@@ -19,6 +19,10 @@ type GraphModule = {
       topNDirection?: "strongest" | "weakest";
     },
   ) => GraphModel;
+  attractorColorForId?: (id: string) => string;
+  attractorColors?: (state: PendingState) => Map<string, string>;
+  dominantAttractorForComponent?: (state: PendingState, componentName: string) => string | undefined;
+  mutedAttractorColor?: (color: string) => string;
 };
 
 interface GraphNode {
@@ -31,6 +35,9 @@ interface GraphNode {
   opacity: number;
   labelVisible: boolean;
   revealLabelOnHover: boolean;
+  shape?: "circle" | "square";
+  color?: string;
+  dominantAttractorId?: string;
   fissionCandidate?: boolean;
   ringStyle?: "dotted";
 }
@@ -194,6 +201,23 @@ describe("buildNkpGraphModel", () => {
     expect(actual.tooltip).toContain("runtime");
     expect(actual.tooltip).toContain("actual");
     expect(proposed.tooltip).toContain("proposed");
+  });
+
+  test("encodes implementation status by shape, not component color", () => {
+    const model = build();
+    const actual = node(model, "component:auth");
+    const proposed = node(model, "component:cache");
+    expect(actual.shape).toBe("circle");
+    expect(proposed.shape).toBe("square");
+    expect(actual.color).toBe(proposed.color);
+  });
+
+  test("colors components with a muted shade of their dominant attractor", () => {
+    const model = build();
+    const authNode = node(model, "component:auth");
+    const colors = graphModule.attractorColors?.(state());
+    expect(authNode.dominantAttractorId).toBe("A-01");
+    expect(authNode.color).toBe(graphModule.mutedAttractorColor?.(colors?.get("A-01") ?? ""));
   });
 
   test("aggregates residual rows into one component edge with stressor names and a width based on count", () => {
@@ -428,6 +452,29 @@ describe("attractor palette", () => {
     expect([...colours.keys()]).toEqual([...colours.keys()].sort());
     expect(new Set(colours.values()).size).toBe(colours.size);
   });
+
+  test("an attractor color is a pure function of its id", () => {
+    expect(graphModule.attractorColorForId).toBeFunction();
+    const before = graphModule.attractorColors?.(state()).get("A-01");
+    const inserted = state({
+      baseAttractors: [
+        { id: "A-00", name: "new first", description: "", positiveState: "", negativeState: "" },
+        resilience,
+        adaptability,
+      ],
+    });
+    const after = graphModule.attractorColors?.(inserted).get("A-01");
+    expect(before).toBe(after);
+    expect(before).toBe(graphModule.attractorColorForId?.("A-01"));
+    expect(graphModule.attractorColors?.(state({ baseAttractors: [adaptability, resilience] })).get("A-01")).toBe(before);
+  });
+
+  test("shared dominant-attractor logic uses the full state and is filter-stable", () => {
+    expect(graphModule.dominantAttractorForComponent).toBeFunction();
+    expect(graphModule.dominantAttractorForComponent?.(state(), "cache")).toBe("A-01");
+    const filteredGraph = build(state(), { visibleForceIds: new Set(["P-01"]), hideFiltered: false });
+    expect(node(filteredGraph, "component:cache").dominantAttractorId).toBe("A-01");
+  });
 });
 
 describe("rendered-page integration", () => {
@@ -437,5 +484,11 @@ describe("rendered-page integration", () => {
       Bun.file("src/main.ts").text(),
     ]);
     expect(`${shell}\n${main}`).toContain("https://cdn.jsdelivr.net/npm/d3@7/+esm");
+  });
+
+  test("component implementation status does not change graph or matrix glyph color", async () => {
+    const shell = await Bun.file("../src/view/shell.html").text();
+    expect(shell).not.toMatch(/nkp-(?:bundle-dot|node-dot)\.status-proposed\s*\{[^}]*fill/s);
+    expect(shell).not.toMatch(/\.status-dot\.status-(?:actual|proposed)\s*\{[^}]*background/s);
   });
 });

@@ -222,6 +222,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn matrix_uses_shape_glyphs_for_component_status_and_force_kind() {
+        let mut snap = fixture_main_snapshot();
+        snap.components[1].status = "proposed".into();
+        let out = render_landscape_html(&snap).expect("landscape html renders");
+        assert!(
+            out.contains(r#"data-component-status-shape="actual""#)
+                && out.contains("status-shape-circle"),
+            "actual component headers must carry a circle glyph"
+        );
+        assert!(
+            out.contains(r#"data-component-status-shape="proposed""#)
+                && out.contains("status-shape-square"),
+            "proposed component headers must carry a square glyph"
+        );
+        assert!(
+            out.contains(r#"data-force-kind-glyph="stressor""#),
+            "stressor rows must carry a diamond glyph"
+        );
+        assert!(
+            out.contains(r#"data-force-kind-glyph="purpose""#),
+            "purpose rows must carry a circle glyph"
+        );
+    }
+
+    #[test]
+    fn matrix_force_rows_use_a_translucent_attractor_background() {
+        let out = html(false);
+        assert!(
+            out.contains("force-attractor-tint")
+                && out.contains("--force-attractor-color:")
+                && out.contains("color-mix(in srgb, var(--force-attractor-color)"),
+            "each force row must expose its attractor tint without using status color"
+        );
+    }
+
     /// Fusion/fission-only filter and live threshold slider markup hooks.
     /// Prior to Phase 8 this test also asserted the *inline* JS wiring
     /// (`computeMatrixCandidates`, `thresholdInput.addEventListener`) that
@@ -371,6 +407,86 @@ mod tests {
             out.contains("hostile-auditor"),
             "defense persona must render with --defense"
         );
+    }
+
+    #[test]
+    fn defense_flag_adds_one_page_level_ledger_switch_and_separate_panels() {
+        let out = html(true);
+        assert_eq!(
+            out.matches("data-page-ledger-tabs").count(),
+            1,
+            "the implementation/defense page switch must appear once at page top"
+        );
+        for ledger in ["implementation", "defense"] {
+            assert!(
+                out.contains(&format!(r#"data-page-ledger-tab="{ledger}""#)),
+                "missing {ledger} page tab"
+            );
+            assert!(
+                out.contains(&format!(r#"data-ledger-panel="{ledger}""#)),
+                "missing {ledger} page panel"
+            );
+            assert!(
+                out.contains(&format!(r#"data-modify-ledger-switch="{ledger}""#)),
+                "Modify must expose a synchronized {ledger} switch"
+            );
+            assert!(
+                out.contains(&format!(r#"data-modify-panel="{ledger}""#)),
+                "Modify forms must be separated into a {ledger} panel"
+            );
+        }
+
+        let implementation = out.find(r#"data-ledger-panel="implementation""#).expect("implementation panel");
+        let defense = out.find(r#"data-ledger-panel="defense""#).expect("defense panel");
+        let tabs = out.find("data-page-ledger-tabs").expect("page ledger tabs");
+        let toolbar = out.find("data-view-toolbar").expect("main toolbar");
+        let matrix = out.find(r#"data-view="matrix""#).expect("matrix card");
+        let landscape = out.find(r#"data-view="landscape""#).expect("landscape card");
+        let defense_record = out.find("MS-01").expect("defense record");
+        assert!(tabs < implementation, "the ledger switch belongs at page top before its panels");
+        assert!(toolbar > implementation && toolbar < defense, "main toolbar belongs to implementation panel");
+        assert!(matrix > implementation && matrix < defense, "matrix belongs to implementation panel");
+        assert!(landscape > implementation && landscape < defense, "landscape belongs to implementation panel");
+        assert!(defense_record > defense, "defense records belong to defense panel");
+
+        let copy = out.find("data-copy-commands").expect("shared copy/import surface");
+        assert!(copy > out.find(r#"data-modify-panel="defense""#).unwrap(), "shared copy/import follows both form panels");
+    }
+
+    #[test]
+    fn default_page_has_no_implementation_defense_tab_markup() {
+        let out = html(false);
+        for marker in [
+            "data-page-ledger-tabs",
+            "data-page-ledger-tab",
+            "data-ledger-panel",
+            "data-modify-ledger-switch",
+            "data-modify-panel",
+        ] {
+            assert!(!out.contains(marker), "{marker} must be absent without --defense");
+        }
+    }
+
+    #[test]
+    fn rust_page_and_defense_rendering_are_dioxus_components_without_unsafe_html_splicing() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let defense_source = std::fs::read_to_string(root.join("src/view/components/defense.rs"))
+            .expect("defense component source");
+        assert!(
+            !defense_source.contains("dangerous_inner_html") && !defense_source.contains("push_str("),
+            "defense records must render as nested Dioxus components"
+        );
+
+        let components_dir = root.join("src/view/components");
+        let page_source = std::fs::read_dir(components_dir)
+            .expect("view components directory")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "rs"))
+            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+            .find(|source| source.contains("data-page-ledger-tabs"));
+        let page_source = page_source.expect("the page/tab/panel structure must live in a Dioxus component");
+        assert!(page_source.contains("rsx!"), "the page component must use Dioxus markup");
+        assert!(!page_source.contains("dangerous_inner_html"), "page rendering must not splice unsafe HTML");
     }
 
     /// Ledger text must not be able to close the embedded script block.

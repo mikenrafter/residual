@@ -39,7 +39,12 @@ interface ViewHandle {
    * can inspect and step physics directly instead of guessing at timing. */
   simulation?: { nodes: () => { id: string; x?: number; y?: number }[]; tick: () => void };
 }
-interface SimNodeLike { id: string; type: string; attractorId?: string; x?: number; y?: number }
+interface SimNodeLike { id: string; type: string; attractorId?: string; componentIds?: string[]; x?: number; y?: number }
+interface RegionLock {
+  attractorId: string;
+  anchor: { x: number; y: number };
+  offsets: Map<string, { x: number; y: number }>;
+}
 type RegionsViewModule = {
   createRegionsView?: (ctx: ViewCtx) => ViewHandle;
   FORCE_NODE_SCALE?: number;
@@ -50,6 +55,10 @@ type RegionsViewModule = {
     params: { distanceMax: number },
   ) => { vx: number; vy: number };
   translateGroup?: (nodes: SimNodeLike[], attractorId: string, dx: number, dy: number) => void;
+  captureRegionLock?: (nodes: SimNodeLike[], attractorId: string) => RegionLock;
+  applyRegionLock?: (lock: RegionLock, nodes: SimNodeLike[]) => void;
+  moveRegionLock?: (lock: RegionLock, anchor: { x: number; y: number }) => RegionLock;
+  editRegionForceOffset?: (lock: RegionLock, forceId: string, point: { x: number; y: number }) => RegionLock;
 };
 
 let regionsModule: RegionsViewModule = {};
@@ -292,11 +301,11 @@ describe("regions constants (Phase 4)", () => {
   });
 });
 
-describe("forceInteractionDelta (Phase 4)", () => {
+describe("forceInteractionDelta pressure rules", () => {
   const paramsFor = (distanceMax: number) => ({ distanceMax });
 
-  test("a purpose pushes a force from another attractor away", () => {
-    const source = { id: "force:P-01", type: "force", kind: "purpose" as const, attractorId: "A-01", x: 0, y: 0 };
+  test("a purpose pushes a force outside its attractor away", () => {
+    const source = { id: "force:P-01", type: "force", kind: "purpose" as const, attractorId: "A-01", componentIds: ["component:auth"], x: 0, y: 0 };
     const target = { id: "force:S-01", type: "force", attractorId: "A-02", x: 100, y: 0 };
     const delta = regionsModule.forceInteractionDelta?.(source, target, paramsFor(300));
     expect(delta).toBeDefined();
@@ -304,35 +313,45 @@ describe("forceInteractionDelta (Phase 4)", () => {
     expect(delta?.vy ?? NaN).toBeCloseTo(0, 5);
   });
 
-  test("a stressor pulls a force from another attractor toward it, weaker than a purpose's push at equal distance", () => {
-    const stressorSource = { id: "force:S-02", type: "force", kind: "stressor" as const, attractorId: "A-01", x: 0, y: 0 };
-    const purposeSource = { id: "force:P-01", type: "force", kind: "purpose" as const, attractorId: "A-01", x: 0, y: 0 };
-    const target = { id: "force:S-01", type: "force", attractorId: "A-02", x: 100, y: 0 };
-    const pull = regionsModule.forceInteractionDelta?.(stressorSource, target, paramsFor(300));
-    const push = regionsModule.forceInteractionDelta?.(purposeSource, target, paramsFor(300));
-    expect(pull).toBeDefined();
-    expect(pull?.vx).toBeLessThan(0); // target pulled back toward the stressor, i.e. -x
-    const pullMagnitude = Math.hypot(pull?.vx ?? 0, pull?.vy ?? 0);
-    const pushMagnitude = Math.hypot(push?.vx ?? 0, push?.vy ?? 0);
-    expect(pullMagnitude).toBeLessThan(pushMagnitude);
+  test("a stressor pulls a force in its own attractor toward it", () => {
+    const source = { id: "force:S-02", type: "force", kind: "stressor" as const, attractorId: "A-01", componentIds: ["component:auth"], x: 0, y: 0 };
+    const target = { id: "force:S-01", type: "force", attractorId: "A-01", x: 100, y: 0 };
+    expect(regionsModule.forceInteractionDelta?.(source, target, paramsFor(300))?.vx).toBeLessThan(0);
   });
 
-  test("same-attractor pairs are untouched regardless of kind", () => {
-    const purposeSource = { id: "force:P-01", type: "force", kind: "purpose" as const, attractorId: "A-01", x: 0, y: 0 };
-    const stressorSource = { id: "force:S-02", type: "force", kind: "stressor" as const, attractorId: "A-01", x: 0, y: 0 };
-    const sameAttractorTarget = { id: "force:S-01", type: "force", attractorId: "A-01", x: 100, y: 0 };
-    expect(regionsModule.forceInteractionDelta?.(purposeSource, sameAttractorTarget, paramsFor(300))).toEqual({ vx: 0, vy: 0 });
-    expect(regionsModule.forceInteractionDelta?.(stressorSource, sameAttractorTarget, paramsFor(300))).toEqual({ vx: 0, vy: 0 });
+  test("a stressor pulls a directly connected component and leaves other components unchanged", () => {
+    const source = { id: "force:S-02", type: "force", kind: "stressor" as const, attractorId: "A-01", componentIds: ["component:auth"], x: 0, y: 0 };
+    const direct = { id: "component:auth", type: "component", x: 100, y: 0 };
+    const other = { id: "component:cache", type: "component", x: 100, y: 0 };
+    expect(regionsModule.forceInteractionDelta?.(source, direct, paramsFor(300))?.vx).toBeLessThan(0);
+    expect(regionsModule.forceInteractionDelta?.(source, other, paramsFor(300))).toEqual({ vx: 0, vy: 0 });
+  });
+
+  test("a purpose repels a component it does not directly connect and leaves its direct component unchanged", () => {
+    const source = { id: "force:P-01", type: "force", kind: "purpose" as const, attractorId: "A-01", componentIds: ["component:auth"], x: 0, y: 0 };
+    const direct = { id: "component:auth", type: "component", x: 100, y: 0 };
+    const other = { id: "component:cache", type: "component", x: 100, y: 0 };
+    expect(regionsModule.forceInteractionDelta?.(source, direct, paramsFor(300))).toEqual({ vx: 0, vy: 0 });
+    expect(regionsModule.forceInteractionDelta?.(source, other, paramsFor(300))?.vx).toBeGreaterThan(0);
+  });
+
+  test("a purpose leaves same-attractor force nodes unchanged and a stressor leaves outside forces unchanged", () => {
+    const purpose = { id: "force:P-01", type: "force", kind: "purpose" as const, attractorId: "A-01", componentIds: [], x: 0, y: 0 };
+    const stressor = { id: "force:S-02", type: "force", kind: "stressor" as const, attractorId: "A-01", componentIds: [], x: 0, y: 0 };
+    const same = { id: "force:S-01", type: "force", attractorId: "A-01", x: 100, y: 0 };
+    const outside = { id: "force:S-03", type: "force", attractorId: "A-02", x: 100, y: 0 };
+    expect(regionsModule.forceInteractionDelta?.(purpose, same, paramsFor(300))).toEqual({ vx: 0, vy: 0 });
+    expect(regionsModule.forceInteractionDelta?.(stressor, outside, paramsFor(300))).toEqual({ vx: 0, vy: 0 });
   });
 
   test("pairs beyond distanceMax have no effect", () => {
-    const source = { id: "force:P-01", type: "force", kind: "purpose" as const, attractorId: "A-01", x: 0, y: 0 };
+    const source = { id: "force:P-01", type: "force", kind: "purpose" as const, attractorId: "A-01", componentIds: [], x: 0, y: 0 };
     const farTarget = { id: "force:S-01", type: "force", attractorId: "A-02", x: 1000, y: 0 };
     expect(regionsModule.forceInteractionDelta?.(source, farTarget, paramsFor(300))).toEqual({ vx: 0, vy: 0 });
   });
 
   test("the push falls off with distance", () => {
-    const source = { id: "force:P-01", type: "force", kind: "purpose" as const, attractorId: "A-01", x: 0, y: 0 };
+    const source = { id: "force:P-01", type: "force", kind: "purpose" as const, attractorId: "A-01", componentIds: [], x: 0, y: 0 };
     const near = { id: "force:S-01", type: "force", attractorId: "A-02", x: 20, y: 0 };
     const far = { id: "force:S-02", type: "force", attractorId: "A-02", x: 150, y: 0 };
     const nearDelta = regionsModule.forceInteractionDelta?.(source, near, paramsFor(300));
@@ -356,6 +375,52 @@ describe("translateGroup (Phase 4)", () => {
     expect(nodes[1]).toMatchObject({ x: 120, y: -30 });
     expect(nodes[2]).toMatchObject({ x: 30, y: 30 }); // other attractor untouched
     expect(nodes[3]).toMatchObject({ x: 5, y: 5 }); // components untouched
+  });
+});
+
+describe("locked attractor regions", () => {
+  const nodes: SimNodeLike[] = [
+    { id: "force:S-01", type: "force", attractorId: "A-01", x: 10, y: 20 },
+    { id: "force:S-02", type: "force", attractorId: "A-01", x: 30, y: 40 },
+    { id: "force:P-01", type: "force", attractorId: "A-02", x: 80, y: 90 },
+    { id: "component:auth", type: "component", x: 15, y: 25 },
+  ];
+
+  test("captures an anchor and force-member offsets but never locks components", () => {
+    const lock = regionsModule.captureRegionLock?.(nodes, "A-01");
+    expect(lock).toBeDefined();
+    expect([...lock!.offsets.keys()].sort()).toEqual(["force:S-01", "force:S-02"]);
+    expect(lock!.offsets.has("component:auth")).toBe(false);
+  });
+
+  test("moving a locked region preserves every stored force offset", () => {
+    const lock = regionsModule.captureRegionLock?.(nodes, "A-01");
+    expect(lock).toBeDefined();
+    const moved = regionsModule.moveRegionLock?.(lock!, { x: 200, y: 300 });
+    const copy = nodes.map((node) => ({ ...node }));
+    if (moved) regionsModule.applyRegionLock?.(moved, copy);
+    expect(copy[1]!.x! - copy[0]!.x!).toBe(20);
+    expect(copy[1]!.y! - copy[0]!.y!).toBe(20);
+    expect(copy[3]).toMatchObject({ x: 15, y: 25 });
+  });
+
+  test("dragging one force edits only its saved offset", () => {
+    const lock = regionsModule.captureRegionLock?.(nodes, "A-01");
+    expect(lock).toBeDefined();
+    const edited = regionsModule.editRegionForceOffset?.(lock!, "force:S-01", { x: 100, y: 110 });
+    expect(edited?.offsets.get("force:S-01")).not.toEqual(lock!.offsets.get("force:S-01"));
+    expect(edited?.offsets.get("force:S-02")).toEqual(lock!.offsets.get("force:S-02"));
+  });
+
+  test("lock state can be reapplied after members disappear under a filter and return", () => {
+    const lock = regionsModule.captureRegionLock?.(nodes, "A-01");
+    expect(lock).toBeDefined();
+    const moved = regionsModule.moveRegionLock?.(lock!, { x: 300, y: 200 });
+    const filtered = nodes.filter((node) => node.id !== "force:S-02").map((node) => ({ ...node }));
+    if (moved) regionsModule.applyRegionLock?.(moved, filtered);
+    const restored = nodes.map((node) => ({ ...node }));
+    if (moved) regionsModule.applyRegionLock?.(moved, restored);
+    expect(restored.find((node) => node.id === "force:S-02")).toMatchObject({ x: 310, y: 210 });
   });
 });
 
@@ -449,6 +514,77 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     expect(auth?.classList.contains("selected")).toBe(true);
     expect(forceNode?.classList.contains("connected")).toBe(true);
     expect(queue?.classList.contains("selected") || queue?.classList.contains("connected")).toBe(false);
+  });
+
+  test("focus keeps labels visible only for the selected and transitively connected entities", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    handle?.setSelection(
+      new Set(["component:auth"]),
+      new Set(["component:auth", "force:S-01", "attractor:A-01"]),
+    );
+    const auth = nodeFor(host, ".nkp-hyper-component-label", "auth");
+    const connectedForce = nodeFor(host, ".nkp-hyper-force-label", "s-01-name");
+    const unrelated = nodeFor(host, ".nkp-hyper-component-label", "cache");
+    expect(auth?.getAttribute("opacity")).not.toBe("0");
+    expect(connectedForce?.getAttribute("opacity")).not.toBe("0");
+    expect(unrelated?.getAttribute("opacity")).toBe("0");
+    connectedForce?.dispatchEvent(new MouseEvent("mouseleave", { bubbles: true }));
+    expect(connectedForce?.getAttribute("opacity")).not.toBe("0");
+  });
+
+  test("uses shape for component implementation status and kind for force glyphs", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    const pending = state({
+      baseComponents: [component("auth", "actual"), component("cache", "proposed"), component("database"), component("queue"), component("orphan")],
+    });
+    handle?.update(pending, options);
+    const actual = [...host.querySelectorAll<SVGGElement>("g.nkp-hyper-component")]
+      .find((item) => item.getAttribute("aria-label")?.includes("auth"));
+    const proposed = [...host.querySelectorAll<SVGGElement>("g.nkp-hyper-component")]
+      .find((item) => item.getAttribute("aria-label")?.includes("cache"));
+    expect(actual?.querySelector('[data-component-status-shape="actual"]')?.tagName.toLowerCase()).toBe("circle");
+    expect(proposed?.querySelector('[data-component-status-shape="proposed"]')?.tagName.toLowerCase()).toBe("rect");
+    expect(host.querySelector('g.nkp-hyper-force[aria-label*="S-01"] [data-force-kind-glyph="stressor"]')).not.toBeNull();
+    expect(host.querySelector('g.nkp-hyper-force[aria-label*="P-01"] [data-force-kind-glyph="purpose"]')).not.toBeNull();
+  });
+
+  test("renders a two-component fusion candidate as a true nonzero-area hull", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const hull = host.querySelector<SVGPathElement>(".nkp-hyper-fusion-hull");
+    expect(hull).not.toBeNull();
+    expect(hull?.getAttribute("d")).toMatch(/^M.+Z$/);
+    const coordinates = [...(hull?.getAttribute("d")?.matchAll(/(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/g) ?? [])]
+      .map((match) => ({ x: Number(match[1]), y: Number(match[2]) }));
+    expect(coordinates.length).toBeGreaterThanOrEqual(4);
+    const twiceArea = coordinates.reduce((sum, point, index) => {
+      const next = coordinates[(index + 1) % coordinates.length]!;
+      return sum + point.x * next.y - next.x * point.y;
+    }, 0);
+    expect(Math.abs(twiceArea)).toBeGreaterThan(0);
+  });
+
+  test("styles fusion regions with gray fill and a dotted red border", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const hull = host.querySelector<SVGPathElement>(".nkp-hyper-fusion-hull");
+    expect(hull?.getAttribute("fill")).toMatch(/gray|grey|#(?:[0-9a-f]{3}){1,2}|rgb/i);
+    expect(hull?.getAttribute("stroke")).toMatch(/red|#c45c5c|var\(--warn\)/i);
+    expect(hull?.getAttribute("stroke-dasharray")).not.toBeNull();
+  });
+
+  test("uses accessible labels instead of native SVG title tooltips", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    expect(host.querySelector("svg title")).toBeNull();
+    expect([...host.querySelectorAll<SVGElement>(".nkp-hyper-node, .nkp-hyper-region")].every((item) =>
+      Boolean(item.getAttribute("aria-label")))).toBe(true);
   });
 
   test("all text lives in a last-child g.landscape-labels group", () => {
