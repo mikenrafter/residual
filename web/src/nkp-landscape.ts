@@ -273,7 +273,9 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
       const focusComponent = syncFocusOptions(container.querySelector<HTMLSelectElement>("[data-regions-focus]"), state);
       const showNames = container.querySelector<HTMLInputElement>("[data-regions-names-toggle]")?.checked ?? true;
       const lockRegions = container.querySelector<HTMLInputElement>("[data-regions-lock-toggle]")?.checked ?? false;
-      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, ...(focusComponent ? { focusComponent } : {}) });
+      const tensionInput = container.querySelector<HTMLInputElement>("[data-bundle-tension-input]");
+      const tension = tensionInput ? Number(tensionInput.value) / 100 : DEFAULT_BUNDLE_TENSION;
+      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, tension, ...(focusComponent ? { focusComponent } : {}) });
     } else {
       const minCouplingStrength = syncMinCouplingStrength(container, state, filters);
       if (view === "heatmap") {

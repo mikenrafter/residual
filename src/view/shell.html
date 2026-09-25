@@ -311,22 +311,27 @@
       .nkp-hyper.names-hidden .nkp-hyper-region-label { opacity: 0 !important; }
       .nkp-hyper-hovering .nkp-hyper-node:not(.is-lit) { opacity: 0.12; }
       .nkp-hyper-hovering .nkp-hyper-bundle-trunk:not(.is-lit),
-      .nkp-hyper-hovering .nkp-hyper-bundle-branch:not(.is-lit) { stroke-opacity: 0.04; }
+      .nkp-hyper-hovering .nkp-hyper-bundle-branch:not(.is-lit),
+      .nkp-hyper-selecting .nkp-hyper-bundle-trunk:not(.is-lit),
+      .nkp-hyper-selecting .nkp-hyper-bundle-branch:not(.is-lit) { stroke-opacity: 0.04; }
       .nkp-hyper-hovering .nkp-hyper-bundle-trunk.is-lit,
-      .nkp-hyper-hovering .nkp-hyper-bundle-branch.is-lit { stroke-opacity: 0.9; }
-      .nkp-hyper-hovering .nkp-hyper-region:not(.is-lit) { opacity: 0.03; }
-      .nkp-hyper-hovering .nkp-hyper-region.is-lit { opacity: 0.28; }
-      .nkp-hyper-hovering .nkp-hyper-region-label:not(.is-lit) { opacity: 0.1; }
-      .nkp-hyper-hovering .nkp-hyper-region-label.is-lit { opacity: 1 !important; }
+      .nkp-hyper-hovering .nkp-hyper-bundle-branch.is-lit,
+      .nkp-hyper-selecting .nkp-hyper-bundle-trunk.is-lit,
+      .nkp-hyper-selecting .nkp-hyper-bundle-branch.is-lit { stroke-opacity: 0.9; }
+      .nkp-hyper-hovering .nkp-hyper-region:not(.is-lit),
+      .nkp-hyper-selecting .nkp-hyper-region:not(.is-lit) { opacity: 0.03; }
+      .nkp-hyper-hovering .nkp-hyper-region.is-lit,
+      .nkp-hyper-selecting .nkp-hyper-region.is-lit { opacity: 0.28; }
+      .nkp-hyper-hovering .nkp-hyper-region-label:not(.is-lit),
+      .nkp-hyper-selecting .nkp-hyper-region-label:not(.is-lit) { opacity: 0.1; }
+      .nkp-hyper-hovering .nkp-hyper-region-label.is-lit,
+      .nkp-hyper-selecting .nkp-hyper-region-label.is-lit { opacity: 1 !important; }
       .nkp-hyper-region { cursor: grab; }
       .nkp-hyper-region:active { cursor: grabbing; }
       .nkp-hyper-fusion-hull { fill: #808080; fill-opacity: 0.14; stroke: var(--warn); stroke-width: 2px; stroke-dasharray: 3 4; stroke-linejoin: round; pointer-events: none; }
       .nkp-hyper-component.selected .nkp-node-dot,
       .nkp-hyper-force.selected .nkp-hyper-force-dot { stroke: var(--accent); stroke-width: 2.5px; }
-      .nkp-hyper-component.dim, .nkp-hyper-force.dim,
-      .nkp-hyper-region.dim, .nkp-hyper-region-label.dim,
-      .nkp-hyper-bundle-trunk.dim,
-      .nkp-hyper-bundle-branch.dim { opacity: var(--selection-dim-opacity); }
+      .nkp-hyper-component.dim, .nkp-hyper-force.dim { opacity: var(--selection-dim-opacity); }
 
       @media (max-width: 700px) {
         main { padding-inline: 0.6rem; }
@@ -664,7 +669,7 @@
               <output data-top-n-couplings-value>all</output> tiers
             </label>
             <label data-landscape-for="bundle"><input type="checkbox" data-top-n-weakest-toggle /> weakest first</label>
-            <label data-landscape-for="bundle">bundling
+            <label data-landscape-for="bundle regions">bundling
               <input type="range" data-bundle-tension-input min="0" max="100" value="85" />
             </label>
             <label data-landscape-for="heatmap" hidden><input type="checkbox" data-heatmap-counts-toggle checked /> show counts</label>

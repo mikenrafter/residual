@@ -59,6 +59,7 @@ export function branchGeometry(
   from: Point,
   to: Point[],
   splitFraction = 0.6,
+  tension = 1,
 ): { trunk: string; branches: string[]; width: number } {
   const targets = to.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
   const count = targets.length;
@@ -75,9 +76,16 @@ export function branchGeometry(
 
   const center = centroid(targets) ?? from;
   const split = clamp(splitFraction, 0.05, 0.95);
-  const splitPoint: Point = {
+  const rawSplitPoint: Point = {
     x: from.x + (center.x - from.x) * split,
     y: from.y + (center.y - from.y) * split,
+  };
+  // tension blends the raw (fully bundled) split point back toward `from`:
+  // tension=1 reproduces the raw split point exactly; tension=0 collapses
+  // the trunk to a zero-length stub at the source.
+  const splitPoint: Point = {
+    x: from.x + (rawSplitPoint.x - from.x) * tension,
+    y: from.y + (rawSplitPoint.y - from.y) * tension,
   };
   const trunkDirection = normalize(splitPoint.x - from.x, splitPoint.y - from.y);
   const trunk = curveToPath(from, cubicBetween(from, splitPoint, trunkDirection));

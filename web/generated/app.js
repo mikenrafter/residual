@@ -3649,7 +3649,7 @@ function cubicBetween(from, to, direction) {
     end: to
   };
 }
-function branchGeometry(from, to, splitFraction = 0.6) {
+function branchGeometry(from, to, splitFraction = 0.6, tension = 1) {
   const targets = to.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
   const count = targets.length;
   if (count === 0)
@@ -3664,9 +3664,13 @@ function branchGeometry(from, to, splitFraction = 0.6) {
   }
   const center = centroid(targets) ?? from;
   const split = clamp(splitFraction, 0.05, 0.95);
-  const splitPoint = {
+  const rawSplitPoint = {
     x: from.x + (center.x - from.x) * split,
     y: from.y + (center.y - from.y) * split
+  };
+  const splitPoint = {
+    x: from.x + (rawSplitPoint.x - from.x) * tension,
+    y: from.y + (rawSplitPoint.y - from.y) * tension
   };
   const trunkDirection = normalize(splitPoint.x - from.x, splitPoint.y - from.y);
   const trunk = curveToPath(from, cubicBetween(from, splitPoint, trunkDirection));
@@ -3949,7 +3953,7 @@ function buildNkpHypergraphModel(state, options = {}) {
       });
     }
   }
-  let nodes = [...componentNodes, ...forceNodes];
+  let nodes = [...forceNodes, ...componentNodes];
   let keptEdges = edges;
   if (options.focusComponent !== undefined) {
     const focusId = `component:${options.focusComponent}`;
@@ -4079,6 +4083,53 @@ function centroid2(points) {
   const sum = points.reduce((acc, point) => ({ x: acc.x + point.x, y: acc.y + point.y }), { x: 0, y: 0 });
   return { x: sum.x / points.length, y: sum.y / points.length };
 }
+var CORE_ZONE_BASE_RADIUS = 60;
+var CORE_ZONE_RADIUS_PER_COMPONENT = 8;
+function coreZoneRadius(componentCount) {
+  const count = Math.max(0, componentCount);
+  return CORE_ZONE_BASE_RADIUS + CORE_ZONE_RADIUS_PER_COMPONENT * Math.sqrt(count);
+}
+function clampToCore(point, center, radius) {
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  const distance = Math.hypot(dx, dy);
+  if (distance <= radius)
+    return point;
+  if (distance === 0)
+    return { x: center.x + radius, y: center.y };
+  const scale = radius / distance;
+  return { x: center.x + dx * scale, y: center.y + dy * scale };
+}
+function attractorCoreDistance(nodes, attractorId, center) {
+  let min = Infinity;
+  for (const node of nodes) {
+    if (node.type !== "force" || node.attractorId !== attractorId)
+      continue;
+    const dx = (node.x ?? 0) - center.x;
+    const dy = (node.y ?? 0) - center.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance < min)
+      min = distance;
+  }
+  return min;
+}
+function attractorGroupCircles(nodes, padding) {
+  const byAttractor = new Map;
+  for (const node of nodes) {
+    if (node.type !== "force" || node.attractorId === undefined)
+      continue;
+    const points = byAttractor.get(node.attractorId) ?? [];
+    points.push({ x: node.x ?? 0, y: node.y ?? 0 });
+    byAttractor.set(node.attractorId, points);
+  }
+  const circles = [];
+  for (const [attractorId, points] of byAttractor) {
+    const center = centroid2(points) ?? { x: 0, y: 0 };
+    const farthest = points.reduce((max, point) => Math.max(max, Math.hypot(point.x - center.x, point.y - center.y)), 0);
+    circles.push({ attractorId, center, radius: farthest + padding });
+  }
+  return circles;
+}
 function createAttractorCohesionForce(strength = 0.3) {
   let nodes = [];
   const force = (alpha) => {
@@ -4112,7 +4163,7 @@ var REGION_PADDING = 22;
 var FUSION_REGION_PADDING = 18;
 var DEFAULT_CANVAS_WIDTH = 800;
 var DEFAULT_CANVAS_HEIGHT = 600;
-var REGIONS_LATTICE_CELL_SIZE = 40;
+var REGIONS_LATTICE_CELL_SIZE = 48;
 var REGIONS_MIN_NODE_DISTANCE = 32;
 var REGIONS_COMPONENT_COLLISION_RADIUS = 30;
 var REGIONS_FORCE_COLLISION_RADIUS = REGIONS_MIN_NODE_DISTANCE / 2;
@@ -4175,6 +4226,44 @@ function createForceInteractionForce(distanceMax = FORCE_INTERACTION_DISTANCE_MA
   };
   force.initialize = (nodes) => {
     interactionNodes = nodes;
+  };
+  return force;
+}
+function createRegionCollisionForce(padding = REGION_PADDING) {
+  let collideNodes = [];
+  const force = (alpha) => {
+    const circles = attractorGroupCircles(collideNodes, padding);
+    for (let i = 0;i < circles.length; i += 1) {
+      for (let j = i + 1;j < circles.length; j += 1) {
+        const a = circles[i];
+        const b = circles[j];
+        const dx = b.center.x - a.center.x;
+        const dy = b.center.y - a.center.y;
+        const distance = Math.hypot(dx, dy);
+        const minDistance = a.radius + b.radius;
+        if (distance >= minDistance)
+          continue;
+        const overlap = minDistance - distance;
+        const safeDistance = distance || 0.01;
+        const ux = dx / safeDistance;
+        const uy = dy / safeDistance;
+        const push = overlap * 0.5 * alpha;
+        for (const node of collideNodes) {
+          if (node.type !== "force" || node.fx != null)
+            continue;
+          if (node.attractorId === a.attractorId) {
+            node.vx = (node.vx ?? 0) - ux * push;
+            node.vy = (node.vy ?? 0) - uy * push;
+          } else if (node.attractorId === b.attractorId) {
+            node.vx = (node.vx ?? 0) + ux * push;
+            node.vy = (node.vy ?? 0) + uy * push;
+          }
+        }
+      }
+    }
+  };
+  force.initialize = (nextNodes) => {
+    collideNodes = nextNodes;
   };
   return force;
 }
@@ -4247,6 +4336,9 @@ function createRegionsView(ctx) {
   const regionPinnedIds = new Set;
   const draggingNodeIds = new Set;
   const draggingRegionIds = new Set;
+  const coreExclusionPinnedIds = new Set;
+  let coreCenter = { x: DEFAULT_CANVAS_WIDTH / 2, y: DEFAULT_CANVAS_HEIGHT / 2 };
+  let currentTension = 1;
   const latticeForce = (alpha) => {
     const strength = Math.min(0.35, 0.18 + alpha * 0.2);
     for (const node of nodes) {
@@ -4260,6 +4352,51 @@ function createRegionsView(ctx) {
     }
   };
   latticeForce.initialize = () => {};
+  const coreContainmentForce = () => {
+    const componentCount = nodes.filter((node) => node.type === "component").length;
+    const radius = coreZoneRadius(componentCount);
+    for (const node of nodes) {
+      if (node.type !== "component" || node.fx != null)
+        continue;
+      const clamped = clampToCore({ x: node.x ?? 0, y: node.y ?? 0 }, coreCenter, radius);
+      node.x = clamped.x;
+      node.y = clamped.y;
+      node.vx = 0;
+      node.vy = 0;
+    }
+  };
+  coreContainmentForce.initialize = () => {};
+  const coreExclusionForce = () => {
+    if (lockState.enabled)
+      return;
+    const componentCount = nodes.filter((node) => node.type === "component").length;
+    const radius = coreZoneRadius(componentCount);
+    const attractorIds = [...new Set(nodes.filter((node) => node.type === "force").map((node) => node.attractorId))];
+    const distanceByAttractor = new Map(attractorIds.map((id) => [id, attractorCoreDistance(nodes, id, coreCenter)]));
+    const touchingCount = [...distanceByAttractor.values()].filter((distance) => distance < radius).length;
+    for (const attractorId of attractorIds) {
+      if (draggingRegionIds.has(attractorId))
+        continue;
+      const distance = distanceByAttractor.get(attractorId) ?? Infinity;
+      const touching = distance < radius && touchingCount <= 1;
+      for (const node of nodes) {
+        if (node.type !== "force" || node.attractorId !== attractorId)
+          continue;
+        if (draggingNodeIds.has(node.id))
+          continue;
+        if (touching) {
+          node.fx = node.x;
+          node.fy = node.y;
+          coreExclusionPinnedIds.add(node.id);
+        } else if (coreExclusionPinnedIds.has(node.id)) {
+          node.fx = null;
+          node.fy = null;
+          coreExclusionPinnedIds.delete(node.id);
+        }
+      }
+    }
+  };
+  coreExclusionForce.initialize = () => {};
   function deterministicOffset(id) {
     let hash = 2166136261;
     for (let index = 0;index < id.length; index += 1) {
@@ -4394,7 +4531,7 @@ function createRegionsView(ctx) {
       if (!component)
         continue;
       const placed = bundle.forceIds.map((forceId) => ({ forceId, node: byId.get(`force:${forceId}`) })).filter((item) => item.node !== undefined);
-      const geometry = branchGeometry({ x: component.x ?? 0, y: component.y ?? 0 }, placed.map(({ node }) => ({ x: node.x ?? 0, y: node.y ?? 0 })));
+      const geometry = branchGeometry({ x: component.x ?? 0, y: component.y ?? 0 }, placed.map(({ node }) => ({ x: node.x ?? 0, y: node.y ?? 0 })), undefined, currentTension);
       geometryByBundle.set(bundle.id, {
         trunk: geometry.trunk,
         width: geometry.width,
@@ -4524,6 +4661,8 @@ function createRegionsView(ctx) {
       return built;
     const { width, height } = canvasSize();
     const { svg, content, zoom } = appendZoomableSvg(host, d3, { x: 0, y: 0, width, height }, "nkp-hyper", "Forces linked to the components they touch, grouped into attractor regions");
+    const coreG = content.append("g").attr("class", "nkp-hyper-core");
+    const coreBoundary = coreG.append("circle").attr("class", "nkp-hyper-core-boundary").attr("data-core-boundary", "true").attr("fill", "none").attr("stroke-dasharray", "4 4");
     const regionsG = content.append("g").attr("class", "nkp-hyper-regions");
     const fusionG = content.append("g").attr("class", "nkp-hyper-fusion");
     const edgesG = content.append("g").attr("class", "nkp-hyper-edges");
@@ -4534,31 +4673,50 @@ function createRegionsView(ctx) {
       labelsGroup.attr("transform", event.transform);
     });
     svg.on("dblclick", () => ctx.onClear());
-    const sim = d3.forceSimulation([]).force("link", d3.forceLink([]).id((item) => item.id).distance(60).strength(0.18)).force("charge", d3.forceManyBody().strength((item) => item.type === "component" ? -650 : -130)).force("x", d3.forceX(width / 2).strength(0.05)).force("y", d3.forceY(height / 2).strength(0.05)).force("collision", d3.forceCollide().radius((item) => item.type === "component" ? REGIONS_COMPONENT_COLLISION_RADIUS : REGIONS_FORCE_COLLISION_RADIUS)).force("lattice", latticeForce).force("cohesion", createAttractorCohesionForce()).force("interaction", createForceInteractionForce()).on("tick", tick).on("end", () => {
+    const sim = d3.forceSimulation([]).force("link", d3.forceLink([]).id((item) => item.id).distance(60).strength(0.18)).force("charge", d3.forceManyBody().strength((item) => item.type === "component" ? -650 : -130)).force("x", d3.forceX(width / 2).strength(0.05)).force("y", d3.forceY(height / 2).strength(0.05)).force("collision", d3.forceCollide().radius((item) => item.type === "component" ? REGIONS_COMPONENT_COLLISION_RADIUS : REGIONS_FORCE_COLLISION_RADIUS)).force("lattice", latticeForce).force("cohesion", createAttractorCohesionForce()).force("interaction", createForceInteractionForce()).force("coreContainment", coreContainmentForce).force("coreExclusion", coreExclusionForce).force("regionCollision", createRegionCollisionForce()).on("tick", tick).on("end", () => {
       recomputeLabelNudges(true);
       positionLabels();
     }).stop();
-    built = { svg, zoom, regionsG, fusionG, edgesG, nodesG, labelsGroup, sim, width, height, didFit: false, tip: createTooltip(host) };
+    built = { svg, zoom, regionsG, fusionG, edgesG, nodesG, labelsGroup, coreBoundary, sim, width, height, didFit: false, tip: createTooltip(host) };
     return built;
   }
-  function seedPosition(item, placed, focusComponentId) {
+  function pushOutsideCore(point, center, radius, offset) {
+    const dx = point.x - center.x;
+    const dy = point.y - center.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance >= radius)
+      return point;
+    let dirX = dx;
+    let dirY = dy;
+    if (distance === 0) {
+      dirX = offset.x !== 0 || offset.y !== 0 ? offset.x : 1;
+      dirY = offset.x !== 0 || offset.y !== 0 ? offset.y : 0;
+    }
+    const dirDistance = Math.hypot(dirX, dirY) || 1;
+    const margin = 1;
+    const scale = (radius + margin) / dirDistance;
+    return { x: center.x + dirX * scale, y: center.y + dirY * scale };
+  }
+  function seedPosition(item, placed, focusComponentId, componentCount) {
     const offset = deterministicOffset(item.id);
+    const { width, height } = canvasSize();
+    const center = { x: width / 2, y: height / 2 };
+    const radius = coreZoneRadius(componentCount);
     if (item.type === "force") {
       const siblings = [...placed.values()].filter((node) => node.type === "force" && node.attractorId === item.attractorId && node.x !== undefined);
-      const center = centroid2(siblings.map((node) => ({ x: node.x ?? 0, y: node.y ?? 0 })));
-      if (center)
-        return { x: center.x + offset.x, y: center.y + offset.y };
+      const siblingCenter = centroid2(siblings.map((node) => ({ x: node.x ?? 0, y: node.y ?? 0 })));
+      const base2 = siblingCenter ? { x: siblingCenter.x + offset.x, y: siblingCenter.y + offset.y } : { x: center.x + offset.x, y: center.y + offset.y };
+      return pushOutsideCore(base2, center, radius, offset);
     }
     const focus = focusComponentId ? placed.get(focusComponentId) : undefined;
-    if (focus?.x !== undefined)
-      return { x: focus.x + offset.x, y: (focus.y ?? 0) + offset.y };
-    const { width, height } = canvasSize();
-    return { x: width / 2 + offset.x, y: height / 2 + offset.y };
+    const base = focus?.x !== undefined ? { x: focus.x + offset.x, y: (focus.y ?? 0) + offset.y } : { x: center.x + offset.x, y: center.y + offset.y };
+    return clampToCore(base, center, radius);
   }
   function applySelectionClasses() {
     if (!built)
       return;
     const hasSelection = lastSelected.size > 0;
+    built.svg.classed("nkp-hyper-selecting", hasSelection);
     const isSelected = (key) => lastSelected.has(key);
     const isConnected = (key) => !isSelected(key) && lastConnected.has(key);
     const dim = (key) => hasSelection && !isSelected(key) && !isConnected(key);
@@ -4576,18 +4734,18 @@ function createRegionsView(ctx) {
       const keys = [bundle.componentId, ...bundle.forceIds.map((forceId) => `force:${forceId}`)];
       return keys.every((key) => !isSelected(key) && !isConnected(key));
     };
-    bundleTrunkSel?.classed("dim", bundleDim);
+    bundleTrunkSel?.classed("is-lit", (bundle) => !bundleDim(bundle));
     const bundleById = new Map(bundles.map((bundle) => [bundle.id, bundle]));
-    bundleBranchSel?.classed("dim", (branch) => {
+    bundleBranchSel?.classed("is-lit", (branch) => {
       const bundle = bundleById.get(branch.bundleId);
-      return bundle ? bundleDim(bundle) : hasSelection;
+      return bundle ? !bundleDim(bundle) : !hasSelection;
     });
     const regionDim = (group) => {
       const key = `attractor:${group.attractorId}`;
       return hasSelection && !(isSelected(key) || isConnected(key));
     };
-    regionSel?.classed("dim", regionDim);
-    regionLabelSel?.classed("dim", regionDim).attr("opacity", (group) => regionDim(group) ? 0 : group.focused ? 0.9 : 0.4);
+    regionSel?.classed("is-lit", (group) => !regionDim(group));
+    regionLabelSel?.classed("is-lit", (group) => !regionDim(group)).attr("opacity", (group) => regionDim(group) ? 0 : group.focused ? 0.9 : 0.4);
   }
   function update(state, rawOptions = {}) {
     const options = rawOptions;
@@ -4602,6 +4760,11 @@ function createRegionsView(ctx) {
       byId = new Map;
       links = [];
       bundles = [];
+      {
+        const { width: width2, height: height2 } = canvasSize();
+        coreCenter = { x: width2 / 2, y: height2 / 2 };
+      }
+      b2.coreBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", coreZoneRadius(0));
       b2.sim.nodes([]);
       b2.sim.force("link").links([]);
       syncRegionLocks([], options.lockRegions === true);
@@ -4627,6 +4790,11 @@ function createRegionsView(ctx) {
     b.sim.force("y").y(height / 2);
     groupColorById = new Map(model.groups.map((group) => [group.attractorId, group.color]));
     const focusComponentId = options.focusComponent ? `component:${options.focusComponent}` : undefined;
+    coreCenter = { x: width / 2, y: height / 2 };
+    currentTension = options.tension ?? 1;
+    const componentCount = model.nodes.filter((item) => item.type === "component").length;
+    const coreRadius = coreZoneRadius(componentCount);
+    b.coreBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", coreRadius);
     const prevById = byId;
     const nextById = new Map;
     const newcomerIds = new Set;
@@ -4634,7 +4802,7 @@ function createRegionsView(ctx) {
       const existing = prevById.get(item.id);
       if (!existing)
         newcomerIds.add(item.id);
-      const merged = existing ? { ...item, x: existing.x, y: existing.y, vx: existing.vx, vy: existing.vy, fx: existing.fx ?? null, fy: existing.fy ?? null } : { ...item, ...seedPosition(item, nextById, focusComponentId), vx: 0, vy: 0 };
+      const merged = existing ? { ...item, x: existing.x, y: existing.y, vx: existing.vx, vy: existing.vy, fx: existing.fx ?? null, fy: existing.fy ?? null } : { ...item, ...seedPosition(item, nextById, focusComponentId, componentCount), vx: 0, vy: 0 };
       nextById.set(item.id, merged);
       return merged;
     });
@@ -5262,7 +5430,9 @@ function mountLandscape(container, getState, d3) {
       const focusComponent = syncFocusOptions(container.querySelector("[data-regions-focus]"), state);
       const showNames = container.querySelector("[data-regions-names-toggle]")?.checked ?? true;
       const lockRegions = container.querySelector("[data-regions-lock-toggle]")?.checked ?? false;
-      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, ...focusComponent ? { focusComponent } : {} });
+      const tensionInput = container.querySelector("[data-bundle-tension-input]");
+      const tension = tensionInput ? Number(tensionInput.value) / 100 : DEFAULT_BUNDLE_TENSION;
+      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, tension, ...focusComponent ? { focusComponent } : {} });
     } else {
       const minCouplingStrength = syncMinCouplingStrength(container, state, filters);
       if (view === "heatmap") {

@@ -175,7 +175,7 @@ export function buildNkpHypergraphModel(
     }
   }
 
-  let nodes: HyperNode[] = [...componentNodes, ...forceNodes];
+  let nodes: HyperNode[] = [...forceNodes, ...componentNodes];
   let keptEdges = edges;
   if (options.focusComponent !== undefined) {
     const focusId = `component:${options.focusComponent}`;
@@ -329,6 +329,88 @@ export function centroid(points: readonly Point[]): Point | undefined {
   return { x: sum.x / points.length, y: sum.y / points.length };
 }
 
+/**
+ * Core zone geometry: components live in a soft central "core" region that
+ * grows sub-linearly with the number of components (sqrt), so a landscape
+ * with many components doesn't blow up the core radius proportionally.
+ */
+export const CORE_ZONE_BASE_RADIUS = 60;
+export const CORE_ZONE_RADIUS_PER_COMPONENT = 8;
+
+export function coreZoneRadius(componentCount: number): number {
+  const count = Math.max(0, componentCount);
+  return CORE_ZONE_BASE_RADIUS + CORE_ZONE_RADIUS_PER_COMPONENT * Math.sqrt(count);
+}
+
+/**
+ * Projects `point` onto the boundary of the circle of `radius` around
+ * `center` when it lies outside it; points already inside are unchanged.
+ */
+export function clampToCore(point: Point, center: Point, radius: number): Point {
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  const distance = Math.hypot(dx, dy);
+  if (distance <= radius) return point;
+  if (distance === 0) return { x: center.x + radius, y: center.y };
+  const scale = radius / distance;
+  return { x: center.x + dx * scale, y: center.y + dy * scale };
+}
+
+/**
+ * Distance from `center` to the closest force-type node belonging to
+ * `attractorId` (component-type nodes never count, even when closer).
+ * Infinity when the attractor has no force members.
+ */
+export function attractorCoreDistance(
+  nodes: readonly { type: string; attractorId?: string; x?: number; y?: number }[],
+  attractorId: string,
+  center: Point,
+): number {
+  let min = Infinity;
+  for (const node of nodes) {
+    if (node.type !== "force" || node.attractorId !== attractorId) continue;
+    const dx = (node.x ?? 0) - center.x;
+    const dy = (node.y ?? 0) - center.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance < min) min = distance;
+  }
+  return min;
+}
+
+export interface GroupCircle {
+  attractorId: string;
+  center: Point;
+  radius: number;
+}
+
+/**
+ * Summarizes each attractor's force nodes (component nodes never contribute)
+ * as a padded bounding circle: centroid of the force-node positions, radius
+ * the farthest force node from that centroid plus `padding`.
+ */
+export function attractorGroupCircles(
+  nodes: readonly { type: string; attractorId?: string; x?: number; y?: number }[],
+  padding: number,
+): GroupCircle[] {
+  const byAttractor = new Map<string, Point[]>();
+  for (const node of nodes) {
+    if (node.type !== "force" || node.attractorId === undefined) continue;
+    const points = byAttractor.get(node.attractorId) ?? [];
+    points.push({ x: node.x ?? 0, y: node.y ?? 0 });
+    byAttractor.set(node.attractorId, points);
+  }
+  const circles: GroupCircle[] = [];
+  for (const [attractorId, points] of byAttractor) {
+    const center = centroid(points) ?? { x: 0, y: 0 };
+    const farthest = points.reduce(
+      (max, point) => Math.max(max, Math.hypot(point.x - center.x, point.y - center.y)),
+      0,
+    );
+    circles.push({ attractorId, center, radius: farthest + padding });
+  }
+  return circles;
+}
+
 type SimNode = HyperNode & { x?: number; y?: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null };
 type SimLink = Omit<HyperEdge, "source" | "target"> & { source: SimNode | string; target: SimNode | string };
 type RenderBundle = BranchBundle;
@@ -378,7 +460,7 @@ const FUSION_REGION_PADDING = 18;
 const DEFAULT_CANVAS_WIDTH = 800;
 const DEFAULT_CANVAS_HEIGHT = 600;
 
-export const REGIONS_LATTICE_CELL_SIZE = 40;
+export const REGIONS_LATTICE_CELL_SIZE = 48;
 export const REGIONS_MIN_NODE_DISTANCE = 32;
 export const REGIONS_COMPONENT_COLLISION_RADIUS = 30;
 /**
@@ -487,6 +569,48 @@ function createForceInteractionForce(distanceMax = FORCE_INTERACTION_DISTANCE_MA
   return force;
 }
 
+/**
+ * Pushes apart any two attractor group circles (see attractorGroupCircles)
+ * whose bounding circles overlap: every force node of both groups is nudged
+ * along the inter-centroid axis, scaled by the overlap amount and alpha.
+ */
+function createRegionCollisionForce(padding = REGION_PADDING) {
+  let collideNodes: SimNode[] = [];
+  const force = (alpha: number): void => {
+    const circles = attractorGroupCircles(collideNodes, padding);
+    for (let i = 0; i < circles.length; i += 1) {
+      for (let j = i + 1; j < circles.length; j += 1) {
+        const a = circles[i]!;
+        const b = circles[j]!;
+        const dx = b.center.x - a.center.x;
+        const dy = b.center.y - a.center.y;
+        const distance = Math.hypot(dx, dy);
+        const minDistance = a.radius + b.radius;
+        if (distance >= minDistance) continue;
+        const overlap = minDistance - distance;
+        const safeDistance = distance || 0.01;
+        const ux = dx / safeDistance;
+        const uy = dy / safeDistance;
+        const push = overlap * 0.5 * alpha;
+        for (const node of collideNodes) {
+          if (node.type !== "force" || node.fx != null) continue;
+          if (node.attractorId === a.attractorId) {
+            node.vx = (node.vx ?? 0) - ux * push;
+            node.vy = (node.vy ?? 0) - uy * push;
+          } else if (node.attractorId === b.attractorId) {
+            node.vx = (node.vx ?? 0) + ux * push;
+            node.vy = (node.vy ?? 0) + uy * push;
+          }
+        }
+      }
+    }
+  };
+  force.initialize = (nextNodes: SimNode[]): void => {
+    collideNodes = nextNodes;
+  };
+  return force;
+}
+
 /** Translates every force node belonging to `attractorId` by (dx, dy); everything else is untouched. */
 export function translateGroup(
   nodes: readonly { attractorId?: string; x?: number; y?: number }[],
@@ -568,6 +692,8 @@ export interface RegionsRenderOptions extends NkpHypergraphOptions {
   showNames?: boolean;
   /** Pin each attractor's force nodes as a movable region. */
   lockRegions?: boolean;
+  /** Shared with the bundle view: how tightly branch trunks converge (0 loose, 1 tight). */
+  tension?: number;
 }
 
 export interface RegionsViewCtx {
@@ -622,6 +748,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         edgesG: any;
         nodesG: any;
         labelsGroup: any;
+        coreBoundary: any;
         sim: any;
         width: number;
         height: number;
@@ -654,6 +781,14 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   const regionPinnedIds = new Set<string>();
   const draggingNodeIds = new Set<string>();
   const draggingRegionIds = new Set<string>();
+  /** Force nodes pinned by the core-exclusion force specifically, tracked
+   * separately from regionPinnedIds (the manual lock-toggle mechanism) so
+   * releasing one never clobbers the other. */
+  const coreExclusionPinnedIds = new Set<string>();
+  /** Canvas centre and current bundle tension, recomputed once per update()
+   * and read every tick by the core-zone forces and positionEdges(). */
+  let coreCenter: Point = { x: DEFAULT_CANVAS_WIDTH / 2, y: DEFAULT_CANVAS_HEIGHT / 2 };
+  let currentTension = 1;
 
   const latticeForce = (alpha: number): void => {
     const strength = Math.min(0.35, 0.18 + alpha * 0.2);
@@ -666,6 +801,74 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     }
   };
   latticeForce.initialize = (): void => {};
+
+  /**
+   * Keeps every component node inside the core zone: any component found
+   * outside the circle is clamped straight back to the boundary. Component
+   * nodes are never pinned by drag/lock the way force nodes are, but an
+   * active drag sets fx/fy on any node type, so that is still respected.
+   */
+  const coreContainmentForce = (): void => {
+    const componentCount = nodes.filter((node) => node.type === "component").length;
+    const radius = coreZoneRadius(componentCount);
+    for (const node of nodes) {
+      if (node.type !== "component" || node.fx != null) continue;
+      const clamped = clampToCore({ x: node.x ?? 0, y: node.y ?? 0 }, coreCenter, radius);
+      node.x = clamped.x;
+      node.y = clamped.y;
+      // Earlier forces this same tick (charge/x/y/collision/...) may have
+      // accumulated a large velocity while the node was still far outside
+      // the zone; d3-force's own position integration runs *after* every
+      // registered force and always applies node.vx on top of whatever x we
+      // just set, so that stale velocity has to be zeroed here or it would
+      // immediately carry the node back out again.
+      node.vx = 0;
+      node.vy = 0;
+    }
+  };
+  coreContainmentForce.initialize = (): void => {};
+
+  /**
+   * Pins an attractor's whole force-node group in place the instant it
+   * touches the core zone (rather than letting cohesion/interaction pull it
+   * deeper toward the component-only centre), and releases that pin once the
+   * group is back outside. Only manages fx/fy it set itself, and only while
+   * the manual lock toggle is off and no drag is in progress for that
+   * attractor/node, so it never fights those pre-existing mechanisms.
+   */
+  const coreExclusionForce = (): void => {
+    if (lockState.enabled) return;
+    const componentCount = nodes.filter((node) => node.type === "component").length;
+    const radius = coreZoneRadius(componentCount);
+    const attractorIds = [...new Set(
+      nodes.filter((node): node is SimForceNode => node.type === "force").map((node) => node.attractorId),
+    )];
+    const distanceByAttractor = new Map(attractorIds.map((id) => [id, attractorCoreDistance(nodes, id, coreCenter)]));
+    const touchingCount = [...distanceByAttractor.values()].filter((distance) => distance < radius).length;
+    for (const attractorId of attractorIds) {
+      if (draggingRegionIds.has(attractorId)) continue;
+      const distance = distanceByAttractor.get(attractorId) ?? Infinity;
+      // When two or more attractor groups are simultaneously touching the
+      // core zone (e.g. they collided right at the centre), back off instead
+      // of freezing every member of every group exactly where they
+      // collided — regionCollision needs room to push them apart first.
+      const touching = distance < radius && touchingCount <= 1;
+      for (const node of nodes) {
+        if (node.type !== "force" || node.attractorId !== attractorId) continue;
+        if (draggingNodeIds.has(node.id)) continue;
+        if (touching) {
+          node.fx = node.x;
+          node.fy = node.y;
+          coreExclusionPinnedIds.add(node.id);
+        } else if (coreExclusionPinnedIds.has(node.id)) {
+          node.fx = null;
+          node.fy = null;
+          coreExclusionPinnedIds.delete(node.id);
+        }
+      }
+    }
+  };
+  coreExclusionForce.initialize = (): void => {};
 
   function deterministicOffset(id: string): Point {
     let hash = 2166136261;
@@ -832,6 +1035,8 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       const geometry = branchGeometry(
         { x: component.x ?? 0, y: component.y ?? 0 },
         placed.map(({ node }) => ({ x: node.x ?? 0, y: node.y ?? 0 })),
+        undefined,
+        currentTension,
       );
       geometryByBundle.set(bundle.id, {
         trunk: geometry.trunk,
@@ -994,6 +1199,12 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       "nkp-hyper",
       "Forces linked to the components they touch, grouped into attractor regions",
     );
+    const coreG = content.append("g").attr("class", "nkp-hyper-core");
+    const coreBoundary = coreG.append("circle")
+      .attr("class", "nkp-hyper-core-boundary")
+      .attr("data-core-boundary", "true")
+      .attr("fill", "none")
+      .attr("stroke-dasharray", "4 4");
     const regionsG = content.append("g").attr("class", "nkp-hyper-regions");
     const fusionG = content.append("g").attr("class", "nkp-hyper-fusion");
     const edgesG = content.append("g").attr("class", "nkp-hyper-edges");
@@ -1016,6 +1227,9 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       .force("lattice", latticeForce)
       .force("cohesion", createAttractorCohesionForce())
       .force("interaction", createForceInteractionForce())
+      .force("coreContainment", coreContainmentForce)
+      .force("coreExclusion", coreExclusionForce)
+      .force("regionCollision", createRegionCollisionForce())
       .on("tick", tick)
       .on("end", () => {
         recomputeLabelNudges(true);
@@ -1023,33 +1237,72 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       })
       .stop();
 
-    built = { svg, zoom, regionsG, fusionG, edgesG, nodesG, labelsGroup, sim, width, height, didFit: false, tip: createTooltip(host) };
+    built = { svg, zoom, regionsG, fusionG, edgesG, nodesG, labelsGroup, coreBoundary, sim, width, height, didFit: false, tip: createTooltip(host) };
     return built;
   }
 
-  /** New force nodes seed near their attractor's current centroid, else the focus component, else the origin. */
+  /**
+   * Pushes `point` to just outside the core zone along its own direction from
+   * `center` (falling back to `offset`'s direction, then a fixed axis, when
+   * `point` lands exactly on `center`).
+   */
+  function pushOutsideCore(point: Point, center: Point, radius: number, offset: Point): Point {
+    const dx = point.x - center.x;
+    const dy = point.y - center.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance >= radius) return point;
+    let dirX = dx;
+    let dirY = dy;
+    if (distance === 0) {
+      dirX = offset.x !== 0 || offset.y !== 0 ? offset.x : 1;
+      dirY = offset.x !== 0 || offset.y !== 0 ? offset.y : 0;
+    }
+    const dirDistance = Math.hypot(dirX, dirY) || 1;
+    const margin = 1;
+    const scale = (radius + margin) / dirDistance;
+    return { x: center.x + dirX * scale, y: center.y + dirY * scale };
+  }
+
+  /**
+   * New force nodes seed near their attractor's current centroid, else the
+   * focus component, else the canvas centre — then get pushed just outside
+   * the core zone if that seed would otherwise land inside it. New component
+   * nodes seed near the canvas centre/focus and get clamped inside the core
+   * zone if that seed would otherwise land outside it.
+   */
   function seedPosition(
     item: HyperNode,
     placed: ReadonlyMap<string, SimNode>,
     focusComponentId: string | undefined,
+    componentCount: number,
   ): { x: number; y: number } {
     const offset = deterministicOffset(item.id);
+    const { width, height } = canvasSize();
+    const center = { x: width / 2, y: height / 2 };
+    const radius = coreZoneRadius(componentCount);
     if (item.type === "force") {
       const siblings = [...placed.values()].filter(
         (node): node is SimForceNode => node.type === "force" && node.attractorId === item.attractorId && node.x !== undefined,
       );
-      const center = centroid(siblings.map((node) => ({ x: node.x ?? 0, y: node.y ?? 0 })));
-      if (center) return { x: center.x + offset.x, y: center.y + offset.y };
+      const siblingCenter = centroid(siblings.map((node) => ({ x: node.x ?? 0, y: node.y ?? 0 })));
+      const base = siblingCenter
+        ? { x: siblingCenter.x + offset.x, y: siblingCenter.y + offset.y }
+        : { x: center.x + offset.x, y: center.y + offset.y };
+      return pushOutsideCore(base, center, radius, offset);
     }
     const focus = focusComponentId ? placed.get(focusComponentId) : undefined;
-    if (focus?.x !== undefined) return { x: focus.x + offset.x, y: (focus.y ?? 0) + offset.y };
-    const { width, height } = canvasSize();
-    return { x: width / 2 + offset.x, y: height / 2 + offset.y };
+    const base = focus?.x !== undefined
+      ? { x: focus.x + offset.x, y: (focus.y ?? 0) + offset.y }
+      : { x: center.x + offset.x, y: center.y + offset.y };
+    // Only component nodes reach here (the force branch above always
+    // returns); clamp so a newly seeded component always lands in the core.
+    return clampToCore(base, center, radius);
   }
 
   function applySelectionClasses(): void {
     if (!built) return;
     const hasSelection = lastSelected.size > 0;
+    built.svg.classed("nkp-hyper-selecting", hasSelection);
     const isSelected = (key: string): boolean => lastSelected.has(key as EntityKey);
     const isConnected = (key: string): boolean => !isSelected(key) && lastConnected.has(key as EntityKey);
     const dim = (key: string): boolean => hasSelection && !isSelected(key) && !isConnected(key);
@@ -1070,18 +1323,18 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       const keys = [bundle.componentId, ...bundle.forceIds.map((forceId) => `force:${forceId}`)];
       return keys.every((key) => !isSelected(key) && !isConnected(key));
     };
-    bundleTrunkSel?.classed("dim", bundleDim);
+    bundleTrunkSel?.classed("is-lit", (bundle: RenderBundle) => !bundleDim(bundle));
     const bundleById = new Map(bundles.map((bundle) => [bundle.id, bundle]));
-    bundleBranchSel?.classed("dim", (branch: RenderBranch) => {
+    bundleBranchSel?.classed("is-lit", (branch: RenderBranch) => {
       const bundle = bundleById.get(branch.bundleId);
-      return bundle ? bundleDim(bundle) : hasSelection;
+      return bundle ? !bundleDim(bundle) : !hasSelection;
     });
     const regionDim = (group: AttractorGroup): boolean => {
       const key = `attractor:${group.attractorId}`;
       return hasSelection && !(isSelected(key) || isConnected(key));
     };
-    regionSel?.classed("dim", regionDim);
-    regionLabelSel?.classed("dim", regionDim)
+    regionSel?.classed("is-lit", (group: AttractorGroup) => !regionDim(group));
+    regionLabelSel?.classed("is-lit", (group: AttractorGroup) => !regionDim(group))
       .attr("opacity", (group: AttractorGroup) => regionDim(group) ? 0 : (group.focused ? 0.9 : 0.4));
   }
 
@@ -1099,6 +1352,8 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       byId = new Map();
       links = [];
       bundles = [];
+      { const { width, height } = canvasSize(); coreCenter = { x: width / 2, y: height / 2 }; }
+      b.coreBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", coreZoneRadius(0));
       b.sim.nodes([]);
       (b.sim.force("link") as any).links([]);
       syncRegionLocks([], options.lockRegions === true);
@@ -1126,6 +1381,15 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     groupColorById = new Map(model.groups.map((group) => [group.attractorId, group.color]));
     const focusComponentId = options.focusComponent ? `component:${options.focusComponent}` : undefined;
 
+    coreCenter = { x: width / 2, y: height / 2 };
+    currentTension = options.tension ?? 1;
+    const componentCount = model.nodes.filter((item) => item.type === "component").length;
+    const coreRadius = coreZoneRadius(componentCount);
+    b.coreBoundary
+      .attr("cx", coreCenter.x)
+      .attr("cy", coreCenter.y)
+      .attr("r", coreRadius);
+
     // --- merge nodes by id: survivors keep x/y/vx/vy/fx/fy, newcomers seed, exits just don't reappear ---
     const prevById = byId;
     const nextById = new Map<string, SimNode>();
@@ -1135,7 +1399,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       if (!existing) newcomerIds.add(item.id);
       const merged: SimNode = existing
         ? { ...item, x: existing.x, y: existing.y, vx: existing.vx, vy: existing.vy, fx: existing.fx ?? null, fy: existing.fy ?? null }
-        : { ...item, ...seedPosition(item, nextById, focusComponentId), vx: 0, vy: 0 };
+        : { ...item, ...seedPosition(item, nextById, focusComponentId, componentCount), vx: 0, vy: 0 };
       nextById.set(item.id, merged);
       return merged;
     });
