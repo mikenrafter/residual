@@ -529,9 +529,16 @@ export function createBundleView(ctx: BundleViewCtx): BundleViewHandle {
     // selected component never actually stood out from the rest of the
     // couplings drawn at full weight around it (the regions/hypergraph view
     // dims its bundle edges the same way; this brings the bundle view to
-    // parity with it).
+    // parity with it). When either endpoint is selected or connected, mark
+    // the edge positively (connected) so partial-transitive focus is visible
+    // — not merely "not dimmed".
     built.edgesG.selectAll("path.nkp-bundle-edge")
-      .classed("dim", (item: any) => dim(item.edge.source) && dim(item.edge.target));
+      .classed("dim", (item: any) => dim(item.edge.source) && dim(item.edge.target))
+      .classed("connected", (item: any) => {
+        if (!hasSelection) return false;
+        return isSelected(item.edge.source) || isSelected(item.edge.target)
+          || isConnected(item.edge.source) || isConnected(item.edge.target);
+      });
   }
 
   function update(state: PendingState, rawOptions: Record<string, unknown> = {}): void {

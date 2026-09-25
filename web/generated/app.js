@@ -2889,7 +2889,11 @@ function createBundleView(ctx) {
     built.labelsGroup.selectAll(".nkp-bundle-leaf").classed("selected", (node) => isSelected(node.data.id)).classed("connected", (node) => isConnected(node.data.id)).classed("dim", (node) => dim(node.data.id)).attr("opacity", (node) => dim(node.data.id) ? 0 : 1);
     built.groupsG.selectAll(".nkp-bundle-group").classed("selected", (d) => isSelected(d.group.id)).classed("connected", (d) => isConnected(d.group.id)).classed("dim", (d) => dim(d.group.id));
     built.labelsGroup.selectAll(".nkp-bundle-group-label").attr("opacity", (d) => dim(d.group.id) ? 0 : 1);
-    built.edgesG.selectAll("path.nkp-bundle-edge").classed("dim", (item) => dim(item.edge.source) && dim(item.edge.target));
+    built.edgesG.selectAll("path.nkp-bundle-edge").classed("dim", (item) => dim(item.edge.source) && dim(item.edge.target)).classed("connected", (item) => {
+      if (!hasSelection)
+        return false;
+      return isSelected(item.edge.source) || isSelected(item.edge.target) || isConnected(item.edge.source) || isConnected(item.edge.target);
+    });
   }
   function update(state, rawOptions = {}) {
     const options = rawOptions;
@@ -3332,6 +3336,16 @@ function createHeatmapView(ctx) {
       return active === "upper" ? half === "lower" : half === "upper";
     });
   }
+  function focusedCounterpart(item) {
+    const half = cellHalf(item.row, item.col);
+    if (!pinnedMirrorHalf || half === "diagonal" || half === pinnedMirrorHalf)
+      return item;
+    return lastModel?.cells.find((cell) => cell.row === item.col && cell.col === item.row) ?? {
+      ...item,
+      row: item.col,
+      col: item.row
+    };
+  }
   function applySelectionClasses() {
     const b = built;
     if (!b)
@@ -3549,22 +3563,30 @@ function createHeatmapView(ctx) {
     }).remove();
     cellSelection.on("mousemove", (event, item) => {
       const half = cellHalf(item.row, item.col);
-      hoverMirrorHalf = half === "diagonal" ? undefined : half;
+      const focused = focusedCounterpart(item);
+      if (pinnedMirrorHalf && half !== "diagonal" && half !== pinnedMirrorHalf) {
+        hoverMirrorHalf = undefined;
+      } else {
+        hoverMirrorHalf = half === "diagonal" ? undefined : half;
+      }
       applyMirrorClasses();
-      applyHeaderBands(item.row, item.col);
-      const rowName = componentByIndex.get(item.row)?.name ?? "";
-      const colName = componentByIndex.get(item.col)?.name ?? "";
-      showTooltip(event, [`${rowName} × ${colName}: ${item.count} shared`, ...item.forces]);
+      applyHeaderBands(focused.row, focused.col);
+      const rowName = componentByIndex.get(focused.row)?.name ?? "";
+      const colName = componentByIndex.get(focused.col)?.name ?? "";
+      showTooltip(event, [`${rowName} × ${colName}: ${focused.count} shared`, ...focused.forces]);
     }).on("focus", (event, item) => {
-      const rowName = componentByIndex.get(item.row)?.name ?? "";
-      const colName = componentByIndex.get(item.col)?.name ?? "";
-      showTooltip(event, [`${rowName} × ${colName}: ${item.count} shared`, ...item.forces]);
+      const focused = focusedCounterpart(item);
+      const rowName = componentByIndex.get(focused.row)?.name ?? "";
+      const colName = componentByIndex.get(focused.col)?.name ?? "";
+      showTooltip(event, [`${rowName} × ${colName}: ${focused.count} shared`, ...focused.forces]);
     }).on("mouseleave blur", clearHover).on("click", (_event, item) => {
-      for (const key of item.forceKeys)
-        ctx.onToggle(`force:${key}`);
       const half = cellHalf(item.row, item.col);
-      if (half !== "diagonal")
+      const focused = focusedCounterpart(item);
+      for (const key of focused.forceKeys)
+        ctx.onToggle(`force:${key}`);
+      if (half !== "diagonal" && (!pinnedMirrorHalf || half === pinnedMirrorHalf)) {
         pinnedMirrorHalf = half;
+      }
       applyMirrorClasses();
     });
     diagonalSelection.on("mousemove", (event, item) => {
@@ -3613,6 +3635,139 @@ function headerClass(item) {
     item.status === "proposed" ? "is-proposed" : "",
     item.focused ? "" : "is-faded"
   ].filter(Boolean).join(" ");
+}
+
+// src/landscape-selection.ts
+function keyKind(key) {
+  if (key.startsWith("component:"))
+    return "component";
+  if (key.startsWith("force:"))
+    return "force";
+  if (key.startsWith("attractor:"))
+    return "attractor";
+  return;
+}
+function keyId(key) {
+  return key.slice(key.indexOf(":") + 1);
+}
+function entityDetail(state, key) {
+  const { components, attractors, forces } = effectiveState(state);
+  const kind = keyKind(key);
+  const id = keyId(key);
+  if (kind === "component") {
+    const component = components.find((candidate) => candidate.name === id);
+    if (!component)
+      return;
+    const forceCount = forces.filter((force) => force.components.includes(component.name)).length;
+    return {
+      key,
+      kind: "component",
+      title: component.name,
+      fields: [
+        { label: "name", value: component.name },
+        { label: "description", value: component.description },
+        { label: "status", value: component.status },
+        { label: "architecture set", value: component.architectureSet },
+        { label: "force count", value: String(forceCount) }
+      ]
+    };
+  }
+  if (kind === "force") {
+    const force = forces.find((candidate) => candidate.key === id);
+    if (!force)
+      return;
+    const attractor = attractors.find((candidate) => candidate.id === force.attractorId);
+    const changeLabel = force.kind === "stressor" ? "naive change" : "feature";
+    return {
+      key,
+      kind: force.kind,
+      title: force.shortname || force.id,
+      fields: [
+        { label: "id", value: force.id },
+        { label: "shortname", value: force.shortname },
+        { label: "kind", value: force.kind },
+        { label: "description", value: force.description },
+        { label: "attractor", value: attractor?.name ?? force.attractorId },
+        { label: "components", value: force.components.join(", ") },
+        { label: changeLabel, value: force.naiveChangeOrFeature },
+        { label: "outcomes", value: force.outcomes }
+      ]
+    };
+  }
+  if (kind === "attractor") {
+    const attractor = attractors.find((candidate) => candidate.id === id);
+    if (!attractor)
+      return;
+    const forceCount = forces.filter((force) => force.attractorId === attractor.id).length;
+    return {
+      key,
+      kind: "attractor",
+      title: attractor.name,
+      color: attractorColors(state).get(attractor.id),
+      fields: [
+        { label: "name", value: attractor.name },
+        { label: "description", value: attractor.description },
+        { label: "positive", value: attractor.positiveState },
+        { label: "negative", value: attractor.negativeState },
+        { label: "force count", value: String(forceCount) }
+      ]
+    };
+  }
+  return;
+}
+function highlightConnectedKeys(state, selected) {
+  const { forces } = effectiveState(state);
+  const result = new Set;
+  for (const key of selected) {
+    const kind = keyKind(key);
+    const id = keyId(key);
+    if (kind === "force") {
+      const force = forces.find((candidate) => candidate.key === id);
+      result.add(key);
+      if (!force)
+        continue;
+      result.add(`attractor:${force.attractorId}`);
+      for (const component of force.components) {
+        result.add(`component:${component}`);
+      }
+      for (const sibling of forces) {
+        if (sibling.attractorId === force.attractorId) {
+          result.add(`force:${sibling.key}`);
+        }
+      }
+      continue;
+    }
+    if (kind === "attractor") {
+      result.add(key);
+      for (const force of forces) {
+        if (force.attractorId !== id)
+          continue;
+        result.add(`force:${force.key}`);
+        for (const component of force.components) {
+          result.add(`component:${component}`);
+        }
+      }
+      continue;
+    }
+    if (kind === "component") {
+      result.add(key);
+      for (const force of forces) {
+        if (!force.components.includes(id))
+          continue;
+        result.add(`force:${force.key}`);
+        result.add(`attractor:${force.attractorId}`);
+      }
+    }
+  }
+  return result;
+}
+function toggleSelection(current, key) {
+  const next = new Set(current);
+  if (next.has(key))
+    next.delete(key);
+  else
+    next.add(key);
+  return next;
 }
 
 // src/landscape-geometry.ts
@@ -4144,7 +4299,10 @@ function attractorGroupCircles(nodes, padding) {
   }
   return circles;
 }
-function createAttractorCohesionForce(strength = 0.3) {
+var ATTRACTOR_COHESION_STRENGTH = 0.1;
+var INITIAL_SETTLE_TICKS = 50;
+var KEEP_SIMULATING_ALPHA_TARGET = 0.05;
+function createAttractorCohesionForce(strength = ATTRACTOR_COHESION_STRENGTH) {
   let nodes = [];
   const force = (alpha) => {
     const sums = new Map;
@@ -4345,6 +4503,8 @@ function createRegionsView(ctx) {
   let regionLabelSel;
   let lastSelected = new Set;
   let lastConnected = new Set;
+  let lastState;
+  let keepSimulating = false;
   let tickCount = 0;
   let labelShiftByKey = new Map;
   let groupColorById = new Map;
@@ -4684,14 +4844,38 @@ function createRegionsView(ctx) {
       fitToContent();
     }
   }
+  function clampAllNodesToCoreZones() {
+    const componentCount = nodes.filter((node) => node.type === "component").length;
+    const radius = coreZoneRadius(componentCount);
+    for (const node of nodes) {
+      if (node.type === "component") {
+        const clamped = clampToCore({ x: node.x ?? 0, y: node.y ?? 0 }, coreCenter, radius);
+        node.x = clamped.x;
+        node.y = clamped.y;
+      } else if (node.type === "force") {
+        const clamped = clampOutsideCore({ x: node.x ?? 0, y: node.y ?? 0 }, coreCenter, radius);
+        node.x = clamped.x;
+        node.y = clamped.y;
+      }
+      node.vx = 0;
+      node.vy = 0;
+    }
+  }
+  function applyKeepSimulatingTarget(sim) {
+    if (keepSimulating) {
+      sim.alphaTarget(KEEP_SIMULATING_ALPHA_TARGET).restart();
+    } else {
+      sim.alphaTarget(0);
+    }
+  }
   function ensureBuilt() {
     if (built)
       return built;
     const { width, height } = canvasSize();
     const { svg, content, zoom } = appendZoomableSvg(host, d3, { x: 0, y: 0, width, height }, "nkp-hyper", "Forces linked to the components they touch, grouped into attractor regions");
     const coreG = content.append("g").attr("class", "nkp-hyper-core");
-    const coreBoundary = coreG.append("circle").attr("class", "nkp-hyper-core-boundary").attr("data-core-boundary", "true").attr("fill", "none").attr("stroke-dasharray", "4 4");
-    const coreBoundaryDivider = coreG.append("line").attr("class", "nkp-hyper-core-boundary-divider").attr("data-core-boundary-divider", "true").attr("stroke-dasharray", "4 4");
+    const coreBoundary = coreG.append("circle").attr("class", "nkp-hyper-core-boundary").attr("data-core-boundary", "true").attr("fill", "none").attr("stroke", "var(--muted)").attr("stroke-dasharray", "4 4");
+    const coreBoundaryDivider = coreG.append("line").attr("class", "nkp-hyper-core-boundary-divider").attr("data-core-boundary-divider", "true").attr("stroke", "var(--muted)").attr("stroke-dasharray", "4 4");
     const regionsG = content.append("g").attr("class", "nkp-hyper-regions");
     const fusionG = content.append("g").attr("class", "nkp-hyper-fusion");
     const edgesG = content.append("g").attr("class", "nkp-hyper-edges");
@@ -4702,25 +4886,24 @@ function createRegionsView(ctx) {
       labelsGroup.attr("transform", event.transform);
     });
     svg.on("dblclick", () => ctx.onClear());
-    const sim = d3.forceSimulation([]).force("link", d3.forceLink([]).id((item) => item.id).distance(60).strength(0.18)).force("charge", d3.forceManyBody().strength((item) => item.type === "component" ? -650 : -130)).force("x", d3.forceX(width / 2).strength(0.05)).force("y", d3.forceY(height / 2).strength(0.05)).force("collision", d3.forceCollide().radius((item) => item.type === "component" ? REGIONS_COMPONENT_COLLISION_RADIUS : REGIONS_FORCE_COLLISION_RADIUS)).force("lattice", latticeForce).force("cohesion", createAttractorCohesionForce()).force("interaction", createForceInteractionForce()).force("coreContainment", coreContainmentForce).force("coreExclusion", coreExclusionForce).force("regionCollision", createRegionCollisionForce()).on("tick", tick).on("end", () => {
+    const sim = d3.forceSimulation([]).force("link", d3.forceLink([]).id((item) => item.id).distance(60).strength(0.18)).force("charge", d3.forceManyBody().strength((item) => item.type === "component" ? -650 : -130)).force("x", d3.forceX(width / 2).strength(0.05)).force("y", d3.forceY(height / 2).strength(0.05)).force("collision", d3.forceCollide().radius((item) => item.type === "component" ? REGIONS_COMPONENT_COLLISION_RADIUS : REGIONS_FORCE_COLLISION_RADIUS)).force("lattice", latticeForce).force("cohesion", createAttractorCohesionForce(ATTRACTOR_COHESION_STRENGTH)).force("interaction", createForceInteractionForce()).force("coreContainment", coreContainmentForce).force("coreExclusion", coreExclusionForce).force("regionCollision", createRegionCollisionForce()).on("tick", tick).on("end", () => {
       recomputeLabelNudges(true);
       positionLabels();
     }).stop();
     built = { svg, zoom, regionsG, fusionG, edgesG, nodesG, labelsGroup, coreBoundary, coreBoundaryDivider, sim, width, height, didFit: false, tip: createTooltip(host) };
     return built;
   }
-  function attractorSpawnAngle(attractorId) {
-    let hash = 2166136261;
-    for (let index = 0;index < attractorId.length; index += 1) {
-      hash ^= attractorId.charCodeAt(index);
-      hash = Math.imul(hash, 16777619);
+  function attractorSpawnAngles(attractorIds) {
+    const sorted = [...new Set(attractorIds)].sort();
+    const count = sorted.length;
+    const angles = new Map;
+    for (let index = 0;index < count; index += 1) {
+      angles.set(sorted[index], Math.PI * 2 * index / count);
     }
-    return (hash >>> 0) / 4294967295 * Math.PI * 2;
+    return angles;
   }
-  function seedPosition(item, placed, focusComponentId, componentCount) {
+  function seedPosition(item, placed, focusComponentId, componentCount, spawnAngles) {
     const offset = deterministicOffset(item.id);
-    const { width, height } = canvasSize();
-    const center = { x: width / 2, y: height / 2 };
     const radius = coreZoneRadius(componentCount);
     if (item.type === "force") {
       const siblings = [...placed.values()].filter((node) => node.type === "force" && node.attractorId === item.attractorId && node.x !== undefined);
@@ -4729,15 +4912,15 @@ function createRegionsView(ctx) {
       if (siblingCenter) {
         base2 = { x: siblingCenter.x + offset.x, y: siblingCenter.y + offset.y };
       } else {
-        const angle = attractorSpawnAngle(item.attractorId);
+        const angle = spawnAngles.get(item.attractorId) ?? 0;
         const spawnR = radius + SPAWN_CORE_CLEARANCE;
-        base2 = { x: center.x + spawnR * Math.cos(angle), y: center.y + spawnR * Math.sin(angle) };
+        base2 = { x: coreCenter.x + spawnR * Math.cos(angle), y: coreCenter.y + spawnR * Math.sin(angle) };
       }
-      return clampOutsideCore(base2, center, radius);
+      return clampOutsideCore(base2, coreCenter, radius);
     }
     const focus = focusComponentId ? placed.get(focusComponentId) : undefined;
-    const base = focus?.x !== undefined ? { x: focus.x + offset.x, y: (focus.y ?? 0) + offset.y } : { x: center.x + offset.x, y: center.y + offset.y };
-    return clampToCore(base, center, radius);
+    const base = focus?.x !== undefined ? { x: focus.x + offset.x, y: (focus.y ?? 0) + offset.y } : { x: coreCenter.x + offset.x, y: coreCenter.y + offset.y };
+    return clampToCore(base, coreCenter, radius);
   }
   function applyNodeDrag(node, point) {
     const componentCount = nodes.filter((n) => n.type === "component").length;
@@ -4786,7 +4969,9 @@ function createRegionsView(ctx) {
     regionLabelSel?.classed("is-lit", (group) => !regionDim(group)).attr("opacity", (group) => regionDim(group) ? 0 : group.focused ? 0.9 : 0.4);
   }
   function update(state, rawOptions = {}) {
+    lastState = state;
     const options = rawOptions;
+    keepSimulating = options.keepSimulating === true;
     const model = buildNkpHypergraphModel(state, options);
     if (model.nodes.length === 0) {
       if (!built) {
@@ -4842,11 +5027,12 @@ function createRegionsView(ctx) {
     const prevById = byId;
     const nextById = new Map;
     const newcomerIds = new Set;
+    const spawnAngles = attractorSpawnAngles(model.nodes.flatMap((item) => item.type === "force" ? [item.attractorId] : []));
     nodes = model.nodes.map((item) => {
       const existing = prevById.get(item.id);
       if (!existing)
         newcomerIds.add(item.id);
-      const merged = existing ? { ...item, x: existing.x, y: existing.y, vx: existing.vx, vy: existing.vy, fx: existing.fx ?? null, fy: existing.fy ?? null } : { ...item, ...seedPosition(item, nextById, focusComponentId, componentCount), vx: 0, vy: 0 };
+      const merged = existing ? { ...item, x: existing.x, y: existing.y, vx: existing.vx, vy: existing.vy, fx: existing.fx ?? null, fy: existing.fy ?? null } : { ...item, ...seedPosition(item, nextById, focusComponentId, componentCount, spawnAngles), vx: 0, vy: 0 };
       nextById.set(item.id, merged);
       return merged;
     });
@@ -4917,7 +5103,7 @@ function createRegionsView(ctx) {
       tick();
     }).on("end", (event, group) => {
       if (!event.active)
-        b.sim.alphaTarget(0);
+        applyKeepSimulatingTarget(b.sim);
       draggingRegionIds.delete(group.attractorId);
       const memberIds = new Set(nodes.filter((node) => node.type === "force" && node.attractorId === group.attractorId).map((node) => node.id));
       if (lockState.enabled) {
@@ -4968,7 +5154,7 @@ function createRegionsView(ctx) {
       applyNodeDrag(node, { x: event.x, y: event.y });
     }).on("end", (event, node) => {
       if (!event.active)
-        b.sim.alphaTarget(0);
+        applyKeepSimulatingTarget(b.sim);
       draggingNodeIds.delete(node.id);
       refreshLatticeTargets(new Set([node.id]));
       if (lockState.enabled && node.type === "force") {
@@ -4992,15 +5178,6 @@ function createRegionsView(ctx) {
     forceLabelSel = b.labelsGroup.selectAll("text.nkp-hyper-force-label").data(forceNodes, (node) => node.id).join("text").attr("class", "nkp-hyper-force nkp-node-label nkp-hyper-force-label").attr("text-anchor", "middle").attr("opacity", 0).text((node) => node.label);
     forceLabelSel.on("click", (_event, node) => ctx.onToggle(node.id));
     regionLabelSel = b.labelsGroup.selectAll("text.nkp-hyper-region-label").data(model.groups, (group) => group.attractorId).join("text").attr("class", "nkp-hyper-region-label").attr("text-anchor", "middle").attr("fill", (group) => group.color).attr("opacity", (group) => group.focused ? 0.9 : 0.4).text((group) => group.name);
-    const neighbours = new Map;
-    for (const edge of model.edges) {
-      neighbours.set(edge.source, (neighbours.get(edge.source) ?? new Set).add(edge.target));
-      neighbours.set(edge.target, (neighbours.get(edge.target) ?? new Set).add(edge.source));
-    }
-    const attractorOfForce = (id) => {
-      const item = byId.get(id);
-      return item?.type === "force" ? item.attractorId : undefined;
-    };
     const clearHighlight = () => {
       b.svg.classed("nkp-hyper-hovering", false);
       nodeSel.classed("is-lit", false);
@@ -5010,16 +5187,23 @@ function createRegionsView(ctx) {
       b.tip.hidden = true;
       applySelectionClasses();
     };
+    const litAttractorsFrom = (lit) => {
+      const ids = new Set;
+      for (const key of lit) {
+        if (key.startsWith("attractor:"))
+          ids.add(key.slice("attractor:".length));
+      }
+      return ids;
+    };
     const highlight = (item) => {
-      const lit = new Set([item.id, ...neighbours.get(item.id) ?? []]);
-      const forceIds = item.type === "force" ? [item.id] : [...neighbours.get(item.id) ?? []];
-      const litAttractors = new Set(forceIds.map(attractorOfForce).filter((id) => id !== undefined));
+      const lit = lastState ? highlightConnectedKeys(lastState, [item.id]) : new Set([item.id]);
+      const litAttractors = litAttractorsFrom(lit);
       b.svg.classed("nkp-hyper-hovering", true);
       nodeSel.classed("is-lit", (other) => lit.has(other.id));
       const branchLit = (bundle) => {
-        if (item.id === bundle.componentId)
+        if (lit.has(bundle.componentId))
           return true;
-        return bundle.forceIds.some((forceId) => `force:${forceId}` === item.id);
+        return bundle.forceIds.some((forceId) => lit.has(`force:${forceId}`));
       };
       bundleGroupSel.classed("is-lit", branchLit);
       regionSel.classed("is-lit", (group) => litAttractors.has(group.attractorId));
@@ -5034,18 +5218,30 @@ function createRegionsView(ctx) {
     };
     nodeSel.on("mouseenter", showNode).on("focus", showNode).on("mouseleave", clearHighlight).on("blur", clearHighlight);
     const showRegion = (event, group) => {
-      const lit = new Set([...group.forceNodeIds, ...group.componentNodeIds]);
+      const attractorKey = `attractor:${group.attractorId}`;
+      const lit = lastState ? highlightConnectedKeys(lastState, [attractorKey]) : new Set([...group.forceNodeIds, ...group.componentNodeIds]);
+      const litAttractors = litAttractorsFrom(lit);
       b.svg.classed("nkp-hyper-hovering", true);
       nodeSel.classed("is-lit", (node) => lit.has(node.id));
       componentLabelSel.attr("opacity", (node) => lit.has(node.id) ? 1 : 0);
       forceLabelSel.attr("opacity", (node) => lit.has(node.id) ? 1 : 0);
-      regionSel.classed("is-lit", (other) => other.attractorId === group.attractorId);
-      regionLabelSel.classed("is-lit", (other) => other.attractorId === group.attractorId);
+      regionSel.classed("is-lit", (other) => litAttractors.has(other.attractorId));
+      regionLabelSel.classed("is-lit", (other) => litAttractors.has(other.attractorId));
       b.tip.textContent = group.tooltip;
       placeTooltip(host, b.tip, event);
     };
     regionSel.on("mouseenter.tooltip", showRegion).on("focus.tooltip", showRegion).on("mouseleave.tooltip", clearHighlight).on("blur.tooltip", clearHighlight);
+    const needsSettle = !b.didFit || newcomerIds.size > 0;
+    if (needsSettle) {
+      b.sim.tick(INITIAL_SETTLE_TICKS);
+      clampAllNodesToCoreZones();
+    }
     tick();
+    if (!b.didFit) {
+      b.didFit = true;
+      fitToContent();
+    }
+    applyKeepSimulatingTarget(b.sim);
     applySelectionClasses();
   }
   function setSelection(selected, connected) {
@@ -5074,120 +5270,6 @@ function createRegionsView(ctx) {
       return built?.sim;
     }
   };
-}
-
-// src/landscape-selection.ts
-function keyKind(key) {
-  if (key.startsWith("component:"))
-    return "component";
-  if (key.startsWith("force:"))
-    return "force";
-  if (key.startsWith("attractor:"))
-    return "attractor";
-  return;
-}
-function keyId(key) {
-  return key.slice(key.indexOf(":") + 1);
-}
-function entityDetail(state, key) {
-  const { components, attractors, forces } = effectiveState(state);
-  const kind = keyKind(key);
-  const id = keyId(key);
-  if (kind === "component") {
-    const component = components.find((candidate) => candidate.name === id);
-    if (!component)
-      return;
-    const forceCount = forces.filter((force) => force.components.includes(component.name)).length;
-    return {
-      key,
-      kind: "component",
-      title: component.name,
-      fields: [
-        { label: "name", value: component.name },
-        { label: "description", value: component.description },
-        { label: "status", value: component.status },
-        { label: "architecture set", value: component.architectureSet },
-        { label: "force count", value: String(forceCount) }
-      ]
-    };
-  }
-  if (kind === "force") {
-    const force = forces.find((candidate) => candidate.key === id);
-    if (!force)
-      return;
-    const attractor = attractors.find((candidate) => candidate.id === force.attractorId);
-    const changeLabel = force.kind === "stressor" ? "naive change" : "feature";
-    return {
-      key,
-      kind: force.kind,
-      title: force.shortname || force.id,
-      fields: [
-        { label: "id", value: force.id },
-        { label: "shortname", value: force.shortname },
-        { label: "kind", value: force.kind },
-        { label: "description", value: force.description },
-        { label: "attractor", value: attractor?.name ?? force.attractorId },
-        { label: "components", value: force.components.join(", ") },
-        { label: changeLabel, value: force.naiveChangeOrFeature },
-        { label: "outcomes", value: force.outcomes }
-      ]
-    };
-  }
-  if (kind === "attractor") {
-    const attractor = attractors.find((candidate) => candidate.id === id);
-    if (!attractor)
-      return;
-    const forceCount = forces.filter((force) => force.attractorId === attractor.id).length;
-    return {
-      key,
-      kind: "attractor",
-      title: attractor.name,
-      color: attractorColors(state).get(attractor.id),
-      fields: [
-        { label: "name", value: attractor.name },
-        { label: "description", value: attractor.description },
-        { label: "positive", value: attractor.positiveState },
-        { label: "negative", value: attractor.negativeState },
-        { label: "force count", value: String(forceCount) }
-      ]
-    };
-  }
-  return;
-}
-function buildAdjacency(state) {
-  const { forces } = effectiveState(state);
-  const adjacency = new Map;
-  const connect = (left, right) => {
-    adjacency.set(left, [...adjacency.get(left) ?? [], right]);
-    adjacency.set(right, [...adjacency.get(right) ?? [], left]);
-  };
-  for (const force of forces) {
-    const forceKey = `force:${force.key}`;
-    connect(forceKey, `attractor:${force.attractorId}`);
-    for (const component of new Set(force.components)) {
-      connect(forceKey, `component:${component}`);
-    }
-  }
-  return adjacency;
-}
-function directlyConnectedKeys(state, selected) {
-  const adjacency = buildAdjacency(state);
-  const result = new Set;
-  for (const key of selected) {
-    result.add(key);
-    for (const neighbor of adjacency.get(key) ?? []) {
-      result.add(neighbor);
-    }
-  }
-  return result;
-}
-function toggleSelection(current, key) {
-  const next = new Set(current);
-  if (next.has(key))
-    next.delete(key);
-  else
-    next.add(key);
-  return next;
 }
 
 // src/landscape-sidebar.ts
@@ -5364,7 +5446,8 @@ var CONTROL_SELECTOR = [
   "[data-heatmap-counts-toggle]",
   "[data-regions-focus]",
   "[data-regions-names-toggle]",
-  "[data-regions-lock-toggle]"
+  "[data-regions-lock-toggle]",
+  "[data-regions-keep-simulating-toggle]"
 ].join(", ");
 function fitViewportHeight(windowHeight, toolbarHeight, chrome, bottomPadding) {
   return Math.max(320, Math.floor(windowHeight - toolbarHeight - chrome - bottomPadding));
@@ -5421,7 +5504,7 @@ function mountLandscape(container, getState, d3) {
       activeKey = activate;
     if (!activeKey || !selected.has(activeKey))
       activeKey = [...selected].at(-1);
-    const connected = directlyConnectedKeys(getState(), selected);
+    const connected = highlightConnectedKeys(getState(), selected);
     viewHandle?.setSelection(selected, connected);
     renderSidebarNow();
   };
@@ -5473,9 +5556,10 @@ function mountLandscape(container, getState, d3) {
       const focusComponent = syncFocusOptions(container.querySelector("[data-regions-focus]"), state);
       const showNames = container.querySelector("[data-regions-names-toggle]")?.checked ?? true;
       const lockRegions = container.querySelector("[data-regions-lock-toggle]")?.checked ?? false;
+      const keepSimulating = container.querySelector("[data-regions-keep-simulating-toggle]")?.checked ?? false;
       const tensionInput = container.querySelector("[data-bundle-tension-input]");
       const tension = tensionInput ? Number(tensionInput.value) / 100 : DEFAULT_BUNDLE_TENSION;
-      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, tension, ...focusComponent ? { focusComponent } : {} });
+      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, keepSimulating, tension, ...focusComponent ? { focusComponent } : {} });
     } else {
       const minCouplingStrength = syncMinCouplingStrength(container, state, filters);
       if (view === "heatmap") {
@@ -5495,7 +5579,7 @@ function mountLandscape(container, getState, d3) {
         });
       }
     }
-    const connected = directlyConnectedKeys(state, selected);
+    const connected = highlightConnectedKeys(state, selected);
     handle.setSelection(selected, connected);
     renderSidebarNow();
   };

@@ -9,7 +9,7 @@
 import type { PendingState } from "./model";
 import { attractorColors, buildNkpGraphModel, effectiveState, forceLabel, type EffectiveForce } from "./nkp-graph";
 import { appendZoomableSvg, createTooltip, placeTooltip, renderEmpty } from "./landscape-dom";
-import type { EntityKey } from "./landscape-selection";
+import { highlightConnectedKeys, type EntityKey } from "./landscape-selection";
 import { branchGeometry, nudgeLabels, projectLabelAnchor, tessellateNodes } from "./landscape-geometry";
 
 export interface HyperComponentNode {
@@ -458,12 +458,21 @@ type RenderBranch = {
   focused: boolean;
 };
 
+/** Pull strength for createAttractorCohesionForce (was 0.3; ~1/3 keeps groups looser). */
+export const ATTRACTOR_COHESION_STRENGTH = 0.1;
+
+/** Synchronous simulation ticks after each update so the layout spreads before cool-down fit. */
+export const INITIAL_SETTLE_TICKS = 50;
+
+/** alphaTarget while keepSimulating is on — small but >0 so the sim stays warm. */
+const KEEP_SIMULATING_ALPHA_TARGET = 0.05;
+
 /**
  * Pulls each force node toward the current centroid of its attractor's force
  * nodes, recomputed every tick, so attractor groups cohere without being
  * pinned anywhere.
  */
-function createAttractorCohesionForce(strength = 0.3) {
+function createAttractorCohesionForce(strength = ATTRACTOR_COHESION_STRENGTH) {
   let nodes: SimNode[] = [];
   const force = (alpha: number): void => {
     const sums = new Map<string, { x: number; y: number; n: number }>();
@@ -736,6 +745,8 @@ export interface RegionsRenderOptions extends NkpHypergraphOptions {
   lockRegions?: boolean;
   /** Shared with the bundle view: how tightly branch trunks converge (0 loose, 1 tight). */
   tension?: number;
+  /** When true, hold alphaTarget above zero so the simulation stays warm. */
+  keepSimulating?: boolean;
 }
 
 export interface RegionsViewCtx {
@@ -824,6 +835,8 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   let regionLabelSel: any;
   let lastSelected: ReadonlySet<EntityKey> = new Set();
   let lastConnected: ReadonlySet<EntityKey> = new Set();
+  let lastState: PendingState | undefined;
+  let keepSimulating = false;
   let tickCount = 0;
   let labelShiftByKey = new Map<string, number>();
   let groupColorById = new Map<string, string>();
@@ -1251,6 +1264,32 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     }
   }
 
+  function clampAllNodesToCoreZones(): void {
+    const componentCount = nodes.filter((node) => node.type === "component").length;
+    const radius = coreZoneRadius(componentCount);
+    for (const node of nodes) {
+      if (node.type === "component") {
+        const clamped = clampToCore({ x: node.x ?? 0, y: node.y ?? 0 }, coreCenter, radius);
+        node.x = clamped.x;
+        node.y = clamped.y;
+      } else if (node.type === "force") {
+        const clamped = clampOutsideCore({ x: node.x ?? 0, y: node.y ?? 0 }, coreCenter, radius);
+        node.x = clamped.x;
+        node.y = clamped.y;
+      }
+      node.vx = 0;
+      node.vy = 0;
+    }
+  }
+
+  function applyKeepSimulatingTarget(sim: { alphaTarget: (t?: number) => number; restart: () => unknown }): void {
+    if (keepSimulating) {
+      sim.alphaTarget(KEEP_SIMULATING_ALPHA_TARGET).restart();
+    } else {
+      sim.alphaTarget(0);
+    }
+  }
+
   function ensureBuilt(): NonNullable<typeof built> {
     if (built) return built;
     const { width, height } = canvasSize();
@@ -1266,10 +1305,12 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       .attr("class", "nkp-hyper-core-boundary")
       .attr("data-core-boundary", "true")
       .attr("fill", "none")
+      .attr("stroke", "var(--muted)")
       .attr("stroke-dasharray", "4 4");
     const coreBoundaryDivider = coreG.append("line")
       .attr("class", "nkp-hyper-core-boundary-divider")
       .attr("data-core-boundary-divider", "true")
+      .attr("stroke", "var(--muted)")
       .attr("stroke-dasharray", "4 4");
     const regionsG = content.append("g").attr("class", "nkp-hyper-regions");
     const fusionG = content.append("g").attr("class", "nkp-hyper-fusion");
@@ -1291,7 +1332,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         ? REGIONS_COMPONENT_COLLISION_RADIUS
         : REGIONS_FORCE_COLLISION_RADIUS))
       .force("lattice", latticeForce)
-      .force("cohesion", createAttractorCohesionForce())
+      .force("cohesion", createAttractorCohesionForce(ATTRACTOR_COHESION_STRENGTH))
       .force("interaction", createForceInteractionForce())
       .force("coreContainment", coreContainmentForce)
       .force("coreExclusion", coreExclusionForce)
@@ -1308,19 +1349,17 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   }
 
   /**
-   * Deterministic "home direction" for an attractor's whole force-node group,
-   * hashed from the attractor id (not the individual force id) so every
-   * member of the same attractor shares one spawn angle, scattered roughly
-   * evenly across attractors (same FNV-1a-to-angle technique as
-   * deterministicOffset).
+   * Evenly spaced spawn angles for distinct attractors (sorted ids → 2π·i/N).
+   * Replaces hash-based angles that could clump several attractors in one wedge.
    */
-  function attractorSpawnAngle(attractorId: string): number {
-    let hash = 2166136261;
-    for (let index = 0; index < attractorId.length; index += 1) {
-      hash ^= attractorId.charCodeAt(index);
-      hash = Math.imul(hash, 16777619);
+  function attractorSpawnAngles(attractorIds: Iterable<string>): Map<string, number> {
+    const sorted = [...new Set(attractorIds)].sort();
+    const count = sorted.length;
+    const angles = new Map<string, number>();
+    for (let index = 0; index < count; index += 1) {
+      angles.set(sorted[index]!, (Math.PI * 2 * index) / count);
     }
-    return ((hash >>> 0) / 0xffffffff) * Math.PI * 2;
+    return angles;
   }
 
   /**
@@ -1329,16 +1368,17 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
    * near siblings' centroid with a small per-id jitter. Either way the
    * result is clamped outside the core. New component nodes seed near the
    * canvas centre/focus and get clamped inside the core.
+   * Uses the same coreCenter + coreZoneRadius(componentCount) as containment,
+   * exclusion, drag, and the visual boundary circle.
    */
   function seedPosition(
     item: HyperNode,
     placed: ReadonlyMap<string, SimNode>,
     focusComponentId: string | undefined,
     componentCount: number,
+    spawnAngles: ReadonlyMap<string, number>,
   ): { x: number; y: number } {
     const offset = deterministicOffset(item.id);
-    const { width, height } = canvasSize();
-    const center = { x: width / 2, y: height / 2 };
     const radius = coreZoneRadius(componentCount);
     if (item.type === "force") {
       const siblings = [...placed.values()].filter(
@@ -1349,19 +1389,19 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       if (siblingCenter) {
         base = { x: siblingCenter.x + offset.x, y: siblingCenter.y + offset.y };
       } else {
-        const angle = attractorSpawnAngle(item.attractorId);
+        const angle = spawnAngles.get(item.attractorId) ?? 0;
         const spawnR = radius + SPAWN_CORE_CLEARANCE;
-        base = { x: center.x + spawnR * Math.cos(angle), y: center.y + spawnR * Math.sin(angle) };
+        base = { x: coreCenter.x + spawnR * Math.cos(angle), y: coreCenter.y + spawnR * Math.sin(angle) };
       }
-      return clampOutsideCore(base, center, radius);
+      return clampOutsideCore(base, coreCenter, radius);
     }
     const focus = focusComponentId ? placed.get(focusComponentId) : undefined;
     const base = focus?.x !== undefined
       ? { x: focus.x + offset.x, y: (focus.y ?? 0) + offset.y }
-      : { x: center.x + offset.x, y: center.y + offset.y };
+      : { x: coreCenter.x + offset.x, y: coreCenter.y + offset.y };
     // Only component nodes reach here (the force branch above always
     // returns); clamp so a newly seeded component always lands in the core.
-    return clampToCore(base, center, radius);
+    return clampToCore(base, coreCenter, radius);
   }
 
   /**
@@ -1426,7 +1466,9 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   }
 
   function update(state: PendingState, rawOptions: Record<string, unknown> = {}): void {
+    lastState = state;
     const options = rawOptions as RegionsRenderOptions;
+    keepSimulating = options.keepSimulating === true;
     const model = buildNkpHypergraphModel(state, options);
 
     if (model.nodes.length === 0) {
@@ -1495,12 +1537,15 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     const prevById = byId;
     const nextById = new Map<string, SimNode>();
     const newcomerIds = new Set<string>();
+    const spawnAngles = attractorSpawnAngles(
+      model.nodes.flatMap((item) => (item.type === "force" ? [item.attractorId] : [])),
+    );
     nodes = model.nodes.map((item) => {
       const existing = prevById.get(item.id);
       if (!existing) newcomerIds.add(item.id);
       const merged: SimNode = existing
         ? { ...item, x: existing.x, y: existing.y, vx: existing.vx, vy: existing.vy, fx: existing.fx ?? null, fy: existing.fy ?? null }
-        : { ...item, ...seedPosition(item, nextById, focusComponentId, componentCount), vx: 0, vy: 0 };
+        : { ...item, ...seedPosition(item, nextById, focusComponentId, componentCount, spawnAngles), vx: 0, vy: 0 };
       nextById.set(item.id, merged);
       return merged;
     });
@@ -1581,7 +1626,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         tick();
       })
       .on("end", (event: { active: boolean }, group: AttractorGroup) => {
-        if (!event.active) b.sim.alphaTarget(0);
+        if (!event.active) applyKeepSimulatingTarget(b.sim);
         draggingRegionIds.delete(group.attractorId);
         const memberIds = new Set(nodes
           .filter((node) => node.type === "force" && node.attractorId === group.attractorId)
@@ -1687,7 +1732,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         applyNodeDrag(node, { x: event.x, y: event.y });
       })
       .on("end", (event: { active: boolean }, node: SimNode) => {
-        if (!event.active) b.sim.alphaTarget(0);
+        if (!event.active) applyKeepSimulatingTarget(b.sim);
         draggingNodeIds.delete(node.id);
         refreshLatticeTargets(new Set([node.id]));
         if (lockState.enabled && node.type === "force") {
@@ -1733,16 +1778,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       .attr("opacity", (group: AttractorGroup) => group.focused ? 0.9 : 0.4)
       .text((group: AttractorGroup) => group.name);
 
-    // --- hover: highlight the hovered node's neighbourhood and attractor regions ---
-    const neighbours = new Map<string, Set<string>>();
-    for (const edge of model.edges) {
-      neighbours.set(edge.source, (neighbours.get(edge.source) ?? new Set()).add(edge.target));
-      neighbours.set(edge.target, (neighbours.get(edge.target) ?? new Set()).add(edge.source));
-    }
-    const attractorOfForce = (id: string): string | undefined => {
-      const item = byId.get(id);
-      return item?.type === "force" ? item.attractorId : undefined;
-    };
+    // --- hover: highlight via the same partial-transitive set as selection ---
     const clearHighlight = (): void => {
       b.svg.classed("nkp-hyper-hovering", false);
       nodeSel.classed("is-lit", false);
@@ -1752,21 +1788,29 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       b.tip.hidden = true;
       applySelectionClasses();
     };
+    const litAttractorsFrom = (lit: ReadonlySet<EntityKey>): Set<string> => {
+      const ids = new Set<string>();
+      for (const key of lit) {
+        if (key.startsWith("attractor:")) ids.add(key.slice("attractor:".length));
+      }
+      return ids;
+    };
     const highlight = (item: SimNode): void => {
-      const lit = new Set([item.id, ...(neighbours.get(item.id) ?? [])]);
-      const forceIds = item.type === "force" ? [item.id] : [...(neighbours.get(item.id) ?? [])];
-      const litAttractors = new Set(forceIds.map(attractorOfForce).filter((id): id is string => id !== undefined));
+      const lit = lastState
+        ? highlightConnectedKeys(lastState, [item.id as EntityKey])
+        : new Set<EntityKey>([item.id as EntityKey]);
+      const litAttractors = litAttractorsFrom(lit);
       b.svg.classed("nkp-hyper-hovering", true);
-      nodeSel.classed("is-lit", (other: SimNode) => lit.has(other.id));
+      nodeSel.classed("is-lit", (other: SimNode) => lit.has(other.id as EntityKey));
       const branchLit = (bundle: RenderBundle): boolean => {
-        if (item.id === bundle.componentId) return true;
-        return bundle.forceIds.some((forceId) => `force:${forceId}` === item.id);
+        if (lit.has(bundle.componentId as EntityKey)) return true;
+        return bundle.forceIds.some((forceId) => lit.has(`force:${forceId}`));
       };
       bundleGroupSel.classed("is-lit", branchLit);
       regionSel.classed("is-lit", (group: AttractorGroup) => litAttractors.has(group.attractorId));
       regionLabelSel.classed("is-lit", (group: AttractorGroup) => litAttractors.has(group.attractorId));
-      componentLabelSel.attr("opacity", (other: SimNode) => lit.has(other.id) ? 1 : 0);
-      forceLabelSel.attr("opacity", (other: SimNode) => lit.has(other.id) ? 1 : 0);
+      componentLabelSel.attr("opacity", (other: SimNode) => lit.has(other.id as EntityKey) ? 1 : 0);
+      forceLabelSel.attr("opacity", (other: SimNode) => lit.has(other.id as EntityKey) ? 1 : 0);
     };
     const showNode = (event: MouseEvent, item: SimNode): void => {
       highlight(item);
@@ -1778,13 +1822,17 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       .on("mouseleave", clearHighlight)
       .on("blur", clearHighlight);
     const showRegion = (event: MouseEvent, group: AttractorGroup): void => {
-      const lit = new Set([...group.forceNodeIds, ...group.componentNodeIds]);
+      const attractorKey = `attractor:${group.attractorId}` as EntityKey;
+      const lit = lastState
+        ? highlightConnectedKeys(lastState, [attractorKey])
+        : new Set<EntityKey>([...group.forceNodeIds, ...group.componentNodeIds] as EntityKey[]);
+      const litAttractors = litAttractorsFrom(lit);
       b.svg.classed("nkp-hyper-hovering", true);
-      nodeSel.classed("is-lit", (node: SimNode) => lit.has(node.id));
-      componentLabelSel.attr("opacity", (node: SimNode) => lit.has(node.id) ? 1 : 0);
-      forceLabelSel.attr("opacity", (node: SimNode) => lit.has(node.id) ? 1 : 0);
-      regionSel.classed("is-lit", (other: AttractorGroup) => other.attractorId === group.attractorId);
-      regionLabelSel.classed("is-lit", (other: AttractorGroup) => other.attractorId === group.attractorId);
+      nodeSel.classed("is-lit", (node: SimNode) => lit.has(node.id as EntityKey));
+      componentLabelSel.attr("opacity", (node: SimNode) => lit.has(node.id as EntityKey) ? 1 : 0);
+      forceLabelSel.attr("opacity", (node: SimNode) => lit.has(node.id as EntityKey) ? 1 : 0);
+      regionSel.classed("is-lit", (other: AttractorGroup) => litAttractors.has(other.attractorId));
+      regionLabelSel.classed("is-lit", (other: AttractorGroup) => litAttractors.has(other.attractorId));
       b.tip.textContent = group.tooltip;
       placeTooltip(host, b.tip, event);
     };
@@ -1793,7 +1841,20 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       .on("mouseleave.tooltip", clearHighlight)
       .on("blur.tooltip", clearHighlight);
 
+    // Settle when the layout is new or gained nodes so radial seeds can spread
+    // before cool-down fit. Skip when every node is a survivor so incremental
+    // updates keep exact x/y (and so a second sync does not yank locked layout).
+    const needsSettle = !b.didFit || newcomerIds.size > 0;
+    if (needsSettle) {
+      b.sim.tick(INITIAL_SETTLE_TICKS);
+      clampAllNodesToCoreZones();
+    }
     tick();
+    if (!b.didFit) {
+      b.didFit = true;
+      fitToContent();
+    }
+    applyKeepSimulatingTarget(b.sim);
     applySelectionClasses();
   }
 

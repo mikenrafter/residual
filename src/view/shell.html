@@ -324,6 +324,8 @@
       .nkp-hyper-region { cursor: grab; }
       .nkp-hyper-region:active { cursor: grabbing; }
       .nkp-hyper-fusion-hull { fill: #808080; fill-opacity: 0.14; stroke: var(--warn); stroke-width: 2px; stroke-dasharray: 3 4; stroke-linejoin: round; pointer-events: none; }
+      .nkp-hyper-core-boundary,
+      .nkp-hyper-core-boundary-divider { stroke: var(--muted); fill: none; }
       .nkp-hyper-component.selected .nkp-node-dot,
       .nkp-hyper-force.selected .nkp-hyper-force-dot { stroke: var(--accent); stroke-width: 2.5px; }
       .nkp-hyper-component.dim, .nkp-hyper-force.dim { opacity: var(--selection-dim-opacity); }
@@ -675,6 +677,9 @@
             <label data-landscape-for="regions" hidden title="Keep each attractor region's force nodes in their current arrangement">
               <input type="checkbox" data-regions-lock-toggle aria-label="Lock attractor regions" /> lock attractor regions
             </label>
+            <label data-landscape-for="regions" hidden>
+              <input type="checkbox" data-regions-keep-simulating-toggle /> keep simulating physics
+            </label>
             <button type="button" data-landscape-reset-view>reset view</button>
             <button type="button" data-landscape-deselect-all>deselect all</button>
             <span class="landscape-hint">pinch or ctrl+scroll to zoom · drag to pan · double-click clears selection</span>
@@ -683,7 +688,7 @@
             <div class="landscape-viewport" data-landscape></div>
             <aside class="landscape-sidebar" data-landscape-sidebar></aside>
           </div>
-          <p class="ledger-panel-help">Directly connected entities share a force–component membership edge or a force–attractor assignment. Connected entities are the transitive closure: every entity reachable along those direct relations. With multiple selections, connected entities are the union of their reachable sets. The highlight in the views above (full opacity vs. dimmed) follows directly connected entities only — one hop away — not the full transitive closure, so a selection stays legible even in a densely coupled landscape.</p>
+          <p class="ledger-panel-help">Directly connected entities share a force–component membership edge or a force–attractor assignment. Connected entities are the transitive closure: every entity reachable along those direct relations. With multiple selections, connected entities are the union of their reachable sets. The highlight in the views above (full opacity vs. dimmed) follows a partial-transitive set: a selected force lights its attractor, its own components, and sibling forces under the same attractor (not those siblings' other components); a selected attractor lights all its forces and every component they touch; a selected component lights the forces that touch it and those forces' attractors.</p>
         </div>
       </details>
 

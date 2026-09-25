@@ -161,6 +161,63 @@ export function directlyConnectedKeys(state: PendingState, selected: Iterable<En
   return result;
 }
 
+/**
+ * Partial-transitive highlight set for landscape views and hover. Wider than
+ * directlyConnectedKeys (sibling forces under a shared attractor; components of
+ * every force under a selected attractor) but narrower than connectedKeys' full
+ * closure — sibling forces do not pull in each other's extra components, and a
+ * selected component does not light forces that share its attractor without
+ * touching it.
+ */
+export function highlightConnectedKeys(state: PendingState, selected: Iterable<EntityKey>): Set<EntityKey> {
+  const { forces } = effectiveState(state);
+  const result = new Set<EntityKey>();
+
+  for (const key of selected) {
+    const kind = keyKind(key);
+    const id = keyId(key);
+
+    if (kind === "force") {
+      const force = forces.find((candidate) => candidate.key === id);
+      result.add(key);
+      if (!force) continue;
+      result.add(`attractor:${force.attractorId}`);
+      for (const component of force.components) {
+        result.add(`component:${component}`);
+      }
+      for (const sibling of forces) {
+        if (sibling.attractorId === force.attractorId) {
+          result.add(`force:${sibling.key}`);
+        }
+      }
+      continue;
+    }
+
+    if (kind === "attractor") {
+      result.add(key);
+      for (const force of forces) {
+        if (force.attractorId !== id) continue;
+        result.add(`force:${force.key}`);
+        for (const component of force.components) {
+          result.add(`component:${component}`);
+        }
+      }
+      continue;
+    }
+
+    if (kind === "component") {
+      result.add(key);
+      for (const force of forces) {
+        if (!force.components.includes(id)) continue;
+        result.add(`force:${force.key}`);
+        result.add(`attractor:${force.attractorId}`);
+      }
+    }
+  }
+
+  return result;
+}
+
 /** Mobile-friendly, no-modifier toggle: adds `key` if absent, removes it if present. Does not mutate `current`. */
 export function toggleSelection(current: ReadonlySet<EntityKey>, key: EntityKey): Set<EntityKey> {
   const next = new Set(current);

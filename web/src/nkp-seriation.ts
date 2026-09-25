@@ -390,6 +390,17 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
     });
   }
 
+  /** When a half is pinned, map an unfocused-half cell to its focused (row↔col) counterpart. */
+  function focusedCounterpart(item: SeriationCell): SeriationCell {
+    const half = cellHalf(item.row, item.col);
+    if (!pinnedMirrorHalf || half === "diagonal" || half === pinnedMirrorHalf) return item;
+    return lastModel?.cells.find((cell) => cell.row === item.col && cell.col === item.row) ?? {
+      ...item,
+      row: item.col,
+      col: item.row,
+    };
+  }
+
   function applySelectionClasses(): void {
     const b = built;
     if (!b) return;
@@ -693,23 +704,36 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
     cellSelection
       .on("mousemove", (event: MouseEvent, item: SeriationCell) => {
         const half = cellHalf(item.row, item.col);
-        hoverMirrorHalf = half === "diagonal" ? undefined : half;
+        const focused = focusedCounterpart(item);
+        // While a half is pinned, hovering the unfocused half must not flip
+        // hoverMirrorHalf (that would undim the wrong triangle).
+        if (pinnedMirrorHalf && half !== "diagonal" && half !== pinnedMirrorHalf) {
+          hoverMirrorHalf = undefined;
+        } else {
+          hoverMirrorHalf = half === "diagonal" ? undefined : half;
+        }
         applyMirrorClasses();
-        applyHeaderBands(item.row, item.col);
-        const rowName = componentByIndex.get(item.row)?.name ?? "";
-        const colName = componentByIndex.get(item.col)?.name ?? "";
-        showTooltip(event, [`${rowName} × ${colName}: ${item.count} shared`, ...item.forces]);
+        applyHeaderBands(focused.row, focused.col);
+        const rowName = componentByIndex.get(focused.row)?.name ?? "";
+        const colName = componentByIndex.get(focused.col)?.name ?? "";
+        showTooltip(event, [`${rowName} × ${colName}: ${focused.count} shared`, ...focused.forces]);
       })
       .on("focus", (event: MouseEvent, item: SeriationCell) => {
-        const rowName = componentByIndex.get(item.row)?.name ?? "";
-        const colName = componentByIndex.get(item.col)?.name ?? "";
-        showTooltip(event, [`${rowName} × ${colName}: ${item.count} shared`, ...item.forces]);
+        const focused = focusedCounterpart(item);
+        const rowName = componentByIndex.get(focused.row)?.name ?? "";
+        const colName = componentByIndex.get(focused.col)?.name ?? "";
+        showTooltip(event, [`${rowName} × ${colName}: ${focused.count} shared`, ...focused.forces]);
       })
       .on("mouseleave blur", clearHover)
       .on("click", (_event: MouseEvent, item: SeriationCell) => {
-        for (const key of item.forceKeys) ctx.onToggle(`force:${key}` as EntityKey);
         const half = cellHalf(item.row, item.col);
-        if (half !== "diagonal") pinnedMirrorHalf = half;
+        const focused = focusedCounterpart(item);
+        for (const key of focused.forceKeys) ctx.onToggle(`force:${key}` as EntityKey);
+        // Only pin on first engagement (or re-engage on the canonical half);
+        // unfocused-half clicks remap above and must not flip the pin.
+        if (half !== "diagonal" && (!pinnedMirrorHalf || half === pinnedMirrorHalf)) {
+          pinnedMirrorHalf = half;
+        }
         applyMirrorClasses();
       });
 
