@@ -29,8 +29,6 @@ export interface NkpGraphEdge {
   stressors: string[];
   tooltip: string;
   width: number;
-  distance: number;
-  strength: number;
   lineStyle: "solid" | "dotted";
   focused: boolean;
   opacity: number;
@@ -39,8 +37,9 @@ export interface NkpGraphEdge {
 export interface NkpGraphModel {
   nodes: NkpGraphNode[];
   edges: NkpGraphEdge[];
-  simulation: { enabled: boolean; forces: string[] };
 }
+
+export const DEFAULT_MIN_COUPLING_STRENGTH = 2;
 
 export interface NkpGraphOptions {
   visibleForceIds?: ReadonlySet<string>;
@@ -48,11 +47,23 @@ export interface NkpGraphOptions {
   fissionThreshold?: number;
   /** When true, drop filtered-out components and edges instead of fading them. */
   hideFiltered?: boolean;
+  /** Minimum shared-force count for coupling/fusion edges; attractor edges are exempt. */
+  minCouplingStrength?: number;
+  /**
+   * Number of coupling-strength tiers to keep, ranked by shared-residue count.
+   * Ties within the cutoff tier are all kept ("friendly tie"). Applies atop
+   * minCouplingStrength and focus filtering, not instead of them. Attractors
+   * are pruned to those still reachable through a kept coupling edge.
+   */
+  topNCouplings?: number;
+  /** Which end of the strength ranking topNCouplings keeps. Defaults to "strongest". */
+  topNDirection?: "strongest" | "weakest";
 }
 
-type EffectiveForce = SnapshotForce & { key: string };
+export type EffectiveForce = SnapshotForce & { key: string };
 
-function effectiveState(state: PendingState): {
+/** Pending state flattened to its effective components, attractors and forces (shared by every landscape view). */
+export function effectiveState(state: PendingState): {
   components: SnapshotComponent[];
   attractors: SnapshotAttractor[];
   forces: EffectiveForce[];
@@ -80,53 +91,74 @@ function pairKey(left: string, right: string): string {
   return [left, right].sort().join("\u0000");
 }
 
-function edgeMetrics(count: number): Pick<NkpGraphEdge, "width" | "distance" | "strength"> {
-  return {
-    width: 1 + count * 0.5,
-    distance: Math.max(90, 200 - count * 14),
-    strength: Math.min(0.28, 0.03 + count * 0.025),
-  };
+function edgeMetrics(count: number): Pick<NkpGraphEdge, "width"> {
+  return { width: 1 + count * 0.5 };
 }
 
-const LATTICE_SPACING = 78;
-const LATTICE_ROW_HEIGHT = LATTICE_SPACING * (Math.sqrt(3) / 2);
-
-function nearestHexLatticePoint(x: number, y: number, centerX: number, centerY: number): { x: number; y: number } {
-  const localX = x - centerX;
-  const localY = y - centerY;
-  const row = Math.round(localY / LATTICE_ROW_HEIGHT);
-  const offset = row % 2 === 0 ? 0 : LATTICE_SPACING / 2;
-  const col = Math.round((localX - offset) / LATTICE_SPACING);
-  return {
-    x: centerX + col * LATTICE_SPACING + offset,
-    y: centerY + row * LATTICE_ROW_HEIGHT,
-  };
-}
-
-function createHexLatticeForce(centerX: number, centerY: number, strength = 0.24) {
-  let nodes: SimulationNode[] = [];
-  const force = (alpha: number): void => {
-    for (const node of nodes) {
-      if (node.fx != null || node.fy != null) continue;
-      const x = node.x ?? 0;
-      const y = node.y ?? 0;
-      const target = nearestHexLatticePoint(x, y, centerX, centerY);
-      const pull = strength * alpha;
-      node.vx = (node.vx ?? 0) + (target.x - x) * pull;
-      node.vy = (node.vy ?? 0) + (target.y - y) * pull;
-    }
-  };
-  force.initialize = (next: SimulationNode[]): void => {
-    nodes = next;
-  };
-  return force;
-}
-
-function forceLabel(force: EffectiveForce): string {
+export function forceLabel(force: EffectiveForce): string {
   return force.shortname || force.description || force.key;
 }
 
-/** Builds the DOM-independent data consumed by the live NKP graph renderer. */
+function applyMinCouplingStrength(edges: NkpGraphEdge[], minCouplingStrength: number): NkpGraphEdge[] {
+  return edges.filter((edge) => edge.type === "attractor" || edge.count >= minCouplingStrength);
+}
+
+/**
+ * Keeps only coupling edges within the top (or bottom) `topN` distinct
+ * shared-residue-count tiers. Tied counts share a tier, so a tie at the
+ * cutoff keeps every edge in that tier ("friendly tie"). Fusion and
+ * attractor edges are untouched here.
+ */
+function applyTopNCouplings(
+  edges: NkpGraphEdge[],
+  topN: number | undefined,
+  direction: "strongest" | "weakest",
+): NkpGraphEdge[] {
+  if (topN === undefined) return edges;
+  const tiers = [...new Set(edges.filter((edge) => edge.type === "coupling").map((edge) => edge.count))];
+  tiers.sort((left, right) => (direction === "weakest" ? left - right : right - left));
+  const keptTiers = new Set(tiers.slice(0, Math.max(0, topN)));
+  return edges.filter((edge) => edge.type !== "coupling" || keptTiers.has(edge.count));
+}
+
+/**
+ * Prunes attractor nodes/edges to those still reachable through a surviving
+ * coupling edge, once topNCouplings is active. A no-op when topNCouplings is
+ * unset, so it never changes behavior for the existing filters.
+ */
+function applyAttractorRelevance(
+  nodes: NkpGraphNode[],
+  edges: NkpGraphEdge[],
+  topNCouplings: number | undefined,
+): { nodes: NkpGraphNode[]; edges: NkpGraphEdge[] } {
+  if (topNCouplings === undefined) return { nodes, edges };
+  const couplingComponentIds = new Set<string>();
+  for (const edge of edges) {
+    if (edge.type !== "coupling") continue;
+    couplingComponentIds.add(edge.source);
+    couplingComponentIds.add(edge.target);
+  }
+  const relevantEdges = edges.filter((edge) => edge.type !== "attractor" || couplingComponentIds.has(edge.target));
+  const relevantAttractorIds = new Set(
+    relevantEdges.filter((edge) => edge.type === "attractor").map((edge) => edge.source),
+  );
+  return {
+    nodes: nodes.filter((item) => item.type !== "attractor" || relevantAttractorIds.has(item.id)),
+    edges: relevantEdges,
+  };
+}
+
+/** Drops component nodes with no surviving edge of any kind — nothing links them, so they'd just float. */
+function dropUnlinkedComponents(nodes: NkpGraphNode[], edges: NkpGraphEdge[]): NkpGraphNode[] {
+  const linkedIds = new Set<string>();
+  for (const edge of edges) {
+    linkedIds.add(edge.source);
+    linkedIds.add(edge.target);
+  }
+  return nodes.filter((item) => item.type !== "component" || linkedIds.has(item.id));
+}
+
+/** Builds the DOM-independent coupling graph that the landscape views draw from. */
 export function buildNkpGraphModel(state: PendingState, options: NkpGraphOptions = {}): NkpGraphModel {
   const { components, attractors, forces } = effectiveState(state);
   const visible = options.visibleForceIds;
@@ -231,8 +263,8 @@ export function buildNkpGraphModel(state: PendingState, options: NkpGraphOptions
         const stressors = vectorForces.map(forceLabel);
         const focused =
           vectorForces.some(isVisibleForce) &&
-          isVisibleComponent(names[left]) &&
-          isVisibleComponent(names[right]);
+          isVisibleComponent(names[left] ?? "") &&
+          isVisibleComponent(names[right] ?? "");
         edges.push({
           id: `fusion:${pairKey(source, target)}`,
           source,
@@ -273,183 +305,52 @@ export function buildNkpGraphModel(state: PendingState, options: NkpGraphOptions
     }
   }
 
+  const minCouplingStrength = options.minCouplingStrength ?? DEFAULT_MIN_COUPLING_STRENGTH;
+  const strengthFiltered = applyMinCouplingStrength(edges, minCouplingStrength);
+  const topNFiltered = applyTopNCouplings(strengthFiltered, options.topNCouplings, options.topNDirection ?? "strongest");
+  const { nodes: relevantNodes, edges: visibleEdges } = applyAttractorRelevance(
+    nodes,
+    topNFiltered,
+    options.topNCouplings,
+  );
+
   if (options.hideFiltered) {
     const visibleNodeIds = new Set(
-      nodes.filter((item) => item.type === "attractor" || item.focused).map((item) => item.id),
+      relevantNodes.filter((item) => item.type === "attractor" || item.focused).map((item) => item.id),
     );
+    const finalNodes = relevantNodes.filter((item) => visibleNodeIds.has(item.id));
+    const finalEdges = visibleEdges.filter((item) => item.focused);
     return {
-      nodes: nodes.filter((item) => visibleNodeIds.has(item.id)),
-      edges: edges.filter((item) => item.focused),
-      simulation: { enabled: true, forces: ["link", "charge", "center", "collision", "lattice"] },
+      nodes: dropUnlinkedComponents(finalNodes, finalEdges),
+      edges: finalEdges,
     };
   }
 
   return {
-    nodes,
-    edges,
-    simulation: { enabled: true, forces: ["link", "charge", "center", "collision", "lattice"] },
+    nodes: dropUnlinkedComponents(relevantNodes, visibleEdges),
+    edges: visibleEdges,
   };
 }
 
-interface SimulationNode extends NkpGraphNode {
-  x?: number;
-  y?: number;
-  fx?: number | null;
-  fy?: number | null;
+const GOLDEN_ANGLE = 137.508;
+
+/**
+ * Categorical colour for the attractor at `index`. Hues step by the golden
+ * angle so any count stays spread around the wheel; lightness alternates so
+ * neighbouring slots differ in value as well as hue.
+ */
+export function attractorColor(index: number): string {
+  const hue = Math.round((index * GOLDEN_ANGLE + 20) % 360);
+  const lightness = index % 2 === 0 ? 60 : 70;
+  return `hsl(${hue} 62% ${lightness}%)`;
 }
 
-export interface NkpGraphHandle {
-  sync: () => void;
-  destroy: () => void;
-}
-
-function visibleMatrixState(container: HTMLElement): {
-  forceIds: Set<string>;
-  componentNames: Set<string>;
-  fissionThreshold: number;
-  hideFiltered: boolean;
-} {
-  const forceIds = new Set(
-    Array.from(container.querySelectorAll<HTMLTableRowElement>("table.matrix tbody tr.force-row"))
-      .filter((row) => !row.hidden)
-      .map((row) => row.getAttribute("data-force-id"))
-      .filter((id): id is string => id !== null),
-  );
-  const componentNames = new Set(
-    Array.from(container.querySelectorAll<HTMLElement>("table.matrix thead [data-component]"))
-      .filter((element) => !element.hidden)
-      .map((element) => element.getAttribute("data-component"))
-      .filter((name): name is string => name !== null),
-  );
-  const threshold = container.querySelector<HTMLInputElement>("[data-threshold-input]");
-  const hideFilteredToggle = container.querySelector<HTMLInputElement>("[data-hide-filtered-graph-toggle]");
-  return {
-    forceIds,
-    componentNames,
-    fissionThreshold: Number(threshold?.value ?? 1),
-    hideFiltered: hideFilteredToggle?.checked ?? true,
-  };
-}
-
-/** Mounts the read-only, force-directed view of the current pending landscape. */
-export function mountNkpGraph(
-  container: HTMLElement,
-  getState: () => PendingState,
-  d3: any,
-): NkpGraphHandle {
-  const host = container.querySelector<HTMLElement>("[data-nkp-graph]");
-  let simulation: { stop: () => void } | undefined;
-
-  const sync = (): void => {
-    if (!host) return;
-    simulation?.stop();
-    host.replaceChildren();
-
-    const { forceIds, componentNames, fissionThreshold, hideFiltered } = visibleMatrixState(container);
-    const model = buildNkpGraphModel(getState(), {
-      visibleForceIds: forceIds,
-      visibleComponentNames: componentNames,
-      fissionThreshold,
-      hideFiltered,
-    });
-    if (model.nodes.length === 0) {
-      const empty = document.createElement("p");
-      empty.className = "nkp-graph-empty";
-      empty.textContent = "No components or attractors to graph.";
-      host.appendChild(empty);
-      return;
-    }
-
-    const width = Math.max(host.clientWidth || 0, 640);
-    const height = Math.max(360, Math.min(620, Math.round(width * 0.58)));
-    const svg = d3.select(host).append("svg")
-      .attr("class", "nkp-graph-svg")
-      .attr("viewBox", `0 0 ${width} ${height}`)
-      .attr("role", "img")
-      .attr("aria-label", "Live NKP component coupling graph");
-
-    const nodes: SimulationNode[] = model.nodes.map((node) => ({ ...node }));
-    const links = model.edges.map((edge) => ({ ...edge }));
-    const link = svg.append("g").attr("class", "nkp-graph-edges")
-      .selectAll("line").data(links).join("line")
-      .attr("class", (edge: NkpGraphEdge) => `nkp-edge nkp-edge-${edge.type}`)
-      .attr("stroke-width", (edge: NkpGraphEdge) => edge.width)
-      .attr("stroke-opacity", (edge: NkpGraphEdge) => edge.opacity)
-      .attr("stroke-dasharray", (edge: NkpGraphEdge) => edge.lineStyle === "dotted" ? "3 5" : null);
-    link.append("title").text((edge: NkpGraphEdge) => edge.tooltip);
-
-    const node = svg.append("g").attr("class", "nkp-graph-nodes")
-      .selectAll("g").data(nodes).join("g")
-      .attr("class", (item: SimulationNode) => `nkp-node nkp-node-${item.type}`)
-      .attr("opacity", (item: SimulationNode) => item.opacity);
-
-    node.filter((item: SimulationNode) => Boolean(item.fissionCandidate)).append("circle")
-      .attr("class", "nkp-fission-ring").attr("r", 18).attr("fill", "none")
-      .attr("stroke-dasharray", "3 4");
-    node.append("circle")
-      .attr("class", (item: SimulationNode) => `nkp-node-dot ${item.status ? `status-${item.status}` : ""}`)
-      .attr("r", (item: SimulationNode) => item.type === "attractor" ? 7 : 10);
-    node.append("text")
-      .attr("class", "nkp-node-label").attr("x", 0)
-      .attr("y", (item: SimulationNode) => item.fissionCandidate ? -22 : -15)
-      .attr("text-anchor", "middle")
-      .attr("opacity", (item: SimulationNode) => item.labelVisible ? 1 : 0)
-      .text((item: SimulationNode) => item.label);
-    node.append("title").text((item: SimulationNode) => item.tooltip);
-    node.on("mouseenter", function (this: SVGGElement, _event: unknown, item: SimulationNode) {
-      if (item.revealLabelOnHover) d3.select(this).select(".nkp-node-label").attr("opacity", 1);
-    }).on("mouseleave", function (this: SVGGElement, _event: unknown, item: SimulationNode) {
-      if (item.revealLabelOnHover) d3.select(this).select(".nkp-node-label").attr("opacity", 0);
-    });
-
-    const centerX = width / 2;
-    const centerY = height / 2;
-    const sim = d3.forceSimulation(nodes)
-      .force("link", d3.forceLink(links).id((item: SimulationNode) => item.id)
-        .distance((edge: NkpGraphEdge) => edge.distance)
-        .strength((edge: NkpGraphEdge) => edge.strength))
-      .force("charge", d3.forceManyBody().strength(-360))
-      .force("center", d3.forceCenter(centerX, centerY))
-      .force("collision", d3.forceCollide().radius((item: SimulationNode) => item.type === "attractor" ? 34 : 46))
-      .force("lattice", createHexLatticeForce(centerX, centerY));
-    simulation = sim;
-    node.call(d3.drag()
-      .on("start", (event: { active: boolean }, item: SimulationNode) => {
-        if (!event.active) sim.alphaTarget(0.3).restart();
-        item.fx = item.x; item.fy = item.y;
-      })
-      .on("drag", (event: { x: number; y: number }, item: SimulationNode) => {
-        item.fx = event.x; item.fy = event.y;
-      })
-      .on("end", (event: { active: boolean }, item: SimulationNode) => {
-        if (!event.active) sim.alphaTarget(0);
-        item.fx = null; item.fy = null;
-      }));
-    sim.on("tick", () => {
-      link.attr("x1", (edge: { source: SimulationNode }) => edge.source.x ?? 0)
-        .attr("y1", (edge: { source: SimulationNode }) => edge.source.y ?? 0)
-        .attr("x2", (edge: { target: SimulationNode }) => edge.target.x ?? 0)
-        .attr("y2", (edge: { target: SimulationNode }) => edge.target.y ?? 0);
-      node.attr("transform", (item: SimulationNode) => `translate(${item.x ?? 0},${item.y ?? 0})`);
-    });
-  };
-
-  const syncAfterControl = (event: Event): void => {
-    const target = event.target;
-    if (target instanceof Element && target.closest(
-      "[data-force-filter], [data-show-proposed-toggle], [data-show-unrelated-toggle], [data-threshold-input], [data-fusion-fission-filter], [data-hide-filtered-graph-toggle]",
-    )) queueMicrotask(sync);
-  };
-  container.addEventListener("input", syncAfterControl);
-  container.addEventListener("change", syncAfterControl);
-  sync();
-  return {
-    sync,
-    destroy: () => {
-      simulation?.stop();
-      container.removeEventListener("input", syncAfterControl);
-      container.removeEventListener("change", syncAfterControl);
-      host?.replaceChildren();
-    },
-  };
+/**
+ * One colour per attractor, keyed by attractor id and assigned in id order,
+ * so every landscape view paints the same attractor the same colour.
+ */
+export function attractorColors(state: PendingState): Map<string, string> {
+  const { attractors, forces } = effectiveState(state);
+  const ids = [...new Set([...attractors.map((attractor) => attractor.id), ...forces.map((force) => force.attractorId)])].sort();
+  return new Map(ids.map((id, index) => [id, attractorColor(index)]));
 }

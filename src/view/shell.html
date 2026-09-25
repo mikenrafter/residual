@@ -19,6 +19,7 @@
         --sans: "IBM Plex Sans", "Source Sans 3", "Segoe UI", sans-serif;
       }
       * { box-sizing: border-box; }
+      html { background: var(--bg); }
       body {
         margin: 0;
         background: radial-gradient(1200px 600px at 10% -10%, #1c2230 0%, var(--bg) 55%);
@@ -83,45 +84,166 @@
         padding: 1rem 1.1rem 1.15rem;
         min-width: 0;
       }
-      section[data-view="matrix"] {
-        /* Break out of main's horizontal padding so calc(100vw - 4em) on
-           .matrix-scroll below measures from the real viewport edge, not
-           from inside an already-padded ancestor (which caused page-level
-           horizontal scroll — the padding chain ate into the 4em budget). */
-        margin-left: -1.5rem;
-        margin-right: -1.5rem;
-        padding: 1rem 2em 1.15rem;
-        border-left: none;
-        border-right: none;
+      /* The three top-level areas (NKP matrix, landscape, modify) are
+         collapsible cards, closed on load. */
+      details.card {
+        background: color-mix(in srgb, var(--surface) 92%, black);
+        border: 1px solid var(--line);
+        min-width: 0;
       }
-      section[data-view="nkp-graph"] { min-height: 26rem; }
-      .nkp-graph { width: 100%; min-height: 22rem; overflow: hidden; }
-      .nkp-graph-svg { display: block; width: 100%; min-height: 22rem; }
-      .nkp-edge { stroke: var(--line); }
-      .nkp-edge-coupling { stroke: var(--coupled); }
-      .nkp-edge-fusion { stroke: var(--warn); }
-      .nkp-edge-attractor { stroke: var(--muted); }
+      details.card > summary {
+        display: flex;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 0.35rem 0.9rem;
+        padding: 0.85rem 1.1rem;
+        cursor: pointer;
+        list-style: none;
+        user-select: none;
+      }
+      details.card > summary::-webkit-details-marker { display: none; }
+      details.card > summary::before {
+        content: "▸";
+        color: var(--muted);
+        font: 0.8rem var(--mono);
+        transition: transform 120ms;
+      }
+      details.card[open] > summary::before { transform: rotate(90deg); }
+      details.card > summary:hover h2 { color: var(--ink); }
+      details.card > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+      details.card > summary h2 { margin: 0; }
+      .card-hint { color: var(--muted); font-size: 0.85rem; }
+      .card-body {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        padding: 0 1.1rem 1.15rem;
+        min-width: 0;
+      }
+      .card-body > section { background: none; border: none; padding: 0; }
+      .card-body h3 {
+        margin: 0 0 0.6rem;
+        font: 600 0.72rem/1.2 var(--mono);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      /* Landscape card: view switcher, per-view controls, and a viewport
+         that fits the screen and never scrolls; views zoom instead. */
+      .landscape-controls {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.6rem 1.1rem;
+        font: 12.5px/1.4 var(--sans);
+        color: var(--muted);
+      }
+      .landscape-controls label { display: inline-flex; align-items: center; gap: 0.4rem; margin: 0; white-space: nowrap; }
+      .landscape-controls [hidden] { display: none; }
+      .landscape-controls input[type="checkbox"] { width: auto; margin: 0; }
+      .landscape-controls input[type="range"] { width: 7rem; margin: 0; }
+      .landscape-controls select { width: auto; max-width: 14rem; margin: 0; padding: 0.3rem 0.45rem; }
+      .landscape-controls output { color: var(--ink); font: 600 0.75rem var(--mono); min-width: 1.6rem; }
+      .landscape-tabs { display: inline-flex; border: 1px solid var(--line); }
+      .landscape-tabs label { position: relative; padding: 0.35rem 0.75rem; cursor: pointer; font: 600 0.72rem/1 var(--mono); letter-spacing: 0.05em; text-transform: uppercase; }
+      .landscape-tabs label + label { border-left: 1px solid var(--line); }
+      .landscape-tabs input { position: absolute; opacity: 0; pointer-events: none; }
+      .landscape-tabs label:has(input:checked) { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--ink); }
+      .landscape-tabs label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
+      .landscape-hint { font-size: 11.5px; color: var(--muted); margin-left: auto; }
+      .landscape-viewport {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        /* Refit in nkp-landscape.ts from the real toolbar and control heights. */
+        height: calc(100dvh - 16rem);
+        min-height: 20rem;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        background: var(--bg);
+      }
+      .landscape-svg { display: block; flex: 1 1 auto; min-height: 0; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+      .landscape-svg:active { cursor: grabbing; }
+      .landscape-empty { margin: auto; padding: 1rem; color: var(--muted); text-align: center; }
+      .landscape-legend { display: flex; flex-wrap: wrap; gap: 0.25rem 0.8rem; padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--line); font: 11px/1.35 var(--sans); color: var(--muted); }
+      .landscape-legend-title { font-weight: 600; }
+      .landscape-legend-item { display: inline-flex; align-items: center; gap: 0.3rem; color: var(--ink); }
+      .landscape-legend-item i { display: inline-block; width: 0.65rem; height: 0.65rem; border-radius: 2px; }
+      .landscape-legend-warn { color: var(--warn); }
+      .landscape-tip {
+        position: absolute; z-index: 5; max-width: min(26rem, 90%); pointer-events: none;
+        padding: 0.45rem 0.6rem; border: 1px solid var(--line); border-radius: 6px;
+        background: var(--surface); color: var(--ink); font: 12px/1.4 var(--sans);
+        box-shadow: 0 6px 20px color-mix(in srgb, var(--bg) 70%, transparent);
+      }
+      .landscape-tip[hidden] { display: none; }
+      .landscape-tip strong { display: block; }
+      .landscape-tip .muted { color: var(--muted); }
+      .landscape-tip ul { margin: 0.35rem 0 0; padding-left: 1rem; }
+
+      /* bundle view (web/src/nkp-bundle.ts) */
+      .nkp-bundle-edge { fill: none; stroke: var(--muted); transition: stroke-opacity 120ms; }
+      .nkp-bundle-edge.fusion { stroke: var(--warn); stroke-dasharray: 3 3; }
+      .nkp-bundle-svg.hovering .nkp-bundle-edge { stroke-opacity: 0.04 !important; }
+      .nkp-bundle-svg.hovering .nkp-bundle-edge.hl-a { stroke: var(--accent); stroke-opacity: 0.95 !important; }
+      .nkp-bundle-svg.hovering .nkp-bundle-edge.hl-b { stroke: var(--coupled); stroke-opacity: 0.85 !important; }
+      .nkp-bundle-dot { fill: var(--accent); }
+      .nkp-bundle-dot.status-proposed { fill: var(--coupled); }
+      .nkp-bundle-label { fill: var(--ink); font: 11px var(--mono); }
+      .nkp-bundle-leaf { cursor: pointer; }
+      .nkp-bundle-leaf.unfocused { opacity: 0.45; }
+      .nkp-bundle-leaf.fission .nkp-bundle-label { fill: var(--warn); }
+      .nkp-bundle-svg.hovering .nkp-bundle-leaf { opacity: 0.3; }
+      .nkp-bundle-svg.hovering .nkp-bundle-leaf.hl { opacity: 1; }
+      .nkp-bundle-band { opacity: 0.85; }
+      .nkp-bundle-guide { opacity: 0.45; }
+      .nkp-bundle-hit { fill: transparent; cursor: pointer; }
+      .nkp-bundle-group-label { font: 600 10.5px var(--mono); letter-spacing: 0.02em; pointer-events: none; }
+      .nkp-bundle-svg.hovering .nkp-bundle-group:not(.hl) { opacity: 0.35; }
+
+      /* heatmap view (web/src/nkp-seriation.ts) */
+      .nkp-seriation-frame { fill: none; stroke: var(--line); }
+      .nkp-seriation-heat { fill: var(--coupled); }
+      .nkp-seriation-heat.is-faded { fill: var(--muted); }
+      .nkp-seriation-diag { fill: var(--accent); }
+      .nkp-seriation-count { fill: var(--ink); font: 9px var(--mono); text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+      .nkp-seriation-count-strong { fill: var(--bg); font-weight: 600; }
+      .nkp-seriation-band { fill: var(--accent); fill-opacity: 0.08; stroke: var(--accent); stroke-width: 1px; pointer-events: none; }
+      .nkp-seriation-header { cursor: pointer; }
+      .nkp-seriation-hit { fill: transparent; }
+      .nkp-seriation-label { fill: var(--muted); font: 10.5px var(--mono); dominant-baseline: central; }
+      .nkp-seriation-label.is-proposed { font-style: italic; }
+      .nkp-seriation-label.is-fission { fill: var(--warn); }
+      .nkp-seriation-label.is-faded { opacity: 0.5; }
+      .nkp-seriation-header.is-active .nkp-seriation-label { fill: var(--ink); font-weight: 600; }
+
+      /* regions view (web/src/nkp-hypergraph.ts) */
       .nkp-node { cursor: grab; }
       .nkp-node:active { cursor: grabbing; }
       .nkp-node-dot { fill: var(--accent); stroke: var(--bg); stroke-width: 2px; }
       .nkp-node-dot.status-proposed { fill: var(--coupled); }
-      .nkp-node-attractor .nkp-node-dot { fill: var(--muted); }
       .nkp-fission-ring { stroke: var(--warn); stroke-width: 1.5px; }
-      .nkp-node-label { fill: var(--ink); font: 11px var(--mono); pointer-events: none; }
-      .nkp-graph-empty { color: var(--muted); }
-      .nkp-graph-controls {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.75rem 1rem;
-        margin: -0.35rem 0 0.75rem;
-        font: 12.5px/1.4 var(--sans);
-        color: var(--muted);
-      }
-      .nkp-graph-controls input[type="checkbox"] { width: auto; margin: 0; }
+      .nkp-node-label { fill: var(--ink); font: 11px var(--mono); pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
+      .nkp-hyper-edge { stroke-width: 1.2px; }
+      .nkp-hyper-force-dot { stroke: var(--bg); stroke-width: 1px; }
+      .nkp-hyper-force-label { font-size: 10.5px; }
+      .nkp-hyper-region-label { font: 600 11px var(--mono); pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
+      .nkp-hyper-region, .nkp-hyper-edge, .nkp-hyper-node, .nkp-hyper-region-label { transition: opacity 120ms; }
+      .nkp-hyper.names-hidden .nkp-hyper-region-label { opacity: 0 !important; }
+      .nkp-hyper-hovering .nkp-hyper-node:not(.is-lit) { opacity: 0.12; }
+      .nkp-hyper-hovering .nkp-hyper-edge:not(.is-lit) { stroke-opacity: 0.04; }
+      .nkp-hyper-hovering .nkp-hyper-edge.is-lit { stroke-opacity: 0.9; stroke-width: 2px; }
+      .nkp-hyper-hovering .nkp-hyper-region:not(.is-lit) { opacity: 0.03; }
+      .nkp-hyper-hovering .nkp-hyper-region.is-lit { opacity: 0.28; }
+      .nkp-hyper-hovering .nkp-hyper-region-label:not(.is-lit) { opacity: 0.1; }
+      .nkp-hyper-hovering .nkp-hyper-region-label.is-lit { opacity: 1 !important; }
+
       @media (max-width: 700px) {
-        section[data-view="nkp-graph"] { padding-inline: 0.5rem; }
-        .nkp-graph { min-height: 18rem; overflow-x: auto; }
-        .nkp-graph-svg { min-width: 40rem; min-height: 18rem; }
+        main { padding-inline: 0.6rem; }
+        details.card > summary { padding-inline: 0.75rem; }
+        .card-body { padding-inline: 0.6rem; }
+        .landscape-hint { display: none; }
       }
       section h2 {
         margin: 0 0 0.75rem;
@@ -152,9 +274,6 @@
         margin: 0.35rem 0 0.2rem;
       }
       .matrix-scroll {
-        /* section[data-view="matrix"] already breaks out to the viewport
-           edge with 2em of padding each side, so 100% here *is* the
-           calc(100vw - 4em) the table should occupy. */
         width: 100%;
         height: calc(100vh - 5em);
         max-width: 100%;
@@ -404,115 +523,147 @@
       </label>
     </div>
     <main>
-      <section data-view="matrix">
-        <h2>Residue matrix</h2>
-        <div class="matrix-scroll">{{MATRIX}}</div>
-      </section>
-
-      <section data-view="nkp-graph">
-        <h2>Live NKP graph</h2>
-        <div class="nkp-graph-controls">
-          <label><input type="checkbox" data-hide-filtered-graph-toggle checked /> hide filtered items</label>
+      <details class="card" data-view="matrix">
+        <summary><h2>NKP matrix</h2><span class="card-hint">forces × components residue ledger; edit couplings in place</span></summary>
+        <div class="card-body">
+          <div class="matrix-scroll">{{MATRIX}}</div>
         </div>
-        <div class="nkp-graph" data-nkp-graph></div>
-      </section>
+      </details>
+
+      <details class="card" data-view="landscape">
+        <summary><h2>Landscape</h2><span class="card-hint">how components couple, and which attractors pull on them</span></summary>
+        <div class="card-body">
+          <div class="landscape-controls">
+            <div class="landscape-tabs" role="radiogroup" aria-label="Landscape view">
+              <label title="Components on a ring grouped by attractor; shared forces drawn as bundled edges"><input type="radio" name="landscape-view" value="bundle" data-landscape-view-input checked /> bundle</label>
+              <label title="Component × component grid, ordered so tightly coupled components sit together"><input type="radio" name="landscape-view" value="heatmap" data-landscape-view-input /> heatmap</label>
+              <label title="Each force linked to the components it touches, inside its attractor's region"><input type="radio" name="landscape-view" value="regions" data-landscape-view-input /> regions</label>
+            </div>
+            <label><input type="checkbox" data-hide-filtered-graph-toggle checked /> hide filtered</label>
+            <label data-landscape-for="bundle heatmap">min shared forces
+              <input type="range" data-min-coupling-strength-input min="1" max="2" value="2" />
+              <output data-min-coupling-strength-value>2</output>
+            </label>
+            <label data-landscape-for="bundle">show <span data-top-n-direction-label>strongest</span>
+              <input type="range" data-top-n-couplings-input min="1" max="1" value="1" />
+              <output data-top-n-couplings-value>all</output> tiers
+            </label>
+            <label data-landscape-for="bundle"><input type="checkbox" data-top-n-weakest-toggle /> weakest first</label>
+            <label data-landscape-for="bundle">bundling
+              <input type="range" data-bundle-tension-input min="0" max="100" value="85" />
+            </label>
+            <label data-landscape-for="heatmap" hidden><input type="checkbox" data-heatmap-counts-toggle checked /> show counts</label>
+            <label data-landscape-for="regions" hidden>focus
+              <select data-regions-focus><option value="">all components</option></select>
+            </label>
+            <label data-landscape-for="regions" hidden><input type="checkbox" data-regions-names-toggle /> attractor names</label>
+            <span class="landscape-hint">pinch or ctrl+scroll to zoom · drag to pan · double-click to reset</span>
+          </div>
+          <div class="landscape-viewport" data-landscape></div>
+        </div>
+      </details>
 
       {{DEFENSE_RECORDS}}
 
-      <section>
-        <h2>Stage adds</h2>
-        <div class="generators">
-          <form data-command-generator="stressor">
-            <fieldset>
-              <legend>stressor</legend>
-              <label>description</label>
-              <input name="description" type="text" required />
-              <label>attractor-shortname</label>
-              <input name="attractor_shortname" type="text" required />
-              <label>naive-change</label>
-              <input name="naive_change" type="text" required />
-              <label>shortname</label>
-              <input name="shortname" type="text" required />
-              <label>outcomes</label>
-              <input name="outcomes" type="text" />
-              <button type="submit">stage</button>
-            </fieldset>
-          </form>
-          <form data-command-generator="purpose">
-            <fieldset>
-              <legend>purpose</legend>
-              <label>description</label>
-              <input name="description" type="text" required />
-              <label>attractor-shortname</label>
-              <input name="attractor_shortname" type="text" required />
-              <label>naive-change</label>
-              <input name="naive_change" type="text" required />
-              <label>shortname</label>
-              <input name="shortname" type="text" required />
-              <label>outcomes</label>
-              <input name="outcomes" type="text" />
-              <button type="submit">stage</button>
-            </fieldset>
-          </form>
-          <form data-command-generator="attractor">
-            <fieldset>
-              <legend>attractor</legend>
-              <label>name</label>
-              <input name="name" type="text" required />
-              <label>description</label>
-              <input name="description" type="text" required />
-              <label>positive-state</label>
-              <input name="positive_state" type="text" required />
-              <label>negative-state</label>
-              <input name="negative_state" type="text" required />
-              <button type="submit">stage</button>
-            </fieldset>
-          </form>
-          <form data-command-generator="component">
-            <fieldset>
-              <legend>component</legend>
-              <label>name</label>
-              <input name="name" type="text" required />
-              <label>description</label>
-              <input name="description" type="text" required />
-              <label>status</label>
-              <input name="status" type="text" required />
-              <label>architecture-set</label>
-              <input name="architecture_set" type="text" required />
-              <button type="submit">stage</button>
-            </fieldset>
-          </form>
-          <p data-component-form-error></p>
-          {{DEFENSE_FORMS}}
-        </div>
-      </section>
+      <details class="card" data-view="modify">
+        <summary><h2>Modify</h2><span class="card-hint">stage residual commands, copy or import them</span></summary>
+        <div class="card-body">
+          <section>
+            <h3>Stage adds</h3>
+            <div class="generators">
+              <form data-command-generator="stressor">
+                <fieldset>
+                  <legend>stressor</legend>
+                  <label>description</label>
+                  <input name="description" type="text" required />
+                  <label>attractor-shortname</label>
+                  <input name="attractor_shortname" type="text" required />
+                  <label>naive-change</label>
+                  <input name="naive_change" type="text" required />
+                  <label>shortname</label>
+                  <input name="shortname" type="text" required />
+                  <label>outcomes</label>
+                  <input name="outcomes" type="text" />
+                  <button type="submit">stage</button>
+                </fieldset>
+              </form>
+              <form data-command-generator="purpose">
+                <fieldset>
+                  <legend>purpose</legend>
+                  <label>description</label>
+                  <input name="description" type="text" required />
+                  <label>attractor-shortname</label>
+                  <input name="attractor_shortname" type="text" required />
+                  <label>naive-change</label>
+                  <input name="naive_change" type="text" required />
+                  <label>shortname</label>
+                  <input name="shortname" type="text" required />
+                  <label>outcomes</label>
+                  <input name="outcomes" type="text" />
+                  <button type="submit">stage</button>
+                </fieldset>
+              </form>
+              <form data-command-generator="attractor">
+                <fieldset>
+                  <legend>attractor</legend>
+                  <label>name</label>
+                  <input name="name" type="text" required />
+                  <label>description</label>
+                  <input name="description" type="text" required />
+                  <label>positive-state</label>
+                  <input name="positive_state" type="text" required />
+                  <label>negative-state</label>
+                  <input name="negative_state" type="text" required />
+                  <button type="submit">stage</button>
+                </fieldset>
+              </form>
+              <form data-command-generator="component">
+                <fieldset>
+                  <legend>component</legend>
+                  <label>name</label>
+                  <input name="name" type="text" required />
+                  <label>description</label>
+                  <input name="description" type="text" required />
+                  <label>status</label>
+                  <input name="status" type="text" required />
+                  <label>architecture-set</label>
+                  <input name="architecture_set" type="text" required />
+                  <button type="submit">stage</button>
+                </fieldset>
+              </form>
+              <p data-component-form-error></p>
+              {{DEFENSE_FORMS}}
+            </div>
+          </section>
 
-      <section data-copy-commands>
-        <h2>Copy commands</h2>
-        <div class="copy-bar">
-          <button type="button" id="copy-staged">copy</button>
-          <button type="button" id="clear-staged">clear</button>
-          <button type="button" data-generate-script>generate bash script</button>
-          <button type="button" data-import-trigger>import</button>
-        </div>
-        <textarea id="staged-commands" readonly placeholder="staged residual add … commands appear here"></textarea>
-      </section>
+          <section data-copy-commands>
+            <h3>Copy commands</h3>
+            <div class="copy-bar">
+              <button type="button" id="copy-staged">copy</button>
+              <button type="button" id="clear-staged">clear</button>
+              <button type="button" data-generate-script>generate bash script</button>
+              <button type="button" data-import-trigger>import</button>
+            </div>
+            <textarea id="staged-commands" readonly placeholder="staged residual add … commands appear here"></textarea>
+          </section>
 
-      <div class="import-modal" data-import-modal hidden>
-        <h2>Import staged commands</h2>
-        <p class="import-modal-hint">
-          Paste <code>residual add …</code> / <code>residual update …</code> lines below.
-        </p>
-        <label>commands</label>
-        <textarea data-import-primary placeholder="residual add stressor --description …"></textarea>
-        <label>lines that failed to parse</label>
-        <textarea data-import-errors readonly placeholder="unparsed lines appear here"></textarea>
-        <ul data-import-error-list class="import-error-list"></ul>
-        <div class="copy-bar">
-          <button type="button" data-import-run>import</button>
-          <button type="button" data-import-retry>retry</button>
+          <div class="import-modal" data-import-modal hidden>
+            <h3>Import staged commands</h3>
+            <p class="import-modal-hint">
+              Paste <code>residual add …</code> / <code>residual update …</code> lines below.
+            </p>
+            <label>commands</label>
+            <textarea data-import-primary placeholder="residual add stressor --description …"></textarea>
+            <label>lines that failed to parse</label>
+            <textarea data-import-errors readonly placeholder="unparsed lines appear here"></textarea>
+            <ul data-import-error-list class="import-error-list"></ul>
+            <div class="copy-bar">
+              <button type="button" data-import-run>import</button>
+              <button type="button" data-import-retry>retry</button>
+            </div>
+          </div>
         </div>
-      </div>
+      </details>
     </main>
 
     <script id="residual-snapshot" type="application/json">{{SNAPSHOT_JSON}}</script>

@@ -14,6 +14,9 @@ type GraphModule = {
       visibleComponentNames?: ReadonlySet<string>;
       fissionThreshold?: number;
       hideFiltered?: boolean;
+      minCouplingStrength?: number;
+      topNCouplings?: number;
+      topNDirection?: "strongest" | "weakest";
     },
   ) => GraphModel;
 };
@@ -41,8 +44,6 @@ interface GraphEdge {
   stressors: string[];
   tooltip: string;
   width: number;
-  distance: number;
-  strength: number;
   lineStyle: "solid" | "dotted";
   focused: boolean;
   opacity: number;
@@ -51,10 +52,6 @@ interface GraphEdge {
 interface GraphModel {
   nodes: GraphNode[];
   edges: GraphEdge[];
-  simulation: {
-    enabled: boolean;
-    forces: string[];
-  };
 }
 
 let graphModule: GraphModule = {};
@@ -161,6 +158,9 @@ function build(
     visibleComponentNames?: ReadonlySet<string>;
     fissionThreshold?: number;
     hideFiltered?: boolean;
+    minCouplingStrength?: number;
+    topNCouplings?: number;
+    topNDirection?: "strongest" | "weakest";
   },
 ): GraphModel {
   expect(graphModule.buildNkpGraphModel).toBeFunction();
@@ -196,7 +196,7 @@ describe("buildNkpGraphModel", () => {
     expect(proposed.tooltip).toContain("proposed");
   });
 
-  test("aggregates residual rows into one component edge with stressor names, width, and force tension based on count", () => {
+  test("aggregates residual rows into one component edge with stressor names and a width based on count", () => {
     const coupling = edge(build(), "coupling", "component:auth", "component:cache");
 
     expect(coupling.count).toBe(2);
@@ -205,24 +205,20 @@ describe("buildNkpGraphModel", () => {
     expect(coupling.tooltip).toContain("identity-provider-outage");
     expect(coupling.lineStyle).toBe("solid");
     expect(coupling.width).toBeGreaterThan(1);
-    expect(coupling.strength).toBeGreaterThan(0);
-    expect(coupling.distance).toBeGreaterThan(0);
   });
 
-  test("makes a two-row coupling thicker and tighter than a one-row coupling", () => {
+  test("makes a two-row coupling thicker than a one-row coupling", () => {
     const extra: SnapshotForce = {
       ...forces[2]!,
       id: "S-04",
       shortname: "account-write-load",
       components: ["auth", "database"],
     };
-    const model = build(state({ baseForces: [...forces, extra] }));
+    const model = build(state({ baseForces: [...forces, extra] }), { minCouplingStrength: 1 });
     const twice = edge(model, "coupling", "component:auth", "component:cache");
     const once = edge(model, "coupling", "component:auth", "component:database");
 
     expect(twice.width).toBeGreaterThan(once.width);
-    expect(twice.strength).toBeGreaterThan(once.strength);
-    expect(twice.distance).toBeLessThan(once.distance);
   });
 
   test("renders identical coupling vectors as separate dotted fusion-candidate edges", () => {
@@ -248,11 +244,18 @@ describe("buildNkpGraphModel", () => {
     expect(edge(model, "attractor", "attractor:A-01", "component:cache").count).toBe(2);
   });
 
-  test("keeps D3 force mechanics active with link, charge, center, collision, and lattice forces", () => {
-    expect(build().simulation).toEqual({
-      enabled: true,
-      forces: expect.arrayContaining(["link", "charge", "center", "collision", "lattice"]),
-    });
+  test("drops component nodes with no surviving edge of any kind", () => {
+    const isolated: SnapshotComponent = {
+      name: "isolated-ledger",
+      description: "not touched by any residual force",
+      status: "actual",
+      architectureSet: "runtime",
+    };
+    const model = build(state({ baseComponents: [auth, cache, database, isolated] }));
+
+    expect(model.nodes.find((item) => item.id === "component:isolated-ledger")).toBeUndefined();
+    expect(node(model, "component:auth")).toBeDefined();
+    expect(node(model, "component:database")).toBeDefined();
   });
 
   test("uses effective pending state, including added records and updates to existing couplings", () => {
@@ -267,6 +270,7 @@ describe("buildNkpGraphModel", () => {
         addedComponents: [added],
         updatedForces: { "S-01": { components: ["auth", "rate-limiter"] } },
       }),
+      { minCouplingStrength: 1 },
     );
 
     expect(node(model, "component:rate-limiter").status).toBe("proposed");
@@ -289,6 +293,23 @@ describe("buildNkpGraphModel", () => {
     });
   });
 
+  test("omits coupling and fusion edges below minCouplingStrength but keeps attractor links", () => {
+    const extra: SnapshotForce = {
+      ...forces[2]!,
+      id: "S-04",
+      shortname: "account-write-load",
+      components: ["auth", "database"],
+    };
+    const withWeakCoupling = build(state({ baseForces: [...forces, extra] }), { minCouplingStrength: 2 });
+    expect(
+      withWeakCoupling.edges.find((candidate) => candidate.type === "coupling" && candidate.count === 1),
+    ).toBeUndefined();
+    expect(edge(withWeakCoupling, "coupling", "component:auth", "component:cache").count).toBe(2);
+
+    const baseline = build(state(), { minCouplingStrength: 2 });
+    expect(edge(baseline, "attractor", "attractor:A-02", "component:database").count).toBe(1);
+  });
+
   test("removes filtered components and edges when hideFiltered is enabled but always keeps attractors", () => {
     const model = build(state(), { visibleForceIds: new Set(["S-01"]), hideFiltered: true });
 
@@ -301,6 +322,79 @@ describe("buildNkpGraphModel", () => {
     expect(model.edges.every((item) => item.focused)).toBe(true);
     expect(model.edges.some((item) => item.source === "attractor:A-02")).toBe(false);
     expect(node(model, "attractor:A-02").type).toBe("attractor");
+  });
+
+  test("keeps only the strongest coupling tier and prunes attractors that no longer reach a surviving pair", () => {
+    const extra: SnapshotForce = {
+      ...forces[2]!,
+      id: "S-04",
+      shortname: "account-write-load",
+      attractorId: "A-01",
+      components: ["auth", "database"],
+    };
+    const model = build(state({ baseForces: [...forces, extra] }), {
+      minCouplingStrength: 1,
+      topNCouplings: 1,
+      topNDirection: "strongest",
+    });
+
+    expect(edge(model, "coupling", "component:auth", "component:cache").count).toBe(2);
+    expect(
+      model.edges.find((candidate) => candidate.type === "coupling" && candidate.count === 1),
+    ).toBeUndefined();
+    expect(model.nodes.find((item) => item.id === "attractor:A-02")).toBeUndefined();
+    expect(node(model, "attractor:A-01")).toBeDefined();
+    expect(
+      model.edges.some((item) => item.type === "attractor" && item.target === "component:database"),
+    ).toBe(false);
+  });
+
+  test("switches to the weakest coupling tier when topNDirection is weakest", () => {
+    const extra: SnapshotForce = {
+      ...forces[2]!,
+      id: "S-04",
+      shortname: "account-write-load",
+      attractorId: "A-01",
+      components: ["auth", "database"],
+    };
+    const model = build(state({ baseForces: [...forces, extra] }), {
+      minCouplingStrength: 1,
+      topNCouplings: 1,
+      topNDirection: "weakest",
+    });
+
+    expect(edge(model, "coupling", "component:auth", "component:database").count).toBe(1);
+    expect(
+      model.edges.find((candidate) => candidate.type === "coupling" && candidate.count === 2),
+    ).toBeUndefined();
+  });
+
+  test("keeps every edge in a tied top tier (friendly tie)", () => {
+    const tiedA: SnapshotForce = {
+      ...forces[2]!,
+      id: "S-04",
+      shortname: "account-write-load",
+      attractorId: "A-01",
+      components: ["auth", "database"],
+    };
+    const tiedB: SnapshotForce = {
+      ...forces[2]!,
+      id: "S-05",
+      shortname: "cache-invalidation-storm",
+      attractorId: "A-01",
+      components: ["cache", "database"],
+    };
+    const model = build(state({ baseForces: [...forces, tiedA, tiedB] }), {
+      minCouplingStrength: 1,
+      topNCouplings: 1,
+      topNDirection: "weakest",
+    });
+
+    expect(edge(model, "coupling", "component:auth", "component:database").count).toBe(1);
+    expect(edge(model, "coupling", "component:cache", "component:database").count).toBe(1);
+    expect(
+      model.edges.find((candidate) => candidate.type === "coupling" && candidate.count === 2),
+    ).toBeUndefined();
   });
 
   test("dims edges whose table column endpoint is hidden", () => {
@@ -321,6 +415,21 @@ describe("buildNkpGraphModel", () => {
   });
 });
 
+describe("attractor palette", () => {
+  test("gives 20 neighbouring slots distinct colours", async () => {
+    const { attractorColor } = (await import("./nkp-graph")) as { attractorColor: (index: number) => string };
+    const colours = Array.from({ length: 20 }, (_, index) => attractorColor(index));
+    expect(new Set(colours).size).toBe(20);
+  });
+
+  test("keys colours by attractor id so every view paints an attractor the same", async () => {
+    const { attractorColors } = (await import("./nkp-graph")) as { attractorColors: (state: PendingState) => Map<string, string> };
+    const colours = attractorColors(state());
+    expect([...colours.keys()]).toEqual([...colours.keys()].sort());
+    expect(new Set(colours.values()).size).toBe(colours.size);
+  });
+});
+
 describe("rendered-page integration", () => {
   test("includes the same D3 v7 ESM library used by slaughter.pro", async () => {
     const [shell, main] = await Promise.all([
@@ -328,19 +437,5 @@ describe("rendered-page integration", () => {
       Bun.file("src/main.ts").text(),
     ]);
     expect(`${shell}\n${main}`).toContain("https://cdn.jsdelivr.net/npm/d3@7/+esm");
-  });
-
-  test("adds a graph component beside the ledger matrix and wires it to shared state changes without ledger writes", async () => {
-    const [shell, main] = await Promise.all([
-      Bun.file("../src/view/shell.html").text(),
-      Bun.file("src/main.ts").text(),
-    ]);
-
-    expect(shell).toContain('data-view="nkp-graph"');
-    expect(shell).toContain("data-nkp-graph");
-    expect(shell).toContain("data-hide-filtered-graph-toggle");
-    expect(main).toContain("mountNkpGraph");
-    expect(main).toMatch(/onChange[\s\S]*\.sync\(/);
-    expect(main).not.toMatch(/fetch\([^)]*(?:add|update|remove|ledger)/i);
   });
 });
