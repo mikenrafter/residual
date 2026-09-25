@@ -26,7 +26,7 @@ type GeometryModule = {
   ) => { trunk: string; branches: string[]; width: number };
   nudgeLabels?: (boxes: Box[], maxShift?: number) => number[];
   tessellateNodes?: (
-    nodes: { id: string; x: number; y: number; fx?: number; fy?: number }[],
+    nodes: { id: string; x: number; y: number; fx?: number; fy?: number; radius?: number }[],
     options: { cellSize: number; minDistance: number },
   ) => { id: string; x: number; y: number; cell: string }[];
   projectLabelAnchor?: (
@@ -244,6 +244,35 @@ describe("tessellated node placement", () => {
     const pinned = placed.find((item) => item.id === "force:pinned");
     expect(pinned).toMatchObject({ x: 40, y: 40 });
     expect(placed.filter((item) => item.cell === pinned?.cell)).toHaveLength(1);
+  });
+
+  test("two radius-30 nodes seeded 10px apart end up at least 60px apart, even though minDistance is smaller", () => {
+    const radiusNodes = [
+      { id: "a", x: 0, y: 0, radius: 30 },
+      { id: "b", x: 10, y: 0, radius: 30 },
+    ];
+    const placed = mod.tessellateNodes?.(radiusNodes, { cellSize: 20, minDistance: 18 }) ?? [];
+    expect(placed).toHaveLength(2);
+    const a = placed.find((item) => item.id === "a")!;
+    const b = placed.find((item) => item.id === "b")!;
+    expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(60 - 0.01);
+  });
+
+  test("mixed radii use the sum of each node's own radius, not a shared flat distance", () => {
+    const radiusNodes = [
+      { id: "a", x: 0, y: 0, radius: 30 },
+      { id: "b", x: 5, y: 0, radius: 8 },
+    ];
+    const placed = mod.tessellateNodes?.(radiusNodes, { cellSize: 20, minDistance: 18 }) ?? [];
+    expect(placed).toHaveLength(2);
+    const a = placed.find((item) => item.id === "a")!;
+    const b = placed.find((item) => item.id === "b")!;
+    const distance = Math.hypot(a.x - b.x, a.y - b.y);
+    expect(distance).toBeGreaterThanOrEqual(38 - 0.01);
+    // Discriminating upper bound: if radius were ignored and some other flat
+    // distance (e.g. minDistance, or a much larger fixed radius) were used
+    // instead, the lattice-snapped result would land well beyond this.
+    expect(distance).toBeLessThanOrEqual(38 + 20);
   });
 });
 

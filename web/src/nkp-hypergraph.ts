@@ -714,6 +714,12 @@ export interface RegionsViewHandle {
    * force simulation, so incremental-update/no-clamping tests can inspect
    * and step physics directly instead of guessing at timing. */
   readonly simulation: { nodes: () => SimNode[]; tick: (iterations?: number) => void } | undefined;
+  /** Test-only hook (not part of the fixed handle contract): drives a node
+   * drag programmatically instead of through real pointer events (d3-drag's
+   * internal pointer-transform calls aren't reliably testable in this
+   * environment) — runs the exact same clamp-to-core-boundary logic the real
+   * "drag" event handler uses. */
+  dragNodeTo: (nodeId: string, point: { x: number; y: number }) => void;
 }
 
 /**

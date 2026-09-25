@@ -54,6 +54,10 @@ interface ViewHandle {
    * simulation.tick(iterations?)), used by the core-containment/collision
    * tests below to settle physics over several steps at once. */
   simulation?: { nodes: () => SimNodeSnapshot[]; tick: (iterations?: number) => void };
+  /** Test-only hook (not yet implemented): drives a node drag programmatically
+   * instead of through real pointer events, running the same clamp-to-core-
+   * boundary logic the real "drag" event handler uses. */
+  dragNodeTo?: (nodeId: string, point: { x: number; y: number }) => void;
 }
 interface SimNodeLike { id: string; type: string; attractorId?: string; componentIds?: string[]; x?: number; y?: number }
 interface RegionLock {
@@ -84,11 +88,20 @@ type RegionsViewModule = {
   CORE_ZONE_BASE_RADIUS?: number;
   CORE_ZONE_RADIUS_PER_COMPONENT?: number;
   coreZoneRadius?: (componentCount: number) => number;
+  coreZoneMinimumRadius?: (componentCount: number) => number;
   clampToCore?: (
     point: { x: number; y: number },
     center: { x: number; y: number },
     radius: number,
   ) => { x: number; y: number };
+  clampOutsideCore?: (
+    point: { x: number; y: number },
+    center: { x: number; y: number },
+    radius: number,
+  ) => { x: number; y: number };
+  // --- component min-distance / collision radius (not yet implemented) ---
+  REGIONS_COMPONENT_MIN_DISTANCE?: number;
+  REGIONS_COMPONENT_COLLISION_RADIUS?: number;
   attractorCoreDistance?: (
     nodes: { id: string; type: string; attractorId?: string; x?: number; y?: number }[],
     attractorId: string,
@@ -354,6 +367,10 @@ describe("regions constants (Phase 4)", () => {
     // collision radius) should end up exactly REGIONS_MIN_NODE_DISTANCE apart.
     expect(REGIONS_FORCE_COLLISION_RADIUS * 2).toBe(REGIONS_MIN_NODE_DISTANCE);
   });
+
+  test("REGIONS_COMPONENT_COLLISION_RADIUS is half of REGIONS_COMPONENT_MIN_DISTANCE", () => {
+    expect(regionsModule.REGIONS_COMPONENT_COLLISION_RADIUS! * 2).toBe(regionsModule.REGIONS_COMPONENT_MIN_DISTANCE);
+  });
 });
 
 describe("core zone geometry (not yet implemented)", () => {
@@ -397,6 +414,25 @@ describe("core zone geometry (not yet implemented)", () => {
     expect(ratio).toBeLessThan(2.7);
   });
 
+  test("coreZoneRadius is exactly twice coreZoneMinimumRadius, at several component counts", () => {
+    for (const n of [0, 1, 4, 16, 50]) {
+      expect(regionsModule.coreZoneRadius?.(n)).toBeCloseTo(2 * (regionsModule.coreZoneMinimumRadius?.(n) ?? 0), 5);
+    }
+  });
+
+  test("coreZoneMinimumRadius is a finite positive number that grows with component count", () => {
+    const r0 = regionsModule.coreZoneMinimumRadius?.(0) ?? 0;
+    const r1 = regionsModule.coreZoneMinimumRadius?.(1) ?? 0;
+    const r4 = regionsModule.coreZoneMinimumRadius?.(4) ?? 0;
+    const r16 = regionsModule.coreZoneMinimumRadius?.(16) ?? 0;
+    expect(typeof regionsModule.coreZoneMinimumRadius?.(0)).toBe("number");
+    expect(Number.isFinite(r0)).toBe(true);
+    expect(r0).toBeGreaterThan(0);
+    expect(r1).toBeGreaterThanOrEqual(r0);
+    expect(r4).toBeGreaterThan(r1);
+    expect(r16).toBeGreaterThan(r4);
+  });
+
   test("clampToCore leaves a point already inside the circle unchanged", () => {
     const point = { x: 5, y: 5 };
     expect(regionsModule.clampToCore?.(point, { x: 0, y: 0 }, 40)).toEqual(point);
@@ -410,6 +446,23 @@ describe("core zone geometry (not yet implemented)", () => {
 
   test("clampToCore works relative to an arbitrary, non-origin center", () => {
     const clamped = regionsModule.clampToCore?.({ x: 110, y: 10 }, { x: 10, y: 10 }, 40);
+    expect(clamped?.x).toBeCloseTo(50, 5);
+    expect(clamped?.y).toBeCloseTo(10, 5);
+  });
+
+  test("clampOutsideCore leaves a point already outside the circle unchanged", () => {
+    const point = { x: 100, y: 0 };
+    expect(regionsModule.clampOutsideCore?.(point, { x: 0, y: 0 }, 40)).toEqual(point);
+  });
+
+  test("clampOutsideCore pushes an inside point onto the boundary along the same direction from center", () => {
+    const clamped = regionsModule.clampOutsideCore?.({ x: 5, y: 0 }, { x: 0, y: 0 }, 40);
+    expect(clamped?.x).toBeCloseTo(40, 5);
+    expect(clamped?.y).toBeCloseTo(0, 5);
+  });
+
+  test("clampOutsideCore works relative to an arbitrary, non-origin center", () => {
+    const clamped = regionsModule.clampOutsideCore?.({ x: 15, y: 10 }, { x: 10, y: 10 }, 40);
     expect(clamped?.x).toBeCloseTo(50, 5);
     expect(clamped?.y).toBeCloseTo(10, 5);
   });
@@ -946,6 +999,56 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     const componentCount = handle?.simulation?.nodes().filter((n: any) => n.type === "component").length ?? 0;
     const expectedRadius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
     expect(Number(boundary?.getAttribute("r"))).toBeCloseTo(expectedRadius, 5);
+  });
+
+  test("draws a horizontal dividing line across the core zone boundary", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const boundary = host.querySelector("[data-core-boundary]");
+    const divider = host.querySelector("[data-core-boundary-divider]");
+    expect(divider).not.toBeNull();
+    const cx = Number(boundary?.getAttribute("cx"));
+    const cy = Number(boundary?.getAttribute("cy"));
+    const r = Number(boundary?.getAttribute("r"));
+    expect(Number(divider?.getAttribute("x1"))).toBeCloseTo(cx - r, 1);
+    expect(Number(divider?.getAttribute("x2"))).toBeCloseTo(cx + r, 1);
+    expect(Number(divider?.getAttribute("y1"))).toBeCloseTo(cy, 1);
+    expect(Number(divider?.getAttribute("y2"))).toBeCloseTo(cy, 1);
+  });
+
+  // --- dragging is clamped at the core zone boundary (not yet implemented) ---
+
+  test("dragging a component node toward the boundary and beyond stops it at the boundary, not through it", () => {
+    const { ctx } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const allNodes = handle?.simulation?.nodes() ?? [];
+    const componentNode = allNodes.find((n: any) => n.type === "component");
+    expect(componentNode).toBeDefined();
+    const componentCount = allNodes.filter((n: any) => n.type === "component").length;
+    const radius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
+    const center = { x: 400, y: 300 }; // default canvas centre in this test harness
+    handle?.dragNodeTo?.(componentNode!.id, { x: center.x + radius * 5, y: center.y }); // way outside
+    const after = handle?.simulation?.nodes().find((n: any) => n.id === componentNode!.id);
+    const distance = Math.hypot((after?.x ?? 0) - center.x, (after?.y ?? 0) - center.y);
+    expect(distance).toBeCloseTo(radius, 0); // stopped right at the boundary, not carried through to the far target
+  });
+
+  test("dragging a force node toward the boundary and beyond stops it at the boundary, not through it", () => {
+    const { ctx } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const forceNode = handle?.simulation?.nodes().find((n: any) => n.id === "force:S-01");
+    expect(forceNode).toBeDefined();
+    const allNodes = handle?.simulation?.nodes() ?? [];
+    const componentCount = allNodes.filter((n: any) => n.type === "component").length;
+    const radius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
+    const center = { x: 400, y: 300 };
+    handle?.dragNodeTo?.("force:S-01", center); // dragged all the way to dead centre
+    const after = handle?.simulation?.nodes().find((n: any) => n.id === "force:S-01");
+    const distance = Math.hypot((after?.x ?? 0) - center.x, (after?.y ?? 0) - center.y);
+    expect(distance).toBeCloseTo(radius, 0); // stopped right at the boundary, never entered
   });
 
   // --- bundling tension (Feature 2, not yet implemented) ---
