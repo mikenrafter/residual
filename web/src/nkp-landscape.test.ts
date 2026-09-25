@@ -44,6 +44,7 @@ function fixture(open: boolean): void {
         <label data-landscape-for="heatmap" data-test="counts"></label>
         <label data-landscape-for="regions" data-test="focus"></label>
         <label data-landscape-for="regions" data-test="lock"><input type="checkbox" data-regions-lock-toggle /></label>
+        <label data-landscape-for="regions" data-test="lock-components"><input type="checkbox" data-regions-lock-components-toggle /></label>
         <label data-landscape-for="regions" data-test="keep-sim"><input type="checkbox" data-regions-keep-simulating-toggle /></label>
         <button type="button" data-landscape-reset-view>reset view</button>
         <button type="button" data-landscape-deselect-all>deselect all</button>
@@ -243,6 +244,8 @@ describe("rendered-page integration", () => {
   test("the regions toolbar exposes attractor-region locking", async () => {
     const shell = await Bun.file("../src/view/shell.html").text();
     expect(shell).toContain("data-regions-lock-toggle");
+    expect(shell).toContain("data-regions-lock-components-toggle");
+    expect(shell).toContain("lock components");
   });
 
   test("the landscape fixture exposes a regions keep-simulating checkbox", () => {

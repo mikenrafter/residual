@@ -405,6 +405,7 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
     const b = built;
     if (!b) return;
     const hasSelection = lastSelected.size > 0;
+    b.svg?.classed("nkp-seriation-selecting", hasSelection);
     const keyState = (keys: readonly EntityKey[]): "selected" | "connected" | "dim" | "none" => {
       const isSelected = keys.some((key) => lastSelected.has(key));
       if (isSelected) return "selected";

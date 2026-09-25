@@ -1126,9 +1126,12 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options); // state() has attractors A-01 (S-01,S-02) and A-02 (P-01)
     const allNodes = handle?.simulation?.nodes() ?? [];
+    // Overlap them well outside the core so core-exclusion freeze does not
+    // pin both groups before regionCollision can separate them.
     for (const node of allNodes) {
       if (node.type === "force" && (node.attractorId === "A-01" || node.attractorId === "A-02")) {
-        node.x = 400; node.y = 300; node.vx = 0; node.vy = 0;
+        node.x = 700; node.y = 300; node.vx = 0; node.vy = 0;
+        node.fx = null; node.fy = null;
       }
     }
     const circlesOverlap = (): boolean => {

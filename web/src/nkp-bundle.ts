@@ -14,8 +14,8 @@
 
 import { attractorColors, buildNkpGraphModel, type NkpGraphEdge, type NkpGraphOptions } from "./nkp-graph";
 import type { PendingState } from "./model";
+import { bundleHighlightConnectedKeys } from "./landscape-selection";
 import type { EntityKey } from "./landscape-selection";
-import { highlightConnectedKeys } from "./landscape-selection";
 import { appendZoomableSvg, createTooltip, escapeHtml, placeTooltip, renderEmpty, resetZoom } from "./landscape-dom";
 
 export const UNASSIGNED_GROUP_ID = "unassigned";
@@ -772,7 +772,7 @@ export function createBundleView(ctx: BundleViewCtx): BundleViewHandle {
         const leaf = node.data.leaf as BundleLeaf;
         b.svg.classed("hovering", true);
         const lit = lastState
-          ? highlightConnectedKeys(lastState, [leaf.id as EntityKey])
+          ? bundleHighlightConnectedKeys(lastState, [leaf.id as EntityKey])
           : new Set<EntityKey>([leaf.id as EntityKey]);
         edgePaths
           .classed("hl-a", false)
@@ -804,7 +804,7 @@ export function createBundleView(ctx: BundleViewCtx): BundleViewHandle {
     const showGroup = (event: MouseEvent, d: any): void => {
         const attractorKey = d.group.id as EntityKey;
         const lit = lastState
-          ? highlightConnectedKeys(lastState, [attractorKey])
+          ? bundleHighlightConnectedKeys(lastState, [attractorKey])
           : new Set<EntityKey>([attractorKey, ...d.group.leaves.map((leaf: BundleLeaf) => leaf.id as EntityKey)]);
         b.svg.classed("hovering", true);
         groupSel.classed("hl", (other: any) => lit.has(other.group.id as EntityKey));

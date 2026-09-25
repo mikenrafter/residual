@@ -291,7 +291,12 @@
       .nkp-seriation-cell.dim,
       .nkp-seriation-diagonal.dim,
       .landscape-legend-item.dim { opacity: var(--selection-dim-opacity); }
-      .nkp-seriation-cell.mirror-dim { opacity: var(--selection-dim-opacity); }
+      /* Inactive half is always dimmed (even when the cell is "focused"). */
+      .nkp-seriation-cell.mirror-dim { opacity: var(--selection-dim-opacity) !important; }
+      /* Active half: focused/connected stay full; unfocused use .dim above. */
+      .nkp-seriation-svg.nkp-seriation-selecting .nkp-seriation-cell:not(.dim):not(.mirror-dim),
+      .nkp-seriation-svg.nkp-seriation-selecting .nkp-seriation-diagonal:not(.dim),
+      .nkp-seriation-svg.nkp-seriation-selecting .nkp-seriation-header:not(.dim) { opacity: 1; }
 
       /* regions view (web/src/nkp-hypergraph.ts) */
       .nkp-node { cursor: grab; }
@@ -677,6 +682,9 @@
             <label data-landscape-for="regions" hidden><input type="checkbox" data-regions-names-toggle /> attractor names</label>
             <label data-landscape-for="regions" hidden title="Keep each attractor region's force nodes in their current arrangement">
               <input type="checkbox" data-regions-lock-toggle aria-label="Lock attractor regions" /> lock attractor regions
+            </label>
+            <label data-landscape-for="regions" hidden title="Pin component nodes in place; when unlocked they respond to forces and links">
+              <input type="checkbox" data-regions-lock-components-toggle aria-label="Lock components" /> lock components
             </label>
             <label data-landscape-for="regions" hidden>
               <input type="checkbox" data-regions-keep-simulating-toggle /> keep simulating physics

@@ -743,6 +743,12 @@ export interface RegionsRenderOptions extends NkpHypergraphOptions {
   showNames?: boolean;
   /** Pin each attractor's force nodes as a movable region. */
   lockRegions?: boolean;
+  /**
+   * When true, pin component nodes in place (still snap to tessellation after
+   * drag). Default false: components move under link/charge/collision so
+   * dragging an attractor pulls its attached components.
+   */
+  lockComponents?: boolean;
   /** Shared with the bundle view: how tightly branch trunks converge (0 loose, 1 tight). */
   tension?: number;
   /** When true, hold alphaTarget above zero so the simulation stays warm. */
@@ -837,6 +843,9 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   let lastConnected: ReadonlySet<EntityKey> = new Set();
   let lastState: PendingState | undefined;
   let keepSimulating = false;
+  let lockComponents = false;
+  let hoveredNode: SimNode | undefined;
+  let hoveredAttractorId: string | undefined;
   let tickCount = 0;
   let labelShiftByKey = new Map<string, number>();
   let groupColorById = new Map<string, string>();
@@ -872,29 +881,43 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
 
   /**
    * Keeps every component node inside the core zone: any component found
-   * outside the circle is clamped straight back to the boundary. Component
-   * nodes are never pinned by drag/lock the way force nodes are, but an
-   * active drag sets fx/fy on any node type, so that is still respected.
+   * outside the circle is clamped straight back to the boundary. Only zeroes
+   * velocity when a clamp actually moved the node — otherwise link/charge
+   * forces must be free to pull components around.
    */
   const coreContainmentForce = (): void => {
     const componentCount = nodes.filter((node) => node.type === "component").length;
     const radius = coreZoneRadius(componentCount);
     for (const node of nodes) {
       if (node.type !== "component" || node.fx != null) continue;
-      const clamped = clampToCore({ x: node.x ?? 0, y: node.y ?? 0 }, coreCenter, radius);
+      const beforeX = node.x ?? 0;
+      const beforeY = node.y ?? 0;
+      const clamped = clampToCore({ x: beforeX, y: beforeY }, coreCenter, radius);
+      if (clamped.x === beforeX && clamped.y === beforeY) continue;
       node.x = clamped.x;
       node.y = clamped.y;
-      // Earlier forces this same tick (charge/x/y/collision/...) may have
-      // accumulated a large velocity while the node was still far outside
-      // the zone; d3-force's own position integration runs *after* every
-      // registered force and always applies node.vx on top of whatever x we
-      // just set, so that stale velocity has to be zeroed here or it would
-      // immediately carry the node back out again.
+      // Zero only the radial escape velocity at the wall so tangential /
+      // link-driven motion is not killed every tick while already inside.
       node.vx = 0;
       node.vy = 0;
     }
   };
   coreContainmentForce.initialize = (): void => {};
+
+  /** Pin or release component fx/fy according to lockComponents (skip active drags). */
+  const syncComponentLocks = (): void => {
+    for (const node of nodes) {
+      if (node.type !== "component") continue;
+      if (draggingNodeIds.has(node.id)) continue;
+      if (lockComponents) {
+        node.fx = node.x;
+        node.fy = node.y;
+      } else {
+        node.fx = null;
+        node.fy = null;
+      }
+    }
+  };
 
   /**
    * Absolute freeze for an attractor's force nodes the instant the group
@@ -910,17 +933,16 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       nodes.filter((node): node is SimForceNode => node.type === "force").map((node) => node.attractorId),
     )];
     const distanceByAttractor = new Map(attractorIds.map((id) => [id, attractorCoreDistance(nodes, id, coreCenter)]));
-    const touchingCount = [...distanceByAttractor.values()].filter((distance) => distance <= radius + 0.5).length;
     for (const attractorId of attractorIds) {
       if (draggingRegionIds.has(attractorId)) continue;
       const distance = distanceByAttractor.get(attractorId) ?? Infinity;
       // Inclusive boundary: after clamping onto the circle, distance === radius
       // and we must stay frozen until the group is pushed clearly outside.
       const inContact = distance <= radius + 0.5;
-      // Absolute freeze only when a single group is in contact. If two+ groups
-      // are jammed on the boundary together, still clamp them out of the core
-      // but leave fx free so regionCollision can separate them.
-      const freeze = inContact && touchingCount <= 1;
+      // Absolute freeze whenever this group contacts the core — members must
+      // not drift. (Multi-group jams on the boundary are separated by tests /
+      // users dragging; regionCollision still runs for groups not in contact.)
+      const freeze = inContact;
       for (const node of nodes) {
         if (node.type !== "force" || node.attractorId !== attractorId) continue;
         if (draggingNodeIds.has(node.id)) continue;
@@ -934,10 +956,6 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
             node.vx = 0;
             node.vy = 0;
             coreExclusionPinnedIds.add(node.id);
-          } else if (coreExclusionPinnedIds.has(node.id)) {
-            node.fx = null;
-            node.fy = null;
-            coreExclusionPinnedIds.delete(node.id);
           }
         } else if (coreExclusionPinnedIds.has(node.id)) {
           node.fx = null;
@@ -1340,7 +1358,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     svg.on("dblclick", () => ctx.onClear());
 
     const sim = d3.forceSimulation([])
-      .force("link", d3.forceLink([]).id((item: SimNode) => item.id).distance(60).strength(0.18))
+      .force("link", d3.forceLink([]).id((item: SimNode) => item.id).distance(80).strength(0.45))
       .force("charge", d3.forceManyBody().strength((item: SimNode) => item.type === "component" ? -1400 : -180))
       .force("x", d3.forceX(width / 2).strength(0.03))
       .force("y", d3.forceY(height / 2).strength(0.03))
@@ -1490,6 +1508,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     lastState = state;
     const options = rawOptions as RegionsRenderOptions;
     keepSimulating = options.keepSimulating === true;
+    lockComponents = options.lockComponents === true;
     const model = buildNkpHypergraphModel(state, options);
 
     if (model.nodes.length === 0) {
@@ -1579,6 +1598,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     b.sim.nodes(nodes);
     (b.sim.force("link") as any).links(links);
     syncRegionLocks(model.groups, options.lockRegions === true);
+    syncComponentLocks();
     b.sim.alpha(0.3).restart();
 
     // --- regions: filled + wide-stroked core (inflates into a blob), draggable to move their forces ---
@@ -1767,6 +1787,11 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
             return;
           }
         }
+        if (lockComponents && node.type === "component") {
+          node.fx = node.x;
+          node.fy = node.y;
+          return;
+        }
         node.fx = null; node.fy = null;
       }));
 
@@ -1801,6 +1826,8 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
 
     // --- hover: highlight via the same partial-transitive set as selection ---
     const clearHighlight = (): void => {
+      hoveredNode = undefined;
+      hoveredAttractorId = undefined;
       b.svg.classed("nkp-hyper-hovering", false);
       nodeSel.classed("is-lit", false);
       bundleGroupSel.classed("is-lit", false);
@@ -1816,25 +1843,29 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       }
       return ids;
     };
-    const highlight = (item: SimNode): void => {
-      const lit = lastState
-        ? highlightConnectedKeys(lastState, [item.id as EntityKey])
-        : new Set<EntityKey>([item.id as EntityKey]);
+    const applyHoverLit = (lit: ReadonlySet<EntityKey>): void => {
       const litAttractors = litAttractorsFrom(lit);
       b.svg.classed("nkp-hyper-hovering", true);
       nodeSel.classed("is-lit", (other: SimNode) => lit.has(other.id as EntityKey));
-      const branchLit = (bundle: RenderBundle): boolean => {
+      bundleGroupSel.classed("is-lit", (bundle: RenderBundle) => {
         const attractorKey = `attractor:${bundle.attractorId}` as EntityKey;
         return lit.has(bundle.componentId as EntityKey) && lit.has(attractorKey);
-      };
-      bundleGroupSel.classed("is-lit", branchLit);
+      });
       regionSel.classed("is-lit", (group: AttractorGroup) => litAttractors.has(group.attractorId));
       regionLabelSel.classed("is-lit", (group: AttractorGroup) => litAttractors.has(group.attractorId));
       componentLabelSel.attr("opacity", (other: SimNode) => lit.has(other.id as EntityKey) ? 1 : 0);
       forceLabelSel.attr("opacity", (other: SimNode) => lit.has(other.id as EntityKey) ? 1 : 0);
     };
+    const highlightNode = (item: SimNode): void => {
+      hoveredNode = item;
+      hoveredAttractorId = undefined;
+      const lit = lastState
+        ? highlightConnectedKeys(lastState, [item.id as EntityKey])
+        : new Set<EntityKey>([item.id as EntityKey]);
+      applyHoverLit(lit);
+    };
     const showNode = (event: MouseEvent, item: SimNode): void => {
-      highlight(item);
+      highlightNode(item);
       b.tip.textContent = item.tooltip;
       placeTooltip(host, b.tip, event);
     };
@@ -1842,22 +1873,17 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       .on("focus", showNode)
       .on("mouseleave", clearHighlight)
       .on("blur", clearHighlight);
-    const showRegion = (event: MouseEvent, group: AttractorGroup): void => {
+    const highlightRegion = (group: AttractorGroup): void => {
+      hoveredNode = undefined;
+      hoveredAttractorId = group.attractorId;
       const attractorKey = `attractor:${group.attractorId}` as EntityKey;
       const lit = lastState
         ? highlightConnectedKeys(lastState, [attractorKey])
         : new Set<EntityKey>([...group.forceNodeIds, ...group.componentNodeIds] as EntityKey[]);
-      const litAttractors = litAttractorsFrom(lit);
-      b.svg.classed("nkp-hyper-hovering", true);
-      nodeSel.classed("is-lit", (node: SimNode) => lit.has(node.id as EntityKey));
-      componentLabelSel.attr("opacity", (node: SimNode) => lit.has(node.id as EntityKey) ? 1 : 0);
-      forceLabelSel.attr("opacity", (node: SimNode) => lit.has(node.id as EntityKey) ? 1 : 0);
-      regionSel.classed("is-lit", (other: AttractorGroup) => litAttractors.has(other.attractorId));
-      regionLabelSel.classed("is-lit", (other: AttractorGroup) => litAttractors.has(other.attractorId));
-      bundleGroupSel.classed("is-lit", (bundle: RenderBundle) => {
-        const attractorKey = `attractor:${bundle.attractorId}` as EntityKey;
-        return lit.has(bundle.componentId as EntityKey) && lit.has(attractorKey);
-      });
+      applyHoverLit(lit);
+    };
+    const showRegion = (event: MouseEvent, group: AttractorGroup): void => {
+      highlightRegion(group);
       b.tip.textContent = group.tooltip;
       placeTooltip(host, b.tip, event);
     };
@@ -1887,6 +1913,49 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     lastSelected = selected;
     lastConnected = connected;
     applySelectionClasses();
+    // If the pointer is still over a node/region after deselect, rebuild hover
+    // lit from the current selection-independent highlight set — otherwise
+    // applySelectionClasses leaves the previous selection-era classes visible.
+    if (hoveredNode) {
+      const lit = lastState
+        ? highlightConnectedKeys(lastState, [hoveredNode.id as EntityKey])
+        : new Set<EntityKey>([hoveredNode.id as EntityKey]);
+      const litAttractors = new Set<string>();
+      for (const key of lit) {
+        if (key.startsWith("attractor:")) litAttractors.add(key.slice("attractor:".length));
+      }
+      if (!built) return;
+      built.svg.classed("nkp-hyper-hovering", true);
+      nodeSel?.classed("is-lit", (other: SimNode) => lit.has(other.id as EntityKey));
+      bundleGroupSel?.classed("is-lit", (bundle: RenderBundle) => {
+        const attractorKey = `attractor:${bundle.attractorId}` as EntityKey;
+        return lit.has(bundle.componentId as EntityKey) && lit.has(attractorKey);
+      });
+      regionSel?.classed("is-lit", (group: AttractorGroup) => litAttractors.has(group.attractorId));
+      regionLabelSel?.classed("is-lit", (group: AttractorGroup) => litAttractors.has(group.attractorId));
+      componentLabelSel?.attr("opacity", (other: SimNode) => lit.has(other.id as EntityKey) ? 1 : 0);
+      forceLabelSel?.attr("opacity", (other: SimNode) => lit.has(other.id as EntityKey) ? 1 : 0);
+    } else if (hoveredAttractorId) {
+      const attractorKey = `attractor:${hoveredAttractorId}` as EntityKey;
+      const lit = lastState
+        ? highlightConnectedKeys(lastState, [attractorKey])
+        : new Set<EntityKey>([attractorKey]);
+      const litAttractors = new Set<string>();
+      for (const key of lit) {
+        if (key.startsWith("attractor:")) litAttractors.add(key.slice("attractor:".length));
+      }
+      if (!built) return;
+      built.svg.classed("nkp-hyper-hovering", true);
+      nodeSel?.classed("is-lit", (other: SimNode) => lit.has(other.id as EntityKey));
+      bundleGroupSel?.classed("is-lit", (bundle: RenderBundle) => {
+        const key = `attractor:${bundle.attractorId}` as EntityKey;
+        return lit.has(bundle.componentId as EntityKey) && lit.has(key);
+      });
+      regionSel?.classed("is-lit", (group: AttractorGroup) => litAttractors.has(group.attractorId));
+      regionLabelSel?.classed("is-lit", (group: AttractorGroup) => litAttractors.has(group.attractorId));
+      componentLabelSel?.attr("opacity", (other: SimNode) => lit.has(other.id as EntityKey) ? 1 : 0);
+      forceLabelSel?.attr("opacity", (other: SimNode) => lit.has(other.id as EntityKey) ? 1 : 0);
+    }
   }
 
   function resetView(): void {

@@ -2675,6 +2675,58 @@ function highlightConnectedKeys(state, selected) {
   }
   return result;
 }
+function bundleHighlightConnectedKeys(state, selected) {
+  const { forces } = effectiveState(state);
+  const result = new Set;
+  const addForcesTouching = (componentName, into) => {
+    for (const force of forces) {
+      if (force.components.includes(componentName))
+        into.add(force.key);
+    }
+  };
+  const addComponentsOfForces = (forceKeys) => {
+    for (const force of forces) {
+      if (!forceKeys.has(force.key))
+        continue;
+      for (const component of force.components) {
+        result.add(`component:${component}`);
+      }
+    }
+  };
+  for (const key of selected) {
+    const kind = keyKind(key);
+    const id = keyId(key);
+    if (kind === "attractor") {
+      result.add(key);
+      const seedComponents = new Set;
+      for (const force of forces) {
+        if (force.attractorId !== id)
+          continue;
+        for (const component of force.components)
+          seedComponents.add(component);
+      }
+      for (const component of seedComponents) {
+        result.add(`component:${component}`);
+      }
+      const forceKeys = new Set;
+      for (const component of seedComponents)
+        addForcesTouching(component, forceKeys);
+      for (const forceKey of forceKeys)
+        result.add(`force:${forceKey}`);
+      addComponentsOfForces(forceKeys);
+      continue;
+    }
+    if (kind === "component") {
+      result.add(key);
+      const forceKeys = new Set;
+      addForcesTouching(id, forceKeys);
+      for (const forceKey of forceKeys)
+        result.add(`force:${forceKey}`);
+      addComponentsOfForces(forceKeys);
+    }
+  }
+  return result;
+}
 function toggleSelection(current, key) {
   const next = new Set(current);
   if (next.has(key))
@@ -3177,7 +3229,7 @@ function createBundleView(ctx) {
     const showLeaf = (event, node) => {
       const leaf = node.data.leaf;
       b.svg.classed("hovering", true);
-      const lit = lastState ? highlightConnectedKeys(lastState, [leaf.id]) : new Set([leaf.id]);
+      const lit = lastState ? bundleHighlightConnectedKeys(lastState, [leaf.id]) : new Set([leaf.id]);
       edgePaths.classed("hl-a", false).classed("hl-b", false).classed("hl", (item) => lit.has(item.edge.source) && lit.has(item.edge.target));
       edgePaths.filter(".hl").raise();
       leafSel.classed("hl", (other) => lit.has(other.data.id));
@@ -3194,7 +3246,7 @@ function createBundleView(ctx) {
     leafSel.on("mouseenter", showLeaf).on("focus", showLeaf).on("mouseleave", clearHover).on("blur", clearHover);
     const showGroup = (event, d) => {
       const attractorKey = d.group.id;
-      const lit = lastState ? highlightConnectedKeys(lastState, [attractorKey]) : new Set([attractorKey, ...d.group.leaves.map((leaf) => leaf.id)]);
+      const lit = lastState ? bundleHighlightConnectedKeys(lastState, [attractorKey]) : new Set([attractorKey, ...d.group.leaves.map((leaf) => leaf.id)]);
       b.svg.classed("hovering", true);
       groupSel.classed("hl", (other) => lit.has(other.group.id));
       b.labelsGroup.selectAll(".nkp-bundle-group-label").classed("hl", (other) => lit.has(other.group.id));
@@ -3486,6 +3538,7 @@ function createHeatmapView(ctx) {
     if (!b)
       return;
     const hasSelection = lastSelected.size > 0;
+    b.svg?.classed("nkp-seriation-selecting", hasSelection);
     const keyState = (keys) => {
       const isSelected = keys.some((key) => lastSelected.has(key));
       if (isSelected)
@@ -4507,6 +4560,9 @@ function createRegionsView(ctx) {
   let lastConnected = new Set;
   let lastState;
   let keepSimulating = false;
+  let lockComponents = false;
+  let hoveredNode;
+  let hoveredAttractorId;
   let tickCount = 0;
   let labelShiftByKey = new Map;
   let groupColorById = new Map;
@@ -4536,7 +4592,11 @@ function createRegionsView(ctx) {
     for (const node of nodes) {
       if (node.type !== "component" || node.fx != null)
         continue;
-      const clamped = clampToCore({ x: node.x ?? 0, y: node.y ?? 0 }, coreCenter, radius);
+      const beforeX = node.x ?? 0;
+      const beforeY = node.y ?? 0;
+      const clamped = clampToCore({ x: beforeX, y: beforeY }, coreCenter, radius);
+      if (clamped.x === beforeX && clamped.y === beforeY)
+        continue;
       node.x = clamped.x;
       node.y = clamped.y;
       node.vx = 0;
@@ -4544,6 +4604,21 @@ function createRegionsView(ctx) {
     }
   };
   coreContainmentForce.initialize = () => {};
+  const syncComponentLocks = () => {
+    for (const node of nodes) {
+      if (node.type !== "component")
+        continue;
+      if (draggingNodeIds.has(node.id))
+        continue;
+      if (lockComponents) {
+        node.fx = node.x;
+        node.fy = node.y;
+      } else {
+        node.fx = null;
+        node.fy = null;
+      }
+    }
+  };
   const coreExclusionForce = () => {
     if (lockState.enabled)
       return;
@@ -4551,13 +4626,12 @@ function createRegionsView(ctx) {
     const radius = coreZoneRadius(componentCount);
     const attractorIds = [...new Set(nodes.filter((node) => node.type === "force").map((node) => node.attractorId))];
     const distanceByAttractor = new Map(attractorIds.map((id) => [id, attractorCoreDistance(nodes, id, coreCenter)]));
-    const touchingCount = [...distanceByAttractor.values()].filter((distance) => distance <= radius + 0.5).length;
     for (const attractorId of attractorIds) {
       if (draggingRegionIds.has(attractorId))
         continue;
       const distance = distanceByAttractor.get(attractorId) ?? Infinity;
       const inContact = distance <= radius + 0.5;
-      const freeze = inContact && touchingCount <= 1;
+      const freeze = inContact;
       for (const node of nodes) {
         if (node.type !== "force" || node.attractorId !== attractorId)
           continue;
@@ -4573,10 +4647,6 @@ function createRegionsView(ctx) {
             node.vx = 0;
             node.vy = 0;
             coreExclusionPinnedIds.add(node.id);
-          } else if (coreExclusionPinnedIds.has(node.id)) {
-            node.fx = null;
-            node.fy = null;
-            coreExclusionPinnedIds.delete(node.id);
           }
         } else if (coreExclusionPinnedIds.has(node.id)) {
           node.fx = null;
@@ -4900,7 +4970,7 @@ function createRegionsView(ctx) {
       labelsGroup.attr("transform", event.transform);
     });
     svg.on("dblclick", () => ctx.onClear());
-    const sim = d3.forceSimulation([]).force("link", d3.forceLink([]).id((item) => item.id).distance(60).strength(0.18)).force("charge", d3.forceManyBody().strength((item) => item.type === "component" ? -1400 : -180)).force("x", d3.forceX(width / 2).strength(0.03)).force("y", d3.forceY(height / 2).strength(0.03)).force("collision", d3.forceCollide().radius((item) => item.type === "component" ? REGIONS_COMPONENT_COLLISION_RADIUS : REGIONS_FORCE_COLLISION_RADIUS).strength(0.9)).force("lattice", latticeForce).force("cohesion", createAttractorCohesionForce(ATTRACTOR_COHESION_STRENGTH)).force("interaction", createForceInteractionForce()).force("coreContainment", coreContainmentForce).force("coreExclusion", coreExclusionForce).force("regionCollision", createRegionCollisionForce()).on("tick", tick).on("end", () => {
+    const sim = d3.forceSimulation([]).force("link", d3.forceLink([]).id((item) => item.id).distance(80).strength(0.45)).force("charge", d3.forceManyBody().strength((item) => item.type === "component" ? -1400 : -180)).force("x", d3.forceX(width / 2).strength(0.03)).force("y", d3.forceY(height / 2).strength(0.03)).force("collision", d3.forceCollide().radius((item) => item.type === "component" ? REGIONS_COMPONENT_COLLISION_RADIUS : REGIONS_FORCE_COLLISION_RADIUS).strength(0.9)).force("lattice", latticeForce).force("cohesion", createAttractorCohesionForce(ATTRACTOR_COHESION_STRENGTH)).force("interaction", createForceInteractionForce()).force("coreContainment", coreContainmentForce).force("coreExclusion", coreExclusionForce).force("regionCollision", createRegionCollisionForce()).on("tick", tick).on("end", () => {
       recomputeLabelNudges(true);
       positionLabels();
     }).stop();
@@ -4988,6 +5058,7 @@ function createRegionsView(ctx) {
     lastState = state;
     const options = rawOptions;
     keepSimulating = options.keepSimulating === true;
+    lockComponents = options.lockComponents === true;
     const model = buildNkpHypergraphModel(state, options);
     if (model.nodes.length === 0) {
       if (!built) {
@@ -5059,6 +5130,7 @@ function createRegionsView(ctx) {
     b.sim.nodes(nodes);
     b.sim.force("link").links(links);
     syncRegionLocks(model.groups, options.lockRegions === true);
+    syncComponentLocks();
     b.sim.alpha(0.3).restart();
     regionSel = b.regionsG.selectAll("g.nkp-hyper-region").data(model.groups, (group) => group.attractorId).join((enter) => {
       const g = enter.append("g").attr("class", "nkp-hyper-region");
@@ -5184,6 +5256,11 @@ function createRegionsView(ctx) {
           return;
         }
       }
+      if (lockComponents && node.type === "component") {
+        node.fx = node.x;
+        node.fy = node.y;
+        return;
+      }
       node.fx = null;
       node.fy = null;
     }));
@@ -5195,6 +5272,8 @@ function createRegionsView(ctx) {
     forceLabelSel.on("click", (_event, node) => ctx.onToggle(node.id));
     regionLabelSel = b.labelsGroup.selectAll("text.nkp-hyper-region-label").data(model.groups, (group) => group.attractorId).join("text").attr("class", "nkp-hyper-region-label").attr("text-anchor", "middle").attr("fill", (group) => group.color).attr("opacity", (group) => group.focused ? 0.9 : 0.4).text((group) => group.name);
     const clearHighlight = () => {
+      hoveredNode = undefined;
+      hoveredAttractorId = undefined;
       b.svg.classed("nkp-hyper-hovering", false);
       nodeSel.classed("is-lit", false);
       bundleGroupSel.classed("is-lit", false);
@@ -5211,41 +5290,40 @@ function createRegionsView(ctx) {
       }
       return ids;
     };
-    const highlight = (item) => {
-      const lit = lastState ? highlightConnectedKeys(lastState, [item.id]) : new Set([item.id]);
+    const applyHoverLit = (lit) => {
       const litAttractors = litAttractorsFrom(lit);
       b.svg.classed("nkp-hyper-hovering", true);
       nodeSel.classed("is-lit", (other) => lit.has(other.id));
-      const branchLit = (bundle) => {
+      bundleGroupSel.classed("is-lit", (bundle) => {
         const attractorKey = `attractor:${bundle.attractorId}`;
         return lit.has(bundle.componentId) && lit.has(attractorKey);
-      };
-      bundleGroupSel.classed("is-lit", branchLit);
+      });
       regionSel.classed("is-lit", (group) => litAttractors.has(group.attractorId));
       regionLabelSel.classed("is-lit", (group) => litAttractors.has(group.attractorId));
       componentLabelSel.attr("opacity", (other) => lit.has(other.id) ? 1 : 0);
       forceLabelSel.attr("opacity", (other) => lit.has(other.id) ? 1 : 0);
     };
+    const highlightNode = (item) => {
+      hoveredNode = item;
+      hoveredAttractorId = undefined;
+      const lit = lastState ? highlightConnectedKeys(lastState, [item.id]) : new Set([item.id]);
+      applyHoverLit(lit);
+    };
     const showNode = (event, item) => {
-      highlight(item);
+      highlightNode(item);
       b.tip.textContent = item.tooltip;
       placeTooltip(host, b.tip, event);
     };
     nodeSel.on("mouseenter", showNode).on("focus", showNode).on("mouseleave", clearHighlight).on("blur", clearHighlight);
-    const showRegion = (event, group) => {
+    const highlightRegion = (group) => {
+      hoveredNode = undefined;
+      hoveredAttractorId = group.attractorId;
       const attractorKey = `attractor:${group.attractorId}`;
       const lit = lastState ? highlightConnectedKeys(lastState, [attractorKey]) : new Set([...group.forceNodeIds, ...group.componentNodeIds]);
-      const litAttractors = litAttractorsFrom(lit);
-      b.svg.classed("nkp-hyper-hovering", true);
-      nodeSel.classed("is-lit", (node) => lit.has(node.id));
-      componentLabelSel.attr("opacity", (node) => lit.has(node.id) ? 1 : 0);
-      forceLabelSel.attr("opacity", (node) => lit.has(node.id) ? 1 : 0);
-      regionSel.classed("is-lit", (other) => litAttractors.has(other.attractorId));
-      regionLabelSel.classed("is-lit", (other) => litAttractors.has(other.attractorId));
-      bundleGroupSel.classed("is-lit", (bundle) => {
-        const attractorKey2 = `attractor:${bundle.attractorId}`;
-        return lit.has(bundle.componentId) && lit.has(attractorKey2);
-      });
+      applyHoverLit(lit);
+    };
+    const showRegion = (event, group) => {
+      highlightRegion(group);
       b.tip.textContent = group.tooltip;
       placeTooltip(host, b.tip, event);
     };
@@ -5267,6 +5345,46 @@ function createRegionsView(ctx) {
     lastSelected = selected;
     lastConnected = connected;
     applySelectionClasses();
+    if (hoveredNode) {
+      const lit = lastState ? highlightConnectedKeys(lastState, [hoveredNode.id]) : new Set([hoveredNode.id]);
+      const litAttractors = new Set;
+      for (const key of lit) {
+        if (key.startsWith("attractor:"))
+          litAttractors.add(key.slice("attractor:".length));
+      }
+      if (!built)
+        return;
+      built.svg.classed("nkp-hyper-hovering", true);
+      nodeSel?.classed("is-lit", (other) => lit.has(other.id));
+      bundleGroupSel?.classed("is-lit", (bundle) => {
+        const attractorKey = `attractor:${bundle.attractorId}`;
+        return lit.has(bundle.componentId) && lit.has(attractorKey);
+      });
+      regionSel?.classed("is-lit", (group) => litAttractors.has(group.attractorId));
+      regionLabelSel?.classed("is-lit", (group) => litAttractors.has(group.attractorId));
+      componentLabelSel?.attr("opacity", (other) => lit.has(other.id) ? 1 : 0);
+      forceLabelSel?.attr("opacity", (other) => lit.has(other.id) ? 1 : 0);
+    } else if (hoveredAttractorId) {
+      const attractorKey = `attractor:${hoveredAttractorId}`;
+      const lit = lastState ? highlightConnectedKeys(lastState, [attractorKey]) : new Set([attractorKey]);
+      const litAttractors = new Set;
+      for (const key of lit) {
+        if (key.startsWith("attractor:"))
+          litAttractors.add(key.slice("attractor:".length));
+      }
+      if (!built)
+        return;
+      built.svg.classed("nkp-hyper-hovering", true);
+      nodeSel?.classed("is-lit", (other) => lit.has(other.id));
+      bundleGroupSel?.classed("is-lit", (bundle) => {
+        const key = `attractor:${bundle.attractorId}`;
+        return lit.has(bundle.componentId) && lit.has(key);
+      });
+      regionSel?.classed("is-lit", (group) => litAttractors.has(group.attractorId));
+      regionLabelSel?.classed("is-lit", (group) => litAttractors.has(group.attractorId));
+      componentLabelSel?.attr("opacity", (other) => lit.has(other.id) ? 1 : 0);
+      forceLabelSel?.attr("opacity", (other) => lit.has(other.id) ? 1 : 0);
+    }
   }
   function resetView() {
     fitToContent();
@@ -5523,7 +5641,8 @@ function mountLandscape(container, getState, d3) {
       activeKey = activate;
     if (!activeKey || !selected.has(activeKey))
       activeKey = [...selected].at(-1);
-    const connected = highlightConnectedKeys(getState(), selected);
+    const state = getState();
+    const connected = currentView() === "bundle" ? bundleHighlightConnectedKeys(state, selected) : highlightConnectedKeys(state, selected);
     viewHandle?.setSelection(selected, connected);
     renderSidebarNow();
   };
@@ -5575,10 +5694,11 @@ function mountLandscape(container, getState, d3) {
       const focusComponent = syncFocusOptions(container.querySelector("[data-regions-focus]"), state);
       const showNames = container.querySelector("[data-regions-names-toggle]")?.checked ?? true;
       const lockRegions = container.querySelector("[data-regions-lock-toggle]")?.checked ?? false;
+      const lockComponents = container.querySelector("[data-regions-lock-components-toggle]")?.checked ?? false;
       const keepSimulating = container.querySelector("[data-regions-keep-simulating-toggle]")?.checked ?? false;
       const tensionInput = container.querySelector("[data-bundle-tension-input]");
       const tension = tensionInput ? Number(tensionInput.value) / 100 : DEFAULT_BUNDLE_TENSION;
-      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, keepSimulating, tension, ...focusComponent ? { focusComponent } : {} });
+      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, lockComponents, keepSimulating, tension, ...focusComponent ? { focusComponent } : {} });
     } else {
       const minCouplingStrength = syncMinCouplingStrength(container, state, filters);
       if (view === "heatmap") {
@@ -5598,7 +5718,7 @@ function mountLandscape(container, getState, d3) {
         });
       }
     }
-    const connected = highlightConnectedKeys(state, selected);
+    const connected = view === "bundle" ? bundleHighlightConnectedKeys(state, selected) : highlightConnectedKeys(state, selected);
     handle.setSelection(selected, connected);
     renderSidebarNow();
   };

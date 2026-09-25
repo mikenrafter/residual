@@ -16,7 +16,7 @@ import type { PendingState } from "./model";
 import { createBundleView, DEFAULT_BUNDLE_TENSION, type BundleViewHandle } from "./nkp-bundle";
 import { createHeatmapView } from "./nkp-seriation";
 import { createRegionsView, type RegionsLockState } from "./nkp-hypergraph";
-import { entityDetail, highlightConnectedKeys, toggleSelection, type EntityDetail, type EntityKey } from "./landscape-selection";
+import { bundleHighlightConnectedKeys, entityDetail, highlightConnectedKeys, toggleSelection, type EntityDetail, type EntityKey } from "./landscape-selection";
 import { renderSidebar } from "./landscape-sidebar";
 
 export type LandscapeView = "bundle" | "heatmap" | "regions";
@@ -216,7 +216,10 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
     selected = next;
     if (activate && selected.has(activate)) activeKey = activate;
     if (!activeKey || !selected.has(activeKey)) activeKey = [...selected].at(-1);
-    const connected = highlightConnectedKeys(getState(), selected);
+    const state = getState();
+    const connected = currentView() === "bundle"
+      ? bundleHighlightConnectedKeys(state, selected)
+      : highlightConnectedKeys(state, selected);
     viewHandle?.setSelection(selected, connected);
     renderSidebarNow();
   };
@@ -274,10 +277,11 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
       const focusComponent = syncFocusOptions(container.querySelector<HTMLSelectElement>("[data-regions-focus]"), state);
       const showNames = container.querySelector<HTMLInputElement>("[data-regions-names-toggle]")?.checked ?? true;
       const lockRegions = container.querySelector<HTMLInputElement>("[data-regions-lock-toggle]")?.checked ?? false;
+      const lockComponents = container.querySelector<HTMLInputElement>("[data-regions-lock-components-toggle]")?.checked ?? false;
       const keepSimulating = container.querySelector<HTMLInputElement>("[data-regions-keep-simulating-toggle]")?.checked ?? false;
       const tensionInput = container.querySelector<HTMLInputElement>("[data-bundle-tension-input]");
       const tension = tensionInput ? Number(tensionInput.value) / 100 : DEFAULT_BUNDLE_TENSION;
-      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, keepSimulating, tension, ...(focusComponent ? { focusComponent } : {}) });
+      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, lockComponents, keepSimulating, tension, ...(focusComponent ? { focusComponent } : {}) });
     } else {
       const minCouplingStrength = syncMinCouplingStrength(container, state, filters);
       if (view === "heatmap") {
@@ -298,7 +302,9 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
       }
     }
 
-    const connected = highlightConnectedKeys(state, selected);
+    const connected = view === "bundle"
+      ? bundleHighlightConnectedKeys(state, selected)
+      : highlightConnectedKeys(state, selected);
     handle.setSelection(selected, connected);
     renderSidebarNow();
   };

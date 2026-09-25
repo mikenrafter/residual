@@ -28,6 +28,7 @@ type SelectionModule = {
    * attractor membership), narrower than connectedKeys' full closure.
    */
   highlightConnectedKeys?: (state: PendingState, selected: Iterable<EntityKey>) => Set<EntityKey>;
+  bundleHighlightConnectedKeys?: (state: PendingState, selected: Iterable<EntityKey>) => Set<EntityKey>;
   toggleSelection?: (current: ReadonlySet<EntityKey>, key: EntityKey) => Set<EntityKey>;
   HOVER_DIM_OPACITY?: number;
   SELECTION_DIM_OPACITY?: number;
@@ -325,6 +326,35 @@ describe("highlightConnectedKeys", () => {
         "force:P-01", "attractor:A-02", "component:db",
       ].sort(),
     );
+  });
+});
+
+describe("bundleHighlightConnectedKeys", () => {
+  test("selecting a component lights its forces' peer components — not further hops", () => {
+    // auth ← S-01 → cache; auth ← S-02 (only auth). No path to db.
+    const auth = mod.bundleHighlightConnectedKeys?.(state(), ["component:auth"]);
+    expect([...(auth ?? [])].sort()).toEqual(
+      ["component:auth", "force:S-01", "force:S-02", "component:cache"].sort(),
+    );
+    expect(auth?.has("component:db")).toBe(false);
+    expect(auth?.has("attractor:A-01")).toBe(false);
+  });
+
+  test("selecting an attractor lights A.C → C.F → F.C — not further", () => {
+    // A-01 touches auth+cache via S-01/S-02. Those components' forces also
+    // include P-01 on cache → pulls in db. That is the [F].C step, and stops.
+    const a01 = mod.bundleHighlightConnectedKeys?.(state(), ["attractor:A-01"]);
+    expect(a01?.has("attractor:A-01")).toBe(true);
+    expect(a01?.has("component:auth")).toBe(true);
+    expect(a01?.has("component:cache")).toBe(true);
+    expect(a01?.has("force:S-01")).toBe(true);
+    expect(a01?.has("force:S-02")).toBe(true);
+    expect(a01?.has("force:P-01")).toBe(true); // via cache
+    expect(a01?.has("component:db")).toBe(true); // via P-01, end of chain
+  });
+
+  test("an empty selection highlights nothing", () => {
+    expect(mod.bundleHighlightConnectedKeys?.(state(), [])).toEqual(new Set());
   });
 });
 

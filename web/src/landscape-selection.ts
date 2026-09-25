@@ -225,6 +225,64 @@ export function highlightConnectedKeys(state: PendingState, selected: Iterable<E
   return result;
 }
 
+/**
+ * Bundle-view highlight set (component/attractor leaves only; forces are not
+ * selectable there):
+ *   A → A.C[] → [C].F[] → [F].C[]   (no further)
+ *   C → C.F[] → [F].C[]             (no further)
+ * A.C[] = components touched by A's forces.
+ */
+export function bundleHighlightConnectedKeys(state: PendingState, selected: Iterable<EntityKey>): Set<EntityKey> {
+  const { forces } = effectiveState(state);
+  const result = new Set<EntityKey>();
+
+  const addForcesTouching = (componentName: string, into: Set<string>): void => {
+    for (const force of forces) {
+      if (force.components.includes(componentName)) into.add(force.key);
+    }
+  };
+  const addComponentsOfForces = (forceKeys: ReadonlySet<string>): void => {
+    for (const force of forces) {
+      if (!forceKeys.has(force.key)) continue;
+      for (const component of force.components) {
+        result.add(`component:${component}`);
+      }
+    }
+  };
+
+  for (const key of selected) {
+    const kind = keyKind(key);
+    const id = keyId(key);
+
+    if (kind === "attractor") {
+      result.add(key);
+      const seedComponents = new Set<string>();
+      for (const force of forces) {
+        if (force.attractorId !== id) continue;
+        for (const component of force.components) seedComponents.add(component);
+      }
+      for (const component of seedComponents) {
+        result.add(`component:${component}`);
+      }
+      const forceKeys = new Set<string>();
+      for (const component of seedComponents) addForcesTouching(component, forceKeys);
+      for (const forceKey of forceKeys) result.add(`force:${forceKey}`);
+      addComponentsOfForces(forceKeys);
+      continue;
+    }
+
+    if (kind === "component") {
+      result.add(key);
+      const forceKeys = new Set<string>();
+      addForcesTouching(id, forceKeys);
+      for (const forceKey of forceKeys) result.add(`force:${forceKey}`);
+      addComponentsOfForces(forceKeys);
+    }
+  }
+
+  return result;
+}
+
 /** Mobile-friendly, no-modifier toggle: adds `key` if absent, removes it if present. Does not mutate `current`. */
 export function toggleSelection(current: ReadonlySet<EntityKey>, key: EntityKey): Set<EntityKey> {
   const next = new Set(current);
