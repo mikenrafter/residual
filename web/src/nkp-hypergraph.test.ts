@@ -369,9 +369,10 @@ describe("regions constants (Phase 4)", () => {
     expect(regionsModule.forceNodeOpacity?.("stressor")).toBe(1);
   });
 
-  test("REGIONS_FORCE_COLLISION_RADIUS is half of REGIONS_MIN_NODE_DISTANCE", () => {
+  test("REGIONS_FORCE_COLLISION_RADIUS matches component tessellation pitch", () => {
     expect(REGIONS_FORCE_COLLISION_RADIUS).toBe(REGIONS_MIN_NODE_DISTANCE / 2);
-    expect(REGIONS_FORCE_COLLISION_RADIUS).toBeLessThan(REGIONS_MIN_NODE_DISTANCE);
+    expect(REGIONS_FORCE_COLLISION_RADIUS).toBe(regionsModule.REGIONS_COMPONENT_COLLISION_RADIUS);
+    expect(REGIONS_MIN_NODE_DISTANCE).toBe(regionsModule.REGIONS_COMPONENT_MIN_DISTANCE);
     // Sanity: two colliding force nodes (each pushed apart by their own
     // collision radius) should end up exactly REGIONS_MIN_NODE_DISTANCE apart.
     expect(REGIONS_FORCE_COLLISION_RADIUS * 2).toBe(REGIONS_MIN_NODE_DISTANCE);
@@ -974,9 +975,14 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     if (forceNode) { forceNode.x = 400; forceNode.y = 300; forceNode.vx = 0; forceNode.vy = 0; } // dead center
     handle?.simulation?.tick();
     const after = handle?.simulation?.nodes().find((n: any) => n.id === "force:S-01");
-    expect(after?.x).toBeCloseTo(400, 0);
-    expect(after?.y).toBeCloseTo(300, 0);
-    expect(typeof after?.fx).toBe("number"); // pinned
+    const componentCount = allNodes.filter((n: any) => n.type === "component").length;
+    const radius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
+    const distance = Math.hypot((after?.x ?? 0) - 400, (after?.y ?? 0) - 300);
+    // Clamped onto/outside the boundary, then absolutely pinned (no further drift).
+    expect(distance).toBeGreaterThanOrEqual(radius - 0.5);
+    expect(typeof after?.fx).toBe("number");
+    expect(after?.fx).toBeCloseTo(after?.x ?? 0, 5);
+    expect(after?.fy).toBeCloseTo(after?.y ?? 0, 5);
   });
 
   test("core exclusion lock releases once the group is moved back outside the zone", () => {

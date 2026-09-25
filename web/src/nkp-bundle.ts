@@ -15,6 +15,7 @@
 import { attractorColors, buildNkpGraphModel, type NkpGraphEdge, type NkpGraphOptions } from "./nkp-graph";
 import type { PendingState } from "./model";
 import type { EntityKey } from "./landscape-selection";
+import { highlightConnectedKeys } from "./landscape-selection";
 import { appendZoomableSvg, createTooltip, escapeHtml, placeTooltip, renderEmpty, resetZoom } from "./landscape-dom";
 
 export const UNASSIGNED_GROUP_ID = "unassigned";
@@ -474,6 +475,7 @@ export function createBundleView(ctx: BundleViewCtx): BundleViewHandle {
     | undefined;
   let lastSelected: ReadonlySet<EntityKey> = new Set();
   let lastConnected: ReadonlySet<EntityKey> = new Set();
+  let lastState: PendingState | undefined;
 
   function teardown(): void {
     built = undefined;
@@ -525,23 +527,20 @@ export function createBundleView(ctx: BundleViewCtx): BundleViewHandle {
       .classed("dim", (d: any) => dim(d.group.id));
     built.labelsGroup.selectAll(".nkp-bundle-group-label")
       .attr("opacity", (d: any) => dim(d.group.id) ? 0 : 1);
-    // Edges connect two leaves but were never dimmed by selection, so a
-    // selected component never actually stood out from the rest of the
-    // couplings drawn at full weight around it (the regions/hypergraph view
-    // dims its bundle edges the same way; this brings the bundle view to
-    // parity with it). When either endpoint is selected or connected, mark
-    // the edge positively (connected) so partial-transitive focus is visible
-    // — not merely "not dimmed".
+    // Edges: lit only when BOTH endpoints are in the highlight set — lighting
+    // on either end alone pulls in +1 degree of coupling past the contract.
     built.edgesG.selectAll("path.nkp-bundle-edge")
-      .classed("dim", (item: any) => dim(item.edge.source) && dim(item.edge.target))
+      .classed("dim", (item: any) => dim(item.edge.source) || dim(item.edge.target))
       .classed("connected", (item: any) => {
         if (!hasSelection) return false;
-        return isSelected(item.edge.source) || isSelected(item.edge.target)
-          || isConnected(item.edge.source) || isConnected(item.edge.target);
+        const sourceIn = isSelected(item.edge.source) || isConnected(item.edge.source);
+        const targetIn = isSelected(item.edge.target) || isConnected(item.edge.target);
+        return sourceIn && targetIn;
       });
   }
 
   function update(state: PendingState, rawOptions: Record<string, unknown> = {}): void {
+    lastState = state;
     const options = rawOptions as BundleRenderOptions;
     const model = buildNkpBundleModel(state, options);
     const leafCount = model.groups.reduce((sum, group) => sum + group.leaves.length, 0);
@@ -757,34 +756,33 @@ export function createBundleView(ctx: BundleViewCtx): BundleViewHandle {
       .attr("text-anchor", "middle")
       .text((d: any) => truncate(d.group.label, d.name.maxChars));
 
-    // --- hover: dims/highlights neighbours, tooltip ---
+    // --- hover: same partial-transitive set as selection ---
     const clearHover = (): void => {
       b.svg.classed("hovering", false);
-      edgePaths.classed("hl-a", false).classed("hl-b", false);
+      edgePaths.classed("hl-a", false).classed("hl-b", false).classed("hl", false);
       leafSel.classed("hl", false);
       leafLabelSel.classed("hl", false);
       groupSel.classed("hl", false);
       b.labelsGroup.selectAll(".nkp-bundle-group-label").classed("hl", false);
       b.tip.hidden = true;
+      applySelectionClasses();
     };
 
     const showLeaf = (event: MouseEvent, node: any): void => {
         const leaf = node.data.leaf as BundleLeaf;
         b.svg.classed("hovering", true);
-        const neighbours = new Set<string>([leaf.id]);
-        edgePaths.classed("hl-a", (item: any) => {
-          const hit = item.edge.source === leaf.id || item.edge.target === leaf.id;
-          if (hit) {
-            neighbours.add(item.edge.source);
-            neighbours.add(item.edge.target);
-          }
-          return hit;
-        });
-        edgePaths.filter(".hl-a").raise();
-        leafSel.classed("hl", (other: any) => neighbours.has(other.data.id));
-        leafLabelSel.classed("hl", (other: any) => neighbours.has(other.data.id));
-        groupSel.classed("hl", (d: any) => d.group.id === leaf.groupId);
-        b.labelsGroup.selectAll(".nkp-bundle-group-label").classed("hl", (d: any) => d.group.id === leaf.groupId);
+        const lit = lastState
+          ? highlightConnectedKeys(lastState, [leaf.id as EntityKey])
+          : new Set<EntityKey>([leaf.id as EntityKey]);
+        edgePaths
+          .classed("hl-a", false)
+          .classed("hl-b", false)
+          .classed("hl", (item: any) => lit.has(item.edge.source as EntityKey) && lit.has(item.edge.target as EntityKey));
+        edgePaths.filter(".hl").raise();
+        leafSel.classed("hl", (other: any) => lit.has(other.data.id as EntityKey));
+        leafLabelSel.classed("hl", (other: any) => lit.has(other.data.id as EntityKey));
+        groupSel.classed("hl", (d: any) => lit.has(d.group.id as EntityKey));
+        b.labelsGroup.selectAll(".nkp-bundle-group-label").classed("hl", (d: any) => lit.has(d.group.id as EntityKey));
         const summary = leafNeighbourSummary(model, leaf.id);
         const group = model.groups.find((candidate) => candidate.id === leaf.groupId);
         const placement = group && group.label !== leaf.dominantLabel
@@ -804,31 +802,29 @@ export function createBundleView(ctx: BundleViewCtx): BundleViewHandle {
       .on("blur", clearHover);
 
     const showGroup = (event: MouseEvent, d: any): void => {
-        const members = new Set(d.group.leaves.map((leaf: BundleLeaf) => leaf.id));
+        const attractorKey = d.group.id as EntityKey;
+        const lit = lastState
+          ? highlightConnectedKeys(lastState, [attractorKey])
+          : new Set<EntityKey>([attractorKey, ...d.group.leaves.map((leaf: BundleLeaf) => leaf.id as EntityKey)]);
         b.svg.classed("hovering", true);
-        groupSel.classed("hl", (other: any) => other === d);
-        b.labelsGroup.selectAll(".nkp-bundle-group-label").classed("hl", (other: any) => other === d);
-        const touched = new Set<string>();
+        groupSel.classed("hl", (other: any) => lit.has(other.group.id as EntityKey));
+        b.labelsGroup.selectAll(".nkp-bundle-group-label").classed("hl", (other: any) => lit.has(other.group.id as EntityKey));
+        leafSel.classed("hl", (other: any) => lit.has(other.data.id as EntityKey));
+        leafLabelSel.classed("hl", (other: any) => lit.has(other.data.id as EntityKey));
+        edgePaths
+          .classed("hl-a", false)
+          .classed("hl-b", false)
+          .classed("hl", (item: any) => lit.has(item.edge.source as EntityKey) && lit.has(item.edge.target as EntityKey));
+        edgePaths.filter(".hl").raise();
+        const members = new Set(d.group.leaves.map((leaf: BundleLeaf) => leaf.id));
         let internal = 0;
         let external = 0;
-        edgePaths
-          .classed("hl-a", (item: any) => {
-            const hit = members.has(item.edge.source) && members.has(item.edge.target);
-            if (hit) internal += 1;
-            return hit;
-          })
-          .classed("hl-b", (item: any) => {
-            const hit = members.has(item.edge.source) !== members.has(item.edge.target);
-            if (hit) {
-              external += 1;
-              touched.add(item.edge.source);
-              touched.add(item.edge.target);
-            }
-            return hit;
-          });
-        edgePaths.filter(".hl-a, .hl-b").raise();
-        leafSel.classed("hl", (node: any) => members.has(node.data.id) || touched.has(node.data.id));
-        leafLabelSel.classed("hl", (node: any) => members.has(node.data.id) || touched.has(node.data.id));
+        for (const edge of model.edges) {
+          const a = members.has(edge.source);
+          const b = members.has(edge.target);
+          if (a && b) internal += 1;
+          else if (a !== b) external += 1;
+        }
         b.tip.innerHTML = `<strong>${escapeHtml(d.group.label)}</strong>`
           + `<div class="muted">${d.group.leaves.length} component(s) · ${internal} internal, ${external} cross-attractor couplings</div>`;
         placeTooltip(host, b.tip, event);

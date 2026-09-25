@@ -519,10 +519,11 @@ describe("createBundleView (persistent view handle, Phase 3)", () => {
     expect(authCacheEdge).toBeDefined();
     expect(authCacheEdge?.classList.contains("dim")).toBe(false);
 
-    // auth<->db: one endpoint (auth) is selected.
+    // auth<->db: only one endpoint is in the highlight set — must dim (not
+    // light +1 degree of coupling past the partial-transitive contract).
     const authDbEdge = edges.find((el) => touches(el, "component:auth", "component:db"));
     expect(authDbEdge).toBeDefined();
-    expect(authDbEdge?.classList.contains("dim")).toBe(false);
+    expect(authDbEdge?.classList.contains("dim")).toBe(true);
   });
 
   test("setSelection with a force and its partial-transitive connected set lights peer leaves and the coupling edge", () => {

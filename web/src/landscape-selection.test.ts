@@ -297,18 +297,18 @@ describe("highlightConnectedKeys", () => {
     );
   });
 
-  test("selecting a component includes forces that touch it and those forces' attractors — not sibling forces or other components", () => {
+  test("selecting a component reaches its attractors and all forces under them — not those forces' other components", () => {
     const auth = mod.highlightConnectedKeys?.(state(), ["component:auth"]);
     expect([...(auth ?? [])].sort()).toEqual(
       ["component:auth", "force:S-01", "force:S-02", "attractor:A-01"].sort(),
     );
     expect(auth?.has("component:cache")).toBe(false);
 
+    // cache touches A-01 (via S-01) and A-02 (via P-01) → all forces of both attractors
     const cache = mod.highlightConnectedKeys?.(state(), ["component:cache"]);
     expect([...(cache ?? [])].sort()).toEqual(
-      ["component:cache", "force:S-01", "attractor:A-01", "force:P-01", "attractor:A-02"].sort(),
+      ["component:cache", "force:S-01", "force:S-02", "attractor:A-01", "force:P-01", "attractor:A-02"].sort(),
     );
-    expect(cache?.has("force:S-02")).toBe(false);
     expect(cache?.has("component:auth")).toBe(false);
     expect(cache?.has("component:db")).toBe(false);
   });

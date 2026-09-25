@@ -162,12 +162,11 @@ export function directlyConnectedKeys(state: PendingState, selected: Iterable<En
 }
 
 /**
- * Partial-transitive highlight set for landscape views and hover. Wider than
- * directlyConnectedKeys (sibling forces under a shared attractor; components of
- * every force under a selected attractor) but narrower than connectedKeys' full
- * closure — sibling forces do not pull in each other's extra components, and a
- * selected component does not light forces that share its attractor without
- * touching it.
+ * Partial-transitive highlight set for landscape views and hover:
+ *   A → A.F[] → [F].C[]          (no further)
+ *   F → F.C, F.A → A.F[]         (no further — siblings' components stay out)
+ *   C → C.A[] → [A].F            (no further — those forces' other components stay out)
+ * C.A[] means attractors of forces that touch C.
  */
 export function highlightConnectedKeys(state: PendingState, selected: Iterable<EntityKey>): Set<EntityKey> {
   const { forces } = effectiveState(state);
@@ -207,10 +206,18 @@ export function highlightConnectedKeys(state: PendingState, selected: Iterable<E
 
     if (kind === "component") {
       result.add(key);
+      const attractorIds = new Set<string>();
       for (const force of forces) {
         if (!force.components.includes(id)) continue;
-        result.add(`force:${force.key}`);
-        result.add(`attractor:${force.attractorId}`);
+        attractorIds.add(force.attractorId);
+      }
+      for (const attractorId of attractorIds) {
+        result.add(`attractor:${attractorId}`);
+        for (const force of forces) {
+          if (force.attractorId === attractorId) {
+            result.add(`force:${force.key}`);
+          }
+        }
       }
     }
   }

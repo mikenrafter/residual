@@ -502,26 +502,26 @@ function createAttractorCohesionForce(strength = ATTRACTOR_COHESION_STRENGTH) {
 const REGION_PADDING = 22;
 /**
  * How far beyond the core zone boundary a brand-new attractor's first force
- * member spawns (along its dedicated attractorSpawnAngle direction), so a
- * freshly seeded group starts with real clearance instead of landing right
- * on the line and drifting back in on the first few ticks.
+ * member spawns. Large enough that the initial attractor blob has room to
+ * breathe instead of hugging the ergodic boundary.
  */
-const SPAWN_CORE_CLEARANCE = REGIONS_COMPONENT_MIN_DISTANCE;
+const SPAWN_CORE_CLEARANCE = REGIONS_COMPONENT_MIN_DISTANCE * 2.5;
 const FUSION_REGION_PADDING = 18;
 const DEFAULT_CANVAS_WIDTH = 800;
 const DEFAULT_CANVAS_HEIGHT = 600;
 
 export const REGIONS_LATTICE_CELL_SIZE = 48;
-export const REGIONS_MIN_NODE_DISTANCE = 32;
+/**
+ * Shared tessellation minimum for components and forces — both species sit on
+ * the same lattice pitch so attractor clusters match component spacing.
+ */
+export const REGIONS_MIN_NODE_DISTANCE = REGIONS_COMPONENT_MIN_DISTANCE;
 export const REGIONS_COMPONENT_COLLISION_RADIUS = REGIONS_COMPONENT_MIN_DISTANCE / 2;
 /**
- * Half of REGIONS_MIN_NODE_DISTANCE: forceCollide resolves overlaps every
- * tick (unlike the lattice force, which only relaxes toward a snapshot taken
- * at sparse events), so it is what actually keeps two force nodes apart
- * against sustained intra-attractor attraction. It has to match the
- * tessellation's minimum distance or that minimum is only nominal.
+ * Same collision radius as components so forceCollide and the lattice agree
+ * on one pitch for every node type.
  */
-export const REGIONS_FORCE_COLLISION_RADIUS = REGIONS_MIN_NODE_DISTANCE / 2;
+export const REGIONS_FORCE_COLLISION_RADIUS = REGIONS_COMPONENT_COLLISION_RADIUS;
 
 /** 1.3x the original glyph sizes (diamond half-diagonal 5 -> 6.5, circle r 4 -> 5.2). */
 export const FORCE_NODE_SCALE = 1.3;
@@ -854,11 +854,16 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   let currentTension = 1;
 
   const latticeForce = (alpha: number): void => {
-    const strength = Math.min(0.35, 0.18 + alpha * 0.2);
     for (const node of nodes) {
       if (node.fx != null || node.fy != null) continue;
       const target = latticeTargets.get(node.id);
       if (!target) continue;
+      // Components: soft lattice only — charge/collision dominate so they do
+      // not collapse into a packed hex in the core centre. Forces keep a
+      // firmer lattice so attractor clusters stay readable.
+      const strength = node.type === "component"
+        ? Math.min(0.08, 0.04 + alpha * 0.05)
+        : Math.min(0.35, 0.18 + alpha * 0.2);
       node.vx = (node.vx ?? 0) + (target.x - (node.x ?? 0)) * strength * alpha;
       node.vy = (node.vy ?? 0) + (target.y - (node.y ?? 0)) * strength * alpha;
     }
@@ -892,12 +897,10 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   coreContainmentForce.initialize = (): void => {};
 
   /**
-   * Pins an attractor's whole force-node group in place the instant it
-   * touches the core zone (rather than letting cohesion/interaction pull it
-   * deeper toward the component-only centre), and releases that pin once the
-   * group is back outside. Only manages fx/fy it set itself, and only while
-   * the manual lock toggle is off and no drag is in progress for that
-   * attractor/node, so it never fights those pre-existing mechanisms.
+   * Absolute freeze for an attractor's force nodes the instant the group
+   * touches the core zone: pin fx/fy and zero velocity so members do not
+   * drift along the boundary or relative to each other. Release only when
+   * the group clears the zone (and never fight an active drag / lock).
    */
   const coreExclusionForce = (): void => {
     if (lockState.enabled) return;
@@ -907,22 +910,35 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       nodes.filter((node): node is SimForceNode => node.type === "force").map((node) => node.attractorId),
     )];
     const distanceByAttractor = new Map(attractorIds.map((id) => [id, attractorCoreDistance(nodes, id, coreCenter)]));
-    const touchingCount = [...distanceByAttractor.values()].filter((distance) => distance < radius).length;
+    const touchingCount = [...distanceByAttractor.values()].filter((distance) => distance <= radius + 0.5).length;
     for (const attractorId of attractorIds) {
       if (draggingRegionIds.has(attractorId)) continue;
       const distance = distanceByAttractor.get(attractorId) ?? Infinity;
-      // When two or more attractor groups are simultaneously touching the
-      // core zone (e.g. they collided right at the centre), back off instead
-      // of freezing every member of every group exactly where they
-      // collided — regionCollision needs room to push them apart first.
-      const touching = distance < radius && touchingCount <= 1;
+      // Inclusive boundary: after clamping onto the circle, distance === radius
+      // and we must stay frozen until the group is pushed clearly outside.
+      const inContact = distance <= radius + 0.5;
+      // Absolute freeze only when a single group is in contact. If two+ groups
+      // are jammed on the boundary together, still clamp them out of the core
+      // but leave fx free so regionCollision can separate them.
+      const freeze = inContact && touchingCount <= 1;
       for (const node of nodes) {
         if (node.type !== "force" || node.attractorId !== attractorId) continue;
         if (draggingNodeIds.has(node.id)) continue;
-        if (touching) {
-          node.fx = node.x;
-          node.fy = node.y;
-          coreExclusionPinnedIds.add(node.id);
+        if (inContact) {
+          const clamped = clampOutsideCore({ x: node.x ?? 0, y: node.y ?? 0 }, coreCenter, radius);
+          node.x = clamped.x;
+          node.y = clamped.y;
+          if (freeze) {
+            node.fx = clamped.x;
+            node.fy = clamped.y;
+            node.vx = 0;
+            node.vy = 0;
+            coreExclusionPinnedIds.add(node.id);
+          } else if (coreExclusionPinnedIds.has(node.id)) {
+            node.fx = null;
+            node.fy = null;
+            coreExclusionPinnedIds.delete(node.id);
+          }
         } else if (coreExclusionPinnedIds.has(node.id)) {
           node.fx = null;
           node.fy = null;
@@ -1325,12 +1341,12 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
 
     const sim = d3.forceSimulation([])
       .force("link", d3.forceLink([]).id((item: SimNode) => item.id).distance(60).strength(0.18))
-      .force("charge", d3.forceManyBody().strength((item: SimNode) => item.type === "component" ? -650 : -130))
-      .force("x", d3.forceX(width / 2).strength(0.05))
-      .force("y", d3.forceY(height / 2).strength(0.05))
+      .force("charge", d3.forceManyBody().strength((item: SimNode) => item.type === "component" ? -1400 : -180))
+      .force("x", d3.forceX(width / 2).strength(0.03))
+      .force("y", d3.forceY(height / 2).strength(0.03))
       .force("collision", d3.forceCollide().radius((item: SimNode) => item.type === "component"
         ? REGIONS_COMPONENT_COLLISION_RADIUS
-        : REGIONS_FORCE_COLLISION_RADIUS))
+        : REGIONS_FORCE_COLLISION_RADIUS).strength(0.9))
       .force("lattice", latticeForce)
       .force("cohesion", createAttractorCohesionForce(ATTRACTOR_COHESION_STRENGTH))
       .force("interaction", createForceInteractionForce())
@@ -1446,16 +1462,21 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     componentLabelSel?.attr("opacity", (node: SimNode) => dim(node.id) ? 0 : 1);
     forceLabelSel?.attr("opacity", (node: SimNode) => hasSelection && !dim(node.id) ? 1 : 0);
 
-    const bundleDim = (bundle: RenderBundle): boolean => {
-      if (!hasSelection) return false;
-      const keys = [bundle.componentId, ...bundle.forceIds.map((forceId) => `force:${forceId}`)];
-      return keys.every((key) => !isSelected(key) && !isConnected(key));
+    const bundleLit = (bundle: RenderBundle): boolean => {
+      if (!hasSelection) return true;
+      // Require both ends of the component→attractor trunk: lighting when only
+      // the component is in the set would also light that component's edges to
+      // unrelated attractors (+1 degree past the highlight contract).
+      const attractorKey = `attractor:${bundle.attractorId}`;
+      const componentIn = isSelected(bundle.componentId) || isConnected(bundle.componentId);
+      const attractorIn = isSelected(attractorKey) || isConnected(attractorKey);
+      return componentIn && attractorIn;
     };
     // is-lit lives on the per-bundle <g> (not the individual trunk/branch
     // paths) so hover/selection opacity is applied once after the opaque
     // strokes have already been composited — overlapping branches no longer
     // stack stroke-opacity.
-    bundleGroupSel?.classed("is-lit", (bundle: RenderBundle) => !bundleDim(bundle));
+    bundleGroupSel?.classed("is-lit", (bundle: RenderBundle) => bundleLit(bundle));
     const regionDim = (group: AttractorGroup): boolean => {
       const key = `attractor:${group.attractorId}`;
       return hasSelection && !(isSelected(key) || isConnected(key));
@@ -1803,8 +1824,8 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       b.svg.classed("nkp-hyper-hovering", true);
       nodeSel.classed("is-lit", (other: SimNode) => lit.has(other.id as EntityKey));
       const branchLit = (bundle: RenderBundle): boolean => {
-        if (lit.has(bundle.componentId as EntityKey)) return true;
-        return bundle.forceIds.some((forceId) => lit.has(`force:${forceId}`));
+        const attractorKey = `attractor:${bundle.attractorId}` as EntityKey;
+        return lit.has(bundle.componentId as EntityKey) && lit.has(attractorKey);
       };
       bundleGroupSel.classed("is-lit", branchLit);
       regionSel.classed("is-lit", (group: AttractorGroup) => litAttractors.has(group.attractorId));
@@ -1833,6 +1854,10 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       forceLabelSel.attr("opacity", (node: SimNode) => lit.has(node.id as EntityKey) ? 1 : 0);
       regionSel.classed("is-lit", (other: AttractorGroup) => litAttractors.has(other.attractorId));
       regionLabelSel.classed("is-lit", (other: AttractorGroup) => litAttractors.has(other.attractorId));
+      bundleGroupSel.classed("is-lit", (bundle: RenderBundle) => {
+        const attractorKey = `attractor:${bundle.attractorId}` as EntityKey;
+        return lit.has(bundle.componentId as EntityKey) && lit.has(attractorKey);
+      });
       b.tip.textContent = group.tooltip;
       placeTooltip(host, b.tip, event);
     };

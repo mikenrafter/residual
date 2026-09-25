@@ -240,7 +240,8 @@
       .nkp-bundle-edge.dim { opacity: var(--selection-dim-opacity); }
       .nkp-bundle-edge.fusion { stroke: var(--warn); stroke-dasharray: 3 3; }
       .nkp-bundle-svg.hovering .nkp-bundle-edge { stroke-opacity: 0.04 !important; }
-      .nkp-bundle-svg.hovering .nkp-bundle-edge.hl-a { stroke: var(--accent); stroke-opacity: 0.95 !important; }
+      .nkp-bundle-svg.hovering .nkp-bundle-edge.hl-a,
+      .nkp-bundle-svg.hovering .nkp-bundle-edge.hl { stroke: var(--accent); stroke-opacity: 0.95 !important; }
       .nkp-bundle-svg.hovering .nkp-bundle-edge.hl-b { stroke: var(--coupled); stroke-opacity: 0.85 !important; }
       .nkp-component-status-glyph { stroke: var(--bg); stroke-width: 1.5px; }
       .nkp-bundle-label { fill: var(--ink); font: 11px var(--mono); }
@@ -290,7 +291,7 @@
       .nkp-seriation-cell.dim,
       .nkp-seriation-diagonal.dim,
       .landscape-legend-item.dim { opacity: var(--selection-dim-opacity); }
-      .nkp-seriation-cell.mirror-dim { opacity: 0.5; }
+      .nkp-seriation-cell.mirror-dim { opacity: var(--selection-dim-opacity); }
 
       /* regions view (web/src/nkp-hypergraph.ts) */
       .nkp-node { cursor: grab; }
@@ -688,7 +689,7 @@
             <div class="landscape-viewport" data-landscape></div>
             <aside class="landscape-sidebar" data-landscape-sidebar></aside>
           </div>
-          <p class="ledger-panel-help">Directly connected entities share a force–component membership edge or a force–attractor assignment. Connected entities are the transitive closure: every entity reachable along those direct relations. With multiple selections, connected entities are the union of their reachable sets. The highlight in the views above (full opacity vs. dimmed) follows a partial-transitive set: a selected force lights its attractor, its own components, and sibling forces under the same attractor (not those siblings' other components); a selected attractor lights all its forces and every component they touch; a selected component lights the forces that touch it and those forces' attractors.</p>
+          <p class="ledger-panel-help">Directly connected entities share a force–component membership edge or a force–attractor assignment. Connected entities are the transitive closure: every entity reachable along those direct relations. With multiple selections, connected entities are the union of their reachable sets. The highlight in the views above (full opacity vs. dimmed) follows a partial-transitive set: a selected attractor lights its forces and every component those forces touch; a selected force lights its own components, its attractor, and sibling forces under that attractor (not those siblings' other components); a selected component lights the attractors of forces that touch it and every force under those attractors (not those forces' other components). Coupling lines light only when both ends are in that set.</p>
         </div>
       </details>
 

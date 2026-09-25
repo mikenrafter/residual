@@ -2543,6 +2543,147 @@ function activateSort(container, th) {
   sortMatrixBy(container, key, next);
 }
 
+// src/landscape-selection.ts
+function keyKind(key) {
+  if (key.startsWith("component:"))
+    return "component";
+  if (key.startsWith("force:"))
+    return "force";
+  if (key.startsWith("attractor:"))
+    return "attractor";
+  return;
+}
+function keyId(key) {
+  return key.slice(key.indexOf(":") + 1);
+}
+function entityDetail(state, key) {
+  const { components, attractors, forces } = effectiveState(state);
+  const kind = keyKind(key);
+  const id = keyId(key);
+  if (kind === "component") {
+    const component = components.find((candidate) => candidate.name === id);
+    if (!component)
+      return;
+    const forceCount = forces.filter((force) => force.components.includes(component.name)).length;
+    return {
+      key,
+      kind: "component",
+      title: component.name,
+      fields: [
+        { label: "name", value: component.name },
+        { label: "description", value: component.description },
+        { label: "status", value: component.status },
+        { label: "architecture set", value: component.architectureSet },
+        { label: "force count", value: String(forceCount) }
+      ]
+    };
+  }
+  if (kind === "force") {
+    const force = forces.find((candidate) => candidate.key === id);
+    if (!force)
+      return;
+    const attractor = attractors.find((candidate) => candidate.id === force.attractorId);
+    const changeLabel = force.kind === "stressor" ? "naive change" : "feature";
+    return {
+      key,
+      kind: force.kind,
+      title: force.shortname || force.id,
+      fields: [
+        { label: "id", value: force.id },
+        { label: "shortname", value: force.shortname },
+        { label: "kind", value: force.kind },
+        { label: "description", value: force.description },
+        { label: "attractor", value: attractor?.name ?? force.attractorId },
+        { label: "components", value: force.components.join(", ") },
+        { label: changeLabel, value: force.naiveChangeOrFeature },
+        { label: "outcomes", value: force.outcomes }
+      ]
+    };
+  }
+  if (kind === "attractor") {
+    const attractor = attractors.find((candidate) => candidate.id === id);
+    if (!attractor)
+      return;
+    const forceCount = forces.filter((force) => force.attractorId === attractor.id).length;
+    return {
+      key,
+      kind: "attractor",
+      title: attractor.name,
+      color: attractorColors(state).get(attractor.id),
+      fields: [
+        { label: "name", value: attractor.name },
+        { label: "description", value: attractor.description },
+        { label: "positive", value: attractor.positiveState },
+        { label: "negative", value: attractor.negativeState },
+        { label: "force count", value: String(forceCount) }
+      ]
+    };
+  }
+  return;
+}
+function highlightConnectedKeys(state, selected) {
+  const { forces } = effectiveState(state);
+  const result = new Set;
+  for (const key of selected) {
+    const kind = keyKind(key);
+    const id = keyId(key);
+    if (kind === "force") {
+      const force = forces.find((candidate) => candidate.key === id);
+      result.add(key);
+      if (!force)
+        continue;
+      result.add(`attractor:${force.attractorId}`);
+      for (const component of force.components) {
+        result.add(`component:${component}`);
+      }
+      for (const sibling of forces) {
+        if (sibling.attractorId === force.attractorId) {
+          result.add(`force:${sibling.key}`);
+        }
+      }
+      continue;
+    }
+    if (kind === "attractor") {
+      result.add(key);
+      for (const force of forces) {
+        if (force.attractorId !== id)
+          continue;
+        result.add(`force:${force.key}`);
+        for (const component of force.components) {
+          result.add(`component:${component}`);
+        }
+      }
+      continue;
+    }
+    if (kind === "component") {
+      result.add(key);
+      const attractorIds = new Set;
+      for (const force of forces) {
+        if (!force.components.includes(id))
+          continue;
+        attractorIds.add(force.attractorId);
+      }
+      for (const attractorId of attractorIds) {
+        result.add(`attractor:${attractorId}`);
+        for (const force of forces) {
+          if (force.attractorId === attractorId) {
+            result.add(`force:${force.key}`);
+          }
+        }
+      }
+    }
+  }
+  return result;
+}
+function toggleSelection(current, key) {
+  const next = new Set(current);
+  if (next.has(key))
+    next.delete(key);
+  else
+    next.add(key);
+  return next;
+}
+
 // src/landscape-dom.ts
 function renderLegend(host, title, entries, extras = []) {
   const legend = document.createElement("div");
@@ -2860,6 +3001,7 @@ function createBundleView(ctx) {
   let built;
   let lastSelected = new Set;
   let lastConnected = new Set;
+  let lastState;
   function teardown() {
     built = undefined;
     host.replaceChildren();
@@ -2889,13 +3031,16 @@ function createBundleView(ctx) {
     built.labelsGroup.selectAll(".nkp-bundle-leaf").classed("selected", (node) => isSelected(node.data.id)).classed("connected", (node) => isConnected(node.data.id)).classed("dim", (node) => dim(node.data.id)).attr("opacity", (node) => dim(node.data.id) ? 0 : 1);
     built.groupsG.selectAll(".nkp-bundle-group").classed("selected", (d) => isSelected(d.group.id)).classed("connected", (d) => isConnected(d.group.id)).classed("dim", (d) => dim(d.group.id));
     built.labelsGroup.selectAll(".nkp-bundle-group-label").attr("opacity", (d) => dim(d.group.id) ? 0 : 1);
-    built.edgesG.selectAll("path.nkp-bundle-edge").classed("dim", (item) => dim(item.edge.source) && dim(item.edge.target)).classed("connected", (item) => {
+    built.edgesG.selectAll("path.nkp-bundle-edge").classed("dim", (item) => dim(item.edge.source) || dim(item.edge.target)).classed("connected", (item) => {
       if (!hasSelection)
         return false;
-      return isSelected(item.edge.source) || isSelected(item.edge.target) || isConnected(item.edge.source) || isConnected(item.edge.target);
+      const sourceIn = isSelected(item.edge.source) || isConnected(item.edge.source);
+      const targetIn = isSelected(item.edge.target) || isConnected(item.edge.target);
+      return sourceIn && targetIn;
     });
   }
   function update(state, rawOptions = {}) {
+    lastState = state;
     const options = rawOptions;
     const model = buildNkpBundleModel(state, options);
     const leafCount = model.groups.reduce((sum, group) => sum + group.leaves.length, 0);
@@ -3021,30 +3166,24 @@ function createBundleView(ctx) {
     groupLabelSel.attr("fill", (d) => d.group.color).attr("dy", (d) => isBottom(d) ? "0.8em" : "0").select("textPath").attr("href", (d) => `#nkp-bundle-name-${slugify(d.group.id)}`).attr("startOffset", "50%").attr("text-anchor", "middle").text((d) => truncate(d.group.label, d.name.maxChars));
     const clearHover = () => {
       b.svg.classed("hovering", false);
-      edgePaths.classed("hl-a", false).classed("hl-b", false);
+      edgePaths.classed("hl-a", false).classed("hl-b", false).classed("hl", false);
       leafSel.classed("hl", false);
       leafLabelSel.classed("hl", false);
       groupSel.classed("hl", false);
       b.labelsGroup.selectAll(".nkp-bundle-group-label").classed("hl", false);
       b.tip.hidden = true;
+      applySelectionClasses();
     };
     const showLeaf = (event, node) => {
       const leaf = node.data.leaf;
       b.svg.classed("hovering", true);
-      const neighbours = new Set([leaf.id]);
-      edgePaths.classed("hl-a", (item) => {
-        const hit = item.edge.source === leaf.id || item.edge.target === leaf.id;
-        if (hit) {
-          neighbours.add(item.edge.source);
-          neighbours.add(item.edge.target);
-        }
-        return hit;
-      });
-      edgePaths.filter(".hl-a").raise();
-      leafSel.classed("hl", (other) => neighbours.has(other.data.id));
-      leafLabelSel.classed("hl", (other) => neighbours.has(other.data.id));
-      groupSel.classed("hl", (d) => d.group.id === leaf.groupId);
-      b.labelsGroup.selectAll(".nkp-bundle-group-label").classed("hl", (d) => d.group.id === leaf.groupId);
+      const lit = lastState ? highlightConnectedKeys(lastState, [leaf.id]) : new Set([leaf.id]);
+      edgePaths.classed("hl-a", false).classed("hl-b", false).classed("hl", (item) => lit.has(item.edge.source) && lit.has(item.edge.target));
+      edgePaths.filter(".hl").raise();
+      leafSel.classed("hl", (other) => lit.has(other.data.id));
+      leafLabelSel.classed("hl", (other) => lit.has(other.data.id));
+      groupSel.classed("hl", (d) => lit.has(d.group.id));
+      b.labelsGroup.selectAll(".nkp-bundle-group-label").classed("hl", (d) => lit.has(d.group.id));
       const summary = leafNeighbourSummary(model, leaf.id);
       const group = model.groups.find((candidate) => candidate.id === leaf.groupId);
       const placement = group && group.label !== leaf.dominantLabel ? `${escapeHtml(group.label)} (own attractor: ${escapeHtml(leaf.dominantLabel)})` : escapeHtml(group?.label ?? "");
@@ -3054,30 +3193,26 @@ function createBundleView(ctx) {
     };
     leafSel.on("mouseenter", showLeaf).on("focus", showLeaf).on("mouseleave", clearHover).on("blur", clearHover);
     const showGroup = (event, d) => {
-      const members = new Set(d.group.leaves.map((leaf) => leaf.id));
+      const attractorKey = d.group.id;
+      const lit = lastState ? highlightConnectedKeys(lastState, [attractorKey]) : new Set([attractorKey, ...d.group.leaves.map((leaf) => leaf.id)]);
       b.svg.classed("hovering", true);
-      groupSel.classed("hl", (other) => other === d);
-      b.labelsGroup.selectAll(".nkp-bundle-group-label").classed("hl", (other) => other === d);
-      const touched = new Set;
+      groupSel.classed("hl", (other) => lit.has(other.group.id));
+      b.labelsGroup.selectAll(".nkp-bundle-group-label").classed("hl", (other) => lit.has(other.group.id));
+      leafSel.classed("hl", (other) => lit.has(other.data.id));
+      leafLabelSel.classed("hl", (other) => lit.has(other.data.id));
+      edgePaths.classed("hl-a", false).classed("hl-b", false).classed("hl", (item) => lit.has(item.edge.source) && lit.has(item.edge.target));
+      edgePaths.filter(".hl").raise();
+      const members = new Set(d.group.leaves.map((leaf) => leaf.id));
       let internal = 0;
       let external = 0;
-      edgePaths.classed("hl-a", (item) => {
-        const hit = members.has(item.edge.source) && members.has(item.edge.target);
-        if (hit)
+      for (const edge of model.edges) {
+        const a = members.has(edge.source);
+        const b2 = members.has(edge.target);
+        if (a && b2)
           internal += 1;
-        return hit;
-      }).classed("hl-b", (item) => {
-        const hit = members.has(item.edge.source) !== members.has(item.edge.target);
-        if (hit) {
+        else if (a !== b2)
           external += 1;
-          touched.add(item.edge.source);
-          touched.add(item.edge.target);
-        }
-        return hit;
-      });
-      edgePaths.filter(".hl-a, .hl-b").raise();
-      leafSel.classed("hl", (node) => members.has(node.data.id) || touched.has(node.data.id));
-      leafLabelSel.classed("hl", (node) => members.has(node.data.id) || touched.has(node.data.id));
+      }
       b.tip.innerHTML = `<strong>${escapeHtml(d.group.label)}</strong>` + `<div class="muted">${d.group.leaves.length} component(s) · ${internal} internal, ${external} cross-attractor couplings</div>`;
       placeTooltip(host, b.tip, event);
     };
@@ -3635,139 +3770,6 @@ function headerClass(item) {
     item.status === "proposed" ? "is-proposed" : "",
     item.focused ? "" : "is-faded"
   ].filter(Boolean).join(" ");
-}
-
-// src/landscape-selection.ts
-function keyKind(key) {
-  if (key.startsWith("component:"))
-    return "component";
-  if (key.startsWith("force:"))
-    return "force";
-  if (key.startsWith("attractor:"))
-    return "attractor";
-  return;
-}
-function keyId(key) {
-  return key.slice(key.indexOf(":") + 1);
-}
-function entityDetail(state, key) {
-  const { components, attractors, forces } = effectiveState(state);
-  const kind = keyKind(key);
-  const id = keyId(key);
-  if (kind === "component") {
-    const component = components.find((candidate) => candidate.name === id);
-    if (!component)
-      return;
-    const forceCount = forces.filter((force) => force.components.includes(component.name)).length;
-    return {
-      key,
-      kind: "component",
-      title: component.name,
-      fields: [
-        { label: "name", value: component.name },
-        { label: "description", value: component.description },
-        { label: "status", value: component.status },
-        { label: "architecture set", value: component.architectureSet },
-        { label: "force count", value: String(forceCount) }
-      ]
-    };
-  }
-  if (kind === "force") {
-    const force = forces.find((candidate) => candidate.key === id);
-    if (!force)
-      return;
-    const attractor = attractors.find((candidate) => candidate.id === force.attractorId);
-    const changeLabel = force.kind === "stressor" ? "naive change" : "feature";
-    return {
-      key,
-      kind: force.kind,
-      title: force.shortname || force.id,
-      fields: [
-        { label: "id", value: force.id },
-        { label: "shortname", value: force.shortname },
-        { label: "kind", value: force.kind },
-        { label: "description", value: force.description },
-        { label: "attractor", value: attractor?.name ?? force.attractorId },
-        { label: "components", value: force.components.join(", ") },
-        { label: changeLabel, value: force.naiveChangeOrFeature },
-        { label: "outcomes", value: force.outcomes }
-      ]
-    };
-  }
-  if (kind === "attractor") {
-    const attractor = attractors.find((candidate) => candidate.id === id);
-    if (!attractor)
-      return;
-    const forceCount = forces.filter((force) => force.attractorId === attractor.id).length;
-    return {
-      key,
-      kind: "attractor",
-      title: attractor.name,
-      color: attractorColors(state).get(attractor.id),
-      fields: [
-        { label: "name", value: attractor.name },
-        { label: "description", value: attractor.description },
-        { label: "positive", value: attractor.positiveState },
-        { label: "negative", value: attractor.negativeState },
-        { label: "force count", value: String(forceCount) }
-      ]
-    };
-  }
-  return;
-}
-function highlightConnectedKeys(state, selected) {
-  const { forces } = effectiveState(state);
-  const result = new Set;
-  for (const key of selected) {
-    const kind = keyKind(key);
-    const id = keyId(key);
-    if (kind === "force") {
-      const force = forces.find((candidate) => candidate.key === id);
-      result.add(key);
-      if (!force)
-        continue;
-      result.add(`attractor:${force.attractorId}`);
-      for (const component of force.components) {
-        result.add(`component:${component}`);
-      }
-      for (const sibling of forces) {
-        if (sibling.attractorId === force.attractorId) {
-          result.add(`force:${sibling.key}`);
-        }
-      }
-      continue;
-    }
-    if (kind === "attractor") {
-      result.add(key);
-      for (const force of forces) {
-        if (force.attractorId !== id)
-          continue;
-        result.add(`force:${force.key}`);
-        for (const component of force.components) {
-          result.add(`component:${component}`);
-        }
-      }
-      continue;
-    }
-    if (kind === "component") {
-      result.add(key);
-      for (const force of forces) {
-        if (!force.components.includes(id))
-          continue;
-        result.add(`force:${force.key}`);
-        result.add(`attractor:${force.attractorId}`);
-      }
-    }
-  }
-  return result;
-}
-function toggleSelection(current, key) {
-  const next = new Set(current);
-  if (next.has(key))
-    next.delete(key);
-  else
-    next.add(key);
-  return next;
 }
 
 // src/landscape-geometry.ts
@@ -4332,14 +4334,14 @@ function createAttractorCohesionForce(strength = ATTRACTOR_COHESION_STRENGTH) {
   return force;
 }
 var REGION_PADDING = 22;
-var SPAWN_CORE_CLEARANCE = REGIONS_COMPONENT_MIN_DISTANCE;
+var SPAWN_CORE_CLEARANCE = REGIONS_COMPONENT_MIN_DISTANCE * 2.5;
 var FUSION_REGION_PADDING = 18;
 var DEFAULT_CANVAS_WIDTH = 800;
 var DEFAULT_CANVAS_HEIGHT = 600;
 var REGIONS_LATTICE_CELL_SIZE = 48;
-var REGIONS_MIN_NODE_DISTANCE = 32;
+var REGIONS_MIN_NODE_DISTANCE = REGIONS_COMPONENT_MIN_DISTANCE;
 var REGIONS_COMPONENT_COLLISION_RADIUS = REGIONS_COMPONENT_MIN_DISTANCE / 2;
-var REGIONS_FORCE_COLLISION_RADIUS = REGIONS_MIN_NODE_DISTANCE / 2;
+var REGIONS_FORCE_COLLISION_RADIUS = REGIONS_COMPONENT_COLLISION_RADIUS;
 var FORCE_NODE_SCALE = 1.3;
 var FORCE_DIAMOND_HALF_DIAGONAL = 5 * FORCE_NODE_SCALE;
 var FORCE_CIRCLE_RADIUS = 4 * FORCE_NODE_SCALE;
@@ -4516,13 +4518,13 @@ function createRegionsView(ctx) {
   let coreCenter = { x: DEFAULT_CANVAS_WIDTH / 2, y: DEFAULT_CANVAS_HEIGHT / 2 };
   let currentTension = 1;
   const latticeForce = (alpha) => {
-    const strength = Math.min(0.35, 0.18 + alpha * 0.2);
     for (const node of nodes) {
       if (node.fx != null || node.fy != null)
         continue;
       const target = latticeTargets.get(node.id);
       if (!target)
         continue;
+      const strength = node.type === "component" ? Math.min(0.08, 0.04 + alpha * 0.05) : Math.min(0.35, 0.18 + alpha * 0.2);
       node.vx = (node.vx ?? 0) + (target.x - (node.x ?? 0)) * strength * alpha;
       node.vy = (node.vy ?? 0) + (target.y - (node.y ?? 0)) * strength * alpha;
     }
@@ -4549,21 +4551,33 @@ function createRegionsView(ctx) {
     const radius = coreZoneRadius(componentCount);
     const attractorIds = [...new Set(nodes.filter((node) => node.type === "force").map((node) => node.attractorId))];
     const distanceByAttractor = new Map(attractorIds.map((id) => [id, attractorCoreDistance(nodes, id, coreCenter)]));
-    const touchingCount = [...distanceByAttractor.values()].filter((distance) => distance < radius).length;
+    const touchingCount = [...distanceByAttractor.values()].filter((distance) => distance <= radius + 0.5).length;
     for (const attractorId of attractorIds) {
       if (draggingRegionIds.has(attractorId))
         continue;
       const distance = distanceByAttractor.get(attractorId) ?? Infinity;
-      const touching = distance < radius && touchingCount <= 1;
+      const inContact = distance <= radius + 0.5;
+      const freeze = inContact && touchingCount <= 1;
       for (const node of nodes) {
         if (node.type !== "force" || node.attractorId !== attractorId)
           continue;
         if (draggingNodeIds.has(node.id))
           continue;
-        if (touching) {
-          node.fx = node.x;
-          node.fy = node.y;
-          coreExclusionPinnedIds.add(node.id);
+        if (inContact) {
+          const clamped = clampOutsideCore({ x: node.x ?? 0, y: node.y ?? 0 }, coreCenter, radius);
+          node.x = clamped.x;
+          node.y = clamped.y;
+          if (freeze) {
+            node.fx = clamped.x;
+            node.fy = clamped.y;
+            node.vx = 0;
+            node.vy = 0;
+            coreExclusionPinnedIds.add(node.id);
+          } else if (coreExclusionPinnedIds.has(node.id)) {
+            node.fx = null;
+            node.fy = null;
+            coreExclusionPinnedIds.delete(node.id);
+          }
         } else if (coreExclusionPinnedIds.has(node.id)) {
           node.fx = null;
           node.fy = null;
@@ -4886,7 +4900,7 @@ function createRegionsView(ctx) {
       labelsGroup.attr("transform", event.transform);
     });
     svg.on("dblclick", () => ctx.onClear());
-    const sim = d3.forceSimulation([]).force("link", d3.forceLink([]).id((item) => item.id).distance(60).strength(0.18)).force("charge", d3.forceManyBody().strength((item) => item.type === "component" ? -650 : -130)).force("x", d3.forceX(width / 2).strength(0.05)).force("y", d3.forceY(height / 2).strength(0.05)).force("collision", d3.forceCollide().radius((item) => item.type === "component" ? REGIONS_COMPONENT_COLLISION_RADIUS : REGIONS_FORCE_COLLISION_RADIUS)).force("lattice", latticeForce).force("cohesion", createAttractorCohesionForce(ATTRACTOR_COHESION_STRENGTH)).force("interaction", createForceInteractionForce()).force("coreContainment", coreContainmentForce).force("coreExclusion", coreExclusionForce).force("regionCollision", createRegionCollisionForce()).on("tick", tick).on("end", () => {
+    const sim = d3.forceSimulation([]).force("link", d3.forceLink([]).id((item) => item.id).distance(60).strength(0.18)).force("charge", d3.forceManyBody().strength((item) => item.type === "component" ? -1400 : -180)).force("x", d3.forceX(width / 2).strength(0.03)).force("y", d3.forceY(height / 2).strength(0.03)).force("collision", d3.forceCollide().radius((item) => item.type === "component" ? REGIONS_COMPONENT_COLLISION_RADIUS : REGIONS_FORCE_COLLISION_RADIUS).strength(0.9)).force("lattice", latticeForce).force("cohesion", createAttractorCohesionForce(ATTRACTOR_COHESION_STRENGTH)).force("interaction", createForceInteractionForce()).force("coreContainment", coreContainmentForce).force("coreExclusion", coreExclusionForce).force("regionCollision", createRegionCollisionForce()).on("tick", tick).on("end", () => {
       recomputeLabelNudges(true);
       positionLabels();
     }).stop();
@@ -4954,13 +4968,15 @@ function createRegionsView(ctx) {
     applyToKeyed(forceLabelSel);
     componentLabelSel?.attr("opacity", (node) => dim(node.id) ? 0 : 1);
     forceLabelSel?.attr("opacity", (node) => hasSelection && !dim(node.id) ? 1 : 0);
-    const bundleDim = (bundle) => {
+    const bundleLit = (bundle) => {
       if (!hasSelection)
-        return false;
-      const keys = [bundle.componentId, ...bundle.forceIds.map((forceId) => `force:${forceId}`)];
-      return keys.every((key) => !isSelected(key) && !isConnected(key));
+        return true;
+      const attractorKey = `attractor:${bundle.attractorId}`;
+      const componentIn = isSelected(bundle.componentId) || isConnected(bundle.componentId);
+      const attractorIn = isSelected(attractorKey) || isConnected(attractorKey);
+      return componentIn && attractorIn;
     };
-    bundleGroupSel?.classed("is-lit", (bundle) => !bundleDim(bundle));
+    bundleGroupSel?.classed("is-lit", (bundle) => bundleLit(bundle));
     const regionDim = (group) => {
       const key = `attractor:${group.attractorId}`;
       return hasSelection && !(isSelected(key) || isConnected(key));
@@ -5201,9 +5217,8 @@ function createRegionsView(ctx) {
       b.svg.classed("nkp-hyper-hovering", true);
       nodeSel.classed("is-lit", (other) => lit.has(other.id));
       const branchLit = (bundle) => {
-        if (lit.has(bundle.componentId))
-          return true;
-        return bundle.forceIds.some((forceId) => lit.has(`force:${forceId}`));
+        const attractorKey = `attractor:${bundle.attractorId}`;
+        return lit.has(bundle.componentId) && lit.has(attractorKey);
       };
       bundleGroupSel.classed("is-lit", branchLit);
       regionSel.classed("is-lit", (group) => litAttractors.has(group.attractorId));
@@ -5227,6 +5242,10 @@ function createRegionsView(ctx) {
       forceLabelSel.attr("opacity", (node) => lit.has(node.id) ? 1 : 0);
       regionSel.classed("is-lit", (other) => litAttractors.has(other.attractorId));
       regionLabelSel.classed("is-lit", (other) => litAttractors.has(other.attractorId));
+      bundleGroupSel.classed("is-lit", (bundle) => {
+        const attractorKey2 = `attractor:${bundle.attractorId}`;
+        return lit.has(bundle.componentId) && lit.has(attractorKey2);
+      });
       b.tip.textContent = group.tooltip;
       placeTooltip(host, b.tip, event);
     };
