@@ -44,7 +44,11 @@ interface SimNodeSnapshot {
 }
 interface ViewHandle {
   update: (state: PendingState, options?: Record<string, unknown>) => void;
-  setSelection: (selected: ReadonlySet<string>, connected: ReadonlySet<string>) => void;
+  setSelection: (
+    selected: ReadonlySet<string>,
+    connected: ReadonlySet<string>,
+    semi?: ReadonlySet<string>,
+  ) => void;
   resetView: () => void;
   destroy: () => void;
   /** Test-only hook (not part of the Phase 1 plan's fixed handle contract):
@@ -92,8 +96,10 @@ type RegionsViewModule = {
   // --- core zone (not yet implemented) ---
   CORE_ZONE_BASE_RADIUS?: number;
   CORE_ZONE_RADIUS_PER_COMPONENT?: number;
+  COMPONENT_ZONE_INSET?: number;
   coreZoneRadius?: (componentCount: number) => number;
   coreZoneMinimumRadius?: (componentCount: number) => number;
+  componentZoneRadius?: (componentCount: number) => number;
   clampToCore?: (
     point: { x: number; y: number },
     center: { x: number; y: number },
@@ -359,6 +365,38 @@ describe("model.branchBundles (Phase 5)", () => {
   });
 });
 
+describe("model.forceBranchBundles (bidirectional bundling)", () => {
+  test("one bundle per visible force, branching to its deduped components", () => {
+    const model = buildNkpHypergraphModel(state());
+    const bundles = model.forceBranchBundles;
+    expect(bundles).toHaveLength(3);
+    const byForce = new Map(bundles.map((b) => [b.forceId, b]));
+    expect(byForce.get("force:S-01")?.componentIds.slice().sort()).toEqual([
+      "component:auth", "component:cache", "component:database", "component:queue",
+    ]);
+    expect(byForce.get("force:S-02")?.componentIds).toEqual(["component:auth"]);
+    expect(byForce.get("force:P-01")?.componentIds.slice().sort()).toEqual(["component:cache", "component:database"]);
+    expect(byForce.get("force:S-01")?.attractorId).toBe("A-01");
+    expect(byForce.get("force:P-01")?.attractorId).toBe("A-02");
+    expect(bundles.every((b) => typeof b.id === "string" && b.id.length > 0)).toBe(true);
+    expect(bundles.every((b) => b.focused === true)).toBe(true);
+  });
+
+  test("a force with 3+ components produces a 3+-branch geometry (via branchGeometry directly)", () => {
+    const model = buildNkpHypergraphModel(state());
+    const s01 = model.forceBranchBundles.find((b) => b.forceId === "force:S-01");
+    expect(s01?.componentIds).toHaveLength(4);
+  });
+
+  test("a bundle is unfocused once its force is filtered out", () => {
+    const model = buildNkpHypergraphModel(state(), { visibleForceIds: new Set(["P-01"]) });
+    const s01 = model.forceBranchBundles.find((b) => b.forceId === "force:S-01");
+    expect(s01?.focused).toBe(false);
+    const p01 = model.forceBranchBundles.find((b) => b.forceId === "force:P-01");
+    expect(p01?.focused).toBe(true);
+  });
+});
+
 describe("regions constants (Phase 4)", () => {
   test("FORCE_NODE_SCALE is 1.3", () => {
     expect(regionsModule.FORCE_NODE_SCALE).toBe(1.3);
@@ -443,6 +481,21 @@ describe("core zone geometry (not yet implemented)", () => {
     expect(r16).toBeGreaterThan(r4);
   });
 
+  test("componentZoneRadius is ~2 tessellation hops inset from the outer core ring", () => {
+    expect(regionsModule.COMPONENT_ZONE_INSET).toBe(
+      (regionsModule.REGIONS_COMPONENT_MIN_DISTANCE ?? 60) * 2,
+    );
+    for (const n of [1, 4, 16, 50]) {
+      const outer = regionsModule.coreZoneRadius?.(n) ?? 0;
+      const inner = regionsModule.componentZoneRadius?.(n) ?? 0;
+      expect(inner).toBeLessThan(outer);
+      expect(inner).toBeCloseTo(
+        Math.max((regionsModule.CORE_ZONE_BASE_RADIUS ?? 60) * 0.5, outer - (regionsModule.COMPONENT_ZONE_INSET ?? 0)),
+        5,
+      );
+    }
+  });
+
   test("clampToCore leaves a point already inside the circle unchanged", () => {
     const point = { x: 5, y: 5 };
     expect(regionsModule.clampToCore?.(point, { x: 0, y: 0 }, 40)).toEqual(point);
@@ -523,45 +576,37 @@ describe("attractorGroupCircles (not yet implemented)", () => {
 
 describe("forceInteractionDelta pressure rules", () => {
   const paramsFor = (distanceMax: number) => ({ distanceMax });
+  const kinds = ["stressor", "purpose"] as const;
 
-  test("a purpose pushes a force outside its attractor away", () => {
-    const source = { id: "force:P-01", type: "force", kind: "purpose" as const, attractorId: "A-01", componentIds: ["component:auth"], x: 0, y: 0 };
-    const target = { id: "force:S-01", type: "force", attractorId: "A-02", x: 100, y: 0 };
+  test.each(kinds)("a %s force pushes a force outside its attractor away", (kind) => {
+    const source = { id: "force:F-01", type: "force", kind, attractorId: "A-01", componentIds: ["component:auth"], x: 0, y: 0 };
+    const target = { id: "force:F-02", type: "force", attractorId: "A-02", x: 100, y: 0 };
     const delta = regionsModule.forceInteractionDelta?.(source, target, paramsFor(300));
     expect(delta).toBeDefined();
     expect(delta?.vx).toBeGreaterThan(0); // target pushed further along +x, away from source
     expect(delta?.vy ?? NaN).toBeCloseTo(0, 5);
   });
 
-  test("a stressor pulls a force in its own attractor toward it", () => {
-    const source = { id: "force:S-02", type: "force", kind: "stressor" as const, attractorId: "A-01", componentIds: ["component:auth"], x: 0, y: 0 };
-    const target = { id: "force:S-01", type: "force", attractorId: "A-01", x: 100, y: 0 };
+  test.each(kinds)("a %s force pulls a force in its own attractor toward it", (kind) => {
+    const source = { id: "force:F-01", type: "force", kind, attractorId: "A-01", componentIds: ["component:auth"], x: 0, y: 0 };
+    const target = { id: "force:F-02", type: "force", attractorId: "A-01", x: 100, y: 0 };
     expect(regionsModule.forceInteractionDelta?.(source, target, paramsFor(300))?.vx).toBeLessThan(0);
   });
 
-  test("a stressor pulls a directly connected component and leaves other components unchanged", () => {
-    const source = { id: "force:S-02", type: "force", kind: "stressor" as const, attractorId: "A-01", componentIds: ["component:auth"], x: 0, y: 0 };
+  test.each(kinds)("a %s force pulls a directly connected component and pushes an unconnected one", (kind) => {
+    const source = { id: "force:F-01", type: "force", kind, attractorId: "A-01", componentIds: ["component:auth"], x: 0, y: 0 };
     const direct = { id: "component:auth", type: "component", x: 100, y: 0 };
     const other = { id: "component:cache", type: "component", x: 100, y: 0 };
     expect(regionsModule.forceInteractionDelta?.(source, direct, paramsFor(300))?.vx).toBeLessThan(0);
-    expect(regionsModule.forceInteractionDelta?.(source, other, paramsFor(300))).toEqual({ vx: 0, vy: 0 });
-  });
-
-  test("a purpose repels a component it does not directly connect and leaves its direct component unchanged", () => {
-    const source = { id: "force:P-01", type: "force", kind: "purpose" as const, attractorId: "A-01", componentIds: ["component:auth"], x: 0, y: 0 };
-    const direct = { id: "component:auth", type: "component", x: 100, y: 0 };
-    const other = { id: "component:cache", type: "component", x: 100, y: 0 };
-    expect(regionsModule.forceInteractionDelta?.(source, direct, paramsFor(300))).toEqual({ vx: 0, vy: 0 });
     expect(regionsModule.forceInteractionDelta?.(source, other, paramsFor(300))?.vx).toBeGreaterThan(0);
   });
 
-  test("a purpose leaves same-attractor force nodes unchanged and a stressor leaves outside forces unchanged", () => {
-    const purpose = { id: "force:P-01", type: "force", kind: "purpose" as const, attractorId: "A-01", componentIds: [], x: 0, y: 0 };
-    const stressor = { id: "force:S-02", type: "force", kind: "stressor" as const, attractorId: "A-01", componentIds: [], x: 0, y: 0 };
-    const same = { id: "force:S-01", type: "force", attractorId: "A-01", x: 100, y: 0 };
-    const outside = { id: "force:S-03", type: "force", attractorId: "A-02", x: 100, y: 0 };
-    expect(regionsModule.forceInteractionDelta?.(purpose, same, paramsFor(300))).toEqual({ vx: 0, vy: 0 });
-    expect(regionsModule.forceInteractionDelta?.(stressor, outside, paramsFor(300))).toEqual({ vx: 0, vy: 0 });
+  test("stressor and purpose sources produce identical deltas in equivalent geometry", () => {
+    const stressor = { id: "force:S-01", type: "force", kind: "stressor" as const, attractorId: "A-01", componentIds: ["component:auth"], x: 0, y: 0 };
+    const purpose = { id: "force:P-01", type: "force", kind: "purpose" as const, attractorId: "A-01", componentIds: ["component:auth"], x: 0, y: 0 };
+    const target = { id: "force:F-02", type: "force", attractorId: "A-02", x: 100, y: 0 };
+    expect(regionsModule.forceInteractionDelta?.(stressor, target, paramsFor(300)))
+      .toEqual(regionsModule.forceInteractionDelta?.(purpose, target, paramsFor(300)));
   });
 
   test("pairs beyond distanceMax have no effect", () => {
@@ -736,10 +781,11 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     expect(queue?.classList.contains("selected") || queue?.classList.contains("connected")).toBe(false);
   });
 
-  test("focus keeps labels visible only for the selected and transitively connected entities", () => {
+  test("focus elevates selected/connected labels without changing unfocused name visibility", () => {
     const { ctx, host } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options);
+    const unrelatedBefore = nodeFor(host, ".nkp-hyper-component-label", "cache")?.getAttribute("opacity");
     handle?.setSelection(
       new Set(["component:auth"]),
       new Set(["component:auth", "force:S-01", "attractor:A-01"]),
@@ -749,9 +795,28 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     const unrelated = nodeFor(host, ".nkp-hyper-component-label", "cache");
     expect(auth?.getAttribute("opacity")).not.toBe("0");
     expect(connectedForce?.getAttribute("opacity")).not.toBe("0");
-    expect(unrelated?.getAttribute("opacity")).toBe("0");
+    // Unfocused labels keep their pre-selection opacity (default rules), not forced to 0/1.
+    expect(unrelated?.getAttribute("opacity")).toBe(unrelatedBefore);
     connectedForce?.dispatchEvent(new MouseEvent("mouseleave", { bubbles: true }));
     expect(connectedForce?.getAttribute("opacity")).not.toBe("0");
+  });
+
+  test("regions setSelection marks semi-focused nodes at the one-hop ring", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    // auth focused → cache is semi (S-01 peer)
+    handle?.setSelection(
+      new Set(["component:auth"]),
+      new Set(["component:auth", "force:S-01", "force:S-02", "attractor:A-01"]),
+      new Set(["component:cache"]),
+    );
+    const cache = nodeFor(host, ".nkp-hyper-component", "cache");
+    const queue = nodeFor(host, ".nkp-hyper-component", "queue");
+    expect(cache?.classList.contains("semi")).toBe(true);
+    expect(cache?.classList.contains("dim")).toBe(false);
+    expect(queue?.classList.contains("semi")).toBe(false);
+    expect(queue?.classList.contains("dim")).toBe(true);
   });
 
   test("uses shape for component implementation status and kind for force glyphs", () => {
@@ -935,12 +1000,13 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     handle?.update(state(), options); // first update: every node is a newcomer
     const allNodes = handle?.simulation?.nodes() ?? [];
     const componentCount = allNodes.filter((n: any) => n.type === "component").length;
-    const radius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
+    const outerRadius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
+    const innerRadius = regionsModule.componentZoneRadius?.(componentCount) ?? outerRadius;
     const center = { x: 400, y: 300 };
     for (const node of allNodes) {
       const distance = Math.hypot((node.x ?? 0) - center.x, (node.y ?? 0) - center.y);
-      if (node.type === "force") expect(distance).toBeGreaterThanOrEqual(radius - 0.01);
-      if (node.type === "component") expect(distance).toBeLessThanOrEqual(radius + 0.01);
+      if (node.type === "force") expect(distance).toBeGreaterThanOrEqual(outerRadius - 0.01);
+      if (node.type === "component") expect(distance).toBeLessThanOrEqual(innerRadius + 0.01);
     }
   });
 
@@ -960,7 +1026,7 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     handle?.simulation?.tick();
     const after = handle?.simulation?.nodes().find((n: any) => n.id === componentNode?.id);
     const componentCount = allNodes.filter((n: any) => n.type === "component").length;
-    const radius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
+    const radius = regionsModule.componentZoneRadius?.(componentCount) ?? 0;
     const distance = Math.hypot((after?.x ?? 0) - 400, (after?.y ?? 0) - 300);
     expect(distance).toBeLessThanOrEqual(radius + 0.5);
   });
@@ -1016,6 +1082,23 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     expect(Number(boundary?.getAttribute("r"))).toBeCloseTo(expectedRadius, 5);
   });
 
+  test("draws an inner dashed component boundary inset from the outer attractor ring", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const outer = host.querySelector("[data-core-boundary]");
+    const inner = host.querySelector("[data-component-boundary]");
+    expect(inner).not.toBeNull();
+    expect(inner?.classList.contains("nkp-hyper-component-boundary")).toBe(true);
+    const componentCount = handle?.simulation?.nodes().filter((n: any) => n.type === "component").length ?? 0;
+    expect(Number(inner?.getAttribute("r"))).toBeCloseTo(
+      regionsModule.componentZoneRadius?.(componentCount) ?? 0,
+      5,
+    );
+    expect(Number(inner?.getAttribute("r"))).toBeLessThan(Number(outer?.getAttribute("r")));
+    expect(inner?.getAttribute("stroke-dasharray")).toBeTruthy();
+  });
+
   test("core boundary circle has an explicit visible stroke", () => {
     const { ctx, host } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
@@ -1054,12 +1137,12 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     const componentNode = allNodes.find((n: any) => n.type === "component");
     expect(componentNode).toBeDefined();
     const componentCount = allNodes.filter((n: any) => n.type === "component").length;
-    const radius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
+    const radius = regionsModule.componentZoneRadius?.(componentCount) ?? 0;
     const center = { x: 400, y: 300 }; // default canvas centre in this test harness
     handle?.dragNodeTo?.(componentNode!.id, { x: center.x + radius * 5, y: center.y }); // way outside
     const after = handle?.simulation?.nodes().find((n: any) => n.id === componentNode!.id);
     const distance = Math.hypot((after?.x ?? 0) - center.x, (after?.y ?? 0) - center.y);
-    expect(distance).toBeCloseTo(radius, 0); // stopped right at the boundary, not carried through to the far target
+    expect(distance).toBeCloseTo(radius, 0); // stopped right at the inner boundary, not carried through to the far target
   });
 
   test("dragging a force node toward the boundary and beyond stops it at the boundary, not through it", () => {
@@ -1076,6 +1159,58 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     const after = handle?.simulation?.nodes().find((n: any) => n.id === "force:S-01");
     const distance = Math.hypot((after?.x ?? 0) - center.x, (after?.y ?? 0) - center.y);
     expect(distance).toBeCloseTo(radius, 0); // stopped right at the boundary, never entered
+  });
+
+  // --- composite (8+ force) attractor shape rendering (Requirement 6) ---
+
+  test("a composite attractor (8+ forces) renders one region blob per sub-shape, not a single merged hull", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    const componentNames = ["auth", "cache", "database", "queue", "orphan", "billing", "search", "reporting"];
+    const bigState = state({
+      baseComponents: componentNames.map((name) => component(name)),
+      baseForces: Array.from({ length: 9 }, (_, i) =>
+        force(`S-${10 + i}`, "A-01", [componentNames[i % componentNames.length]!])),
+    });
+    handle?.update(bigState, options);
+    const regionGroup = host.querySelector('g.nkp-hyper-region[aria-label*="resilience"]')
+      ?? [...host.querySelectorAll("g.nkp-hyper-region")][0];
+    const blobs = regionGroup?.querySelectorAll("path.nkp-hyper-region-blob") ?? [];
+    // 9 forces -> decomposeAttractorSize(9) = [4,5], i.e. 2 sub-shapes.
+    expect(blobs.length).toBe(2);
+  });
+
+  // --- live drag-snap tessellation preview (Requirement 3) ---
+
+  test("preview marker is hidden before any drag", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const preview = host.querySelector(".nkp-hyper-snap-preview") as SVGElement | null;
+    expect(preview).toBeDefined();
+    expect(preview?.style.display).toBe("none");
+  });
+
+  test("dragging a force node shows the preview at its known shape-assigned target", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    handle?.dragNodeTo?.("force:S-01", { x: 10, y: 10 });
+    const preview = host.querySelector(".nkp-hyper-snap-preview") as SVGElement | null;
+    expect(preview?.style.display).not.toBe("none");
+    expect(preview?.getAttribute("cx")).not.toBeNull();
+    expect(preview?.getAttribute("cy")).not.toBeNull();
+  });
+
+  test("dragging a component node shows the preview at a distinct nearby snap point", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const componentNode = handle?.simulation?.nodes().find((n: any) => n.id === "component:auth");
+    expect(componentNode).toBeDefined();
+    handle?.dragNodeTo?.("component:auth", { x: (componentNode?.x ?? 0) + 7, y: (componentNode?.y ?? 0) + 3 });
+    const preview = host.querySelector(".nkp-hyper-snap-preview") as SVGElement | null;
+    expect(preview?.style.display).not.toBe("none");
   });
 
   // --- bundling tension (Feature 2, not yet implemented) ---

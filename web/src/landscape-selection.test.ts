@@ -28,10 +28,13 @@ type SelectionModule = {
    * attractor membership), narrower than connectedKeys' full closure.
    */
   highlightConnectedKeys?: (state: PendingState, selected: Iterable<EntityKey>) => Set<EntityKey>;
+  highlightSemiConnectedKeys?: (state: PendingState, selected: Iterable<EntityKey>) => Set<EntityKey>;
   bundleHighlightConnectedKeys?: (state: PendingState, selected: Iterable<EntityKey>) => Set<EntityKey>;
   toggleSelection?: (current: ReadonlySet<EntityKey>, key: EntityKey) => Set<EntityKey>;
   HOVER_DIM_OPACITY?: number;
   SELECTION_DIM_OPACITY?: number;
+  HOVER_SEMI_OPACITY?: number;
+  SELECTION_SEMI_OPACITY?: number;
 };
 
 let mod: SelectionModule = {};
@@ -329,6 +332,38 @@ describe("highlightConnectedKeys", () => {
   });
 });
 
+describe("highlightSemiConnectedKeys", () => {
+  test("selecting a force has no semi-focused ring", () => {
+    expect(mod.highlightSemiConnectedKeys?.(state(), ["force:S-01"])).toEqual(new Set());
+    expect(mod.highlightSemiConnectedKeys?.(state(), ["force:P-01"])).toEqual(new Set());
+  });
+
+  test("selecting an attractor semi-lights neighboring attractors via shared components — not their forces", () => {
+    // A-01 → S-01/S-02 → auth/cache; forces that touch those → P-01 → A-02
+    const semi = mod.highlightSemiConnectedKeys?.(state(), ["attractor:A-01"]);
+    expect([...(semi ?? [])].sort()).toEqual(["attractor:A-02"]);
+    expect(semi?.has("force:P-01")).toBe(false);
+  });
+
+  test("selecting a component semi-lights peer components of its focused forces", () => {
+    // auth focused forces S-01,S-02 → S-01 also touches cache
+    const auth = mod.highlightSemiConnectedKeys?.(state(), ["component:auth"]);
+    expect([...(auth ?? [])].sort()).toEqual(["component:cache"]);
+
+    // cache focused forces S-01,S-02,P-01 → peers auth + db
+    const cache = mod.highlightSemiConnectedKeys?.(state(), ["component:cache"]);
+    expect([...(cache ?? [])].sort()).toEqual(["component:auth", "component:db"].sort());
+  });
+
+  test("semi keys never overlap the full highlight set", () => {
+    for (const seed of ["attractor:A-01", "component:auth", "component:cache", "force:S-01"] as EntityKey[]) {
+      const focused = mod.highlightConnectedKeys?.(state(), [seed]) ?? new Set();
+      const semi = mod.highlightSemiConnectedKeys?.(state(), [seed]) ?? new Set();
+      for (const key of semi) expect(focused.has(key)).toBe(false);
+    }
+  });
+});
+
 describe("bundleHighlightConnectedKeys", () => {
   test("selecting a component lights its forces' peer components — not further hops", () => {
     // auth ← S-01 → cache; auth ← S-02 (only auth). No path to db.
@@ -391,8 +426,14 @@ describe("dim opacity constants", () => {
     expect(mod.SELECTION_DIM_OPACITY).toBe(mod.HOVER_DIM_OPACITY);
   });
 
+  test("HOVER_SEMI_OPACITY is 0.24", () => {
+    expect(mod.HOVER_SEMI_OPACITY).toBe(0.24);
+    expect(mod.SELECTION_SEMI_OPACITY).toBe(0.24);
+  });
+
   test("the CSS selection variable matches the shared opacity", async () => {
     const shell = await Bun.file("../src/view/shell.html").text();
     expect(shell).toMatch(/--selection-dim-opacity:\s*0\.12\s*;/);
+    expect(shell).toMatch(/--selection-semi-opacity:\s*0\.24\s*;/);
   });
 });

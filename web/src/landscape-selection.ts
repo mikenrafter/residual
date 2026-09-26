@@ -26,6 +26,9 @@ export interface EntityDetail {
 export const HOVER_DIM_OPACITY = 0.12;
 /** Selection and hover use the same dimming strength. */
 export const SELECTION_DIM_OPACITY = HOVER_DIM_OPACITY;
+/** Regions-only semi-focused ring (one hop past full highlight). */
+export const HOVER_SEMI_OPACITY = 0.24;
+export const SELECTION_SEMI_OPACITY = HOVER_SEMI_OPACITY;
 
 function keyKind(key: EntityKey): "component" | "force" | "attractor" | undefined {
   if (key.startsWith("component:")) return "component";
@@ -223,6 +226,62 @@ export function highlightConnectedKeys(state: PendingState, selected: Iterable<E
   }
 
   return result;
+}
+
+/**
+ * Regions-only semi-focused keys (one hop past the full highlight set):
+ *   A → … → ([C].F[].A excluding those F)
+ *   F → … → (none)
+ *   C → … → (F.C[])
+ * Never includes keys already in the full highlightConnectedKeys set.
+ */
+export function highlightSemiConnectedKeys(state: PendingState, selected: Iterable<EntityKey>): Set<EntityKey> {
+  const { forces } = effectiveState(state);
+  const focused = highlightConnectedKeys(state, selected);
+  const semi = new Set<EntityKey>();
+
+  for (const key of selected) {
+    const kind = keyKind(key);
+    const id = keyId(key);
+
+    if (kind === "force") {
+      // Explicitly no semi-focused ring for a selected force.
+      continue;
+    }
+
+    if (kind === "attractor") {
+      // Full set already has A.F and F.C. Semi = attractors of every force
+      // that touches those components, but not the forces themselves.
+      const focusedComponents = new Set<string>();
+      for (const force of forces) {
+        if (force.attractorId !== id) continue;
+        for (const component of force.components) focusedComponents.add(component);
+      }
+      for (const force of forces) {
+        if (!force.components.some((component) => focusedComponents.has(component))) continue;
+        const attractorKey = `attractor:${force.attractorId}` as EntityKey;
+        if (!focused.has(attractorKey)) semi.add(attractorKey);
+      }
+      continue;
+    }
+
+    if (kind === "component") {
+      // Full set has C.A and A.F. Semi = other components those forces touch.
+      const focusedForceKeys = new Set<string>();
+      for (const focusedKey of focused) {
+        if (focusedKey.startsWith("force:")) focusedForceKeys.add(focusedKey.slice("force:".length));
+      }
+      for (const force of forces) {
+        if (!focusedForceKeys.has(force.key)) continue;
+        for (const component of force.components) {
+          const componentKey = `component:${component}` as EntityKey;
+          if (!focused.has(componentKey)) semi.add(componentKey);
+        }
+      }
+    }
+  }
+
+  return semi;
 }
 
 /**

@@ -269,7 +269,11 @@ export interface HeatmapViewCtx {
 
 export interface HeatmapViewHandle {
   update: (state: PendingState, options?: Record<string, unknown>) => void;
-  setSelection: (selected: ReadonlySet<EntityKey>, connected: ReadonlySet<EntityKey>) => void;
+  setSelection: (
+    selected: ReadonlySet<EntityKey>,
+    connected: ReadonlySet<EntityKey>,
+    _semi?: ReadonlySet<EntityKey>,
+  ) => void;
   resetView: () => void;
   destroy: () => void;
 }
@@ -767,7 +771,11 @@ export function createHeatmapView(ctx: HeatmapViewCtx): HeatmapViewHandle {
     applySelectionClasses();
   }
 
-  function setSelection(selected: ReadonlySet<EntityKey>, connected: ReadonlySet<EntityKey>): void {
+  function setSelection(
+    selected: ReadonlySet<EntityKey>,
+    connected: ReadonlySet<EntityKey>,
+    _semi?: ReadonlySet<EntityKey>,
+  ): void {
     lastSelected = selected;
     lastConnected = connected;
     if (selected.size === 0) {

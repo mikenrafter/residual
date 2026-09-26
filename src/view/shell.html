@@ -19,6 +19,7 @@
         --sans: "IBM Plex Sans", "Source Sans 3", "Segoe UI", sans-serif;
         /* Matches landscape-selection.ts SELECTION_DIM_OPACITY. */
         --selection-dim-opacity: 0.12;
+        --selection-semi-opacity: 0.24;
       }
       * { box-sizing: border-box; }
       html { background: var(--bg); }
@@ -305,8 +306,11 @@
       .nkp-fission-ring { stroke: var(--warn); stroke-width: 1.5px; }
       .nkp-node-label { fill: var(--ink); font: 11px var(--mono); pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
       .nkp-hyper-bundle-trunk,
-      .nkp-hyper-bundle-branch { fill: none; stroke-linecap: round; }
-      .nkp-hyper-bundle { isolation: isolate; transition: opacity 120ms; }
+      .nkp-hyper-bundle-branch,
+      .nkp-hyper-force-bundle-trunk,
+      .nkp-hyper-force-bundle-branch { fill: none; stroke-linecap: round; }
+      .nkp-hyper-bundle,
+      .nkp-hyper-force-bundle { isolation: isolate; transition: opacity 120ms; }
       .nkp-hyper-force-dot { stroke: var(--bg); stroke-width: 1px; }
       .nkp-hyper-force-label { font-size: 10.5px; }
       .nkp-hyper-region-label { font: 600 11px var(--mono); pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
@@ -314,27 +318,40 @@
       .nkp-hyper-node,
       .nkp-hyper-region-label { transition: opacity 120ms; }
       .nkp-hyper.names-hidden .nkp-hyper-region-label { opacity: 0 !important; }
-      .nkp-hyper-hovering .nkp-hyper-node:not(.is-lit) { opacity: 0.12; }
+      .nkp-hyper.names-hidden .nkp-hyper-force-label { opacity: 0 !important; }
+      .nkp-hyper-hovering .nkp-hyper-node:not(.is-lit):not(.is-semi) { opacity: var(--selection-dim-opacity); }
+      .nkp-hyper-hovering .nkp-hyper-node.is-semi:not(.is-lit) { opacity: var(--selection-semi-opacity); }
       .nkp-hyper-hovering .nkp-hyper-bundle:not(.is-lit),
-      .nkp-hyper-selecting .nkp-hyper-bundle:not(.is-lit) { opacity: 0.04; }
+      .nkp-hyper-selecting .nkp-hyper-bundle:not(.is-lit),
+      .nkp-hyper-hovering .nkp-hyper-force-bundle:not(.is-lit),
+      .nkp-hyper-selecting .nkp-hyper-force-bundle:not(.is-lit) { opacity: 0.04; }
       .nkp-hyper-hovering .nkp-hyper-bundle.is-lit,
-      .nkp-hyper-selecting .nkp-hyper-bundle.is-lit { opacity: 0.9; }
-      .nkp-hyper-hovering .nkp-hyper-region:not(.is-lit),
-      .nkp-hyper-selecting .nkp-hyper-region:not(.is-lit) { opacity: 0.03; }
+      .nkp-hyper-selecting .nkp-hyper-bundle.is-lit,
+      .nkp-hyper-hovering .nkp-hyper-force-bundle.is-lit,
+      .nkp-hyper-selecting .nkp-hyper-force-bundle.is-lit { opacity: 0.9; }
+      .nkp-hyper-hovering .nkp-hyper-region:not(.is-lit):not(.is-semi),
+      .nkp-hyper-selecting .nkp-hyper-region:not(.is-lit):not(.is-semi) { opacity: 0.03; }
+      .nkp-hyper-hovering .nkp-hyper-region.is-semi:not(.is-lit),
+      .nkp-hyper-selecting .nkp-hyper-region.is-semi:not(.is-lit) { opacity: var(--selection-semi-opacity); }
       .nkp-hyper-hovering .nkp-hyper-region.is-lit,
       .nkp-hyper-selecting .nkp-hyper-region.is-lit { opacity: 0.28; }
-      .nkp-hyper-hovering .nkp-hyper-region-label:not(.is-lit),
-      .nkp-hyper-selecting .nkp-hyper-region-label:not(.is-lit) { opacity: 0.1; }
+      .nkp-hyper-hovering .nkp-hyper-region-label:not(.is-lit):not(.is-semi),
+      .nkp-hyper-selecting .nkp-hyper-region-label:not(.is-lit):not(.is-semi) { opacity: 0.1; }
+      .nkp-hyper-hovering .nkp-hyper-region-label.is-semi:not(.is-lit),
+      .nkp-hyper-selecting .nkp-hyper-region-label.is-semi:not(.is-lit) { opacity: var(--selection-semi-opacity) !important; }
       .nkp-hyper-hovering .nkp-hyper-region-label.is-lit,
       .nkp-hyper-selecting .nkp-hyper-region-label.is-lit { opacity: 1 !important; }
       .nkp-hyper-region { cursor: grab; }
       .nkp-hyper-region:active { cursor: grabbing; }
       .nkp-hyper-fusion-hull { fill: #808080; fill-opacity: 0.14; stroke: var(--warn); stroke-width: 2px; stroke-dasharray: 3 4; stroke-linejoin: round; pointer-events: none; }
       .nkp-hyper-core-boundary,
+      .nkp-hyper-component-boundary,
       .nkp-hyper-core-boundary-divider { stroke: var(--muted); fill: none; }
+      .nkp-hyper-snap-preview { stroke: var(--accent); stroke-width: 1.5px; stroke-dasharray: 3 3; fill: none; pointer-events: none; opacity: 0.7; }
       .nkp-hyper-component.selected .nkp-node-dot,
       .nkp-hyper-force.selected .nkp-hyper-force-dot { stroke: var(--accent); stroke-width: 2.5px; }
       .nkp-hyper-component.dim, .nkp-hyper-force.dim { opacity: var(--selection-dim-opacity); }
+      .nkp-hyper-component.semi, .nkp-hyper-force.semi { opacity: var(--selection-semi-opacity); }
 
       @media (max-width: 700px) {
         main { padding-inline: 0.6rem; }
