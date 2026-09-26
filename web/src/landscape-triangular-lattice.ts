@@ -521,6 +521,10 @@ export interface DualRingRadialStack {
   purposeRingRadius: number;
   purposeRingAxial: number;
   innerAnnulus: { inner: number; outer: number };
+  /** First axial ring of the component band (inclusive). */
+  componentInnerAxial: number;
+  /** Last axial ring of the component band (inclusive). */
+  componentOuterAxial: number;
   componentBand: { inner: number; outer: number; hops: number };
   outerAnnulus: { inner: number; outer: number };
   stressorRingRadius: number;
@@ -528,8 +532,8 @@ export interface DualRingRadialStack {
 }
 
 /**
- * Pixel radii for the dual-ring stack. Component band ≥ minComponentHops;
- * outer annulus minimized (1 hop); purpose/stressor rings sized for bases.
+ * Pixel radii + axial ring indices for the dual-ring stack.
+ * Axial layout (center → out): purpose ≤ P | inner annulus | components | outer annulus | stressors ≥ S.
  */
 export function dualRingRadialStack(input: {
   purposeBaseWidths: readonly number[];
@@ -543,33 +547,34 @@ export function dualRingRadialStack(input: {
   const purposeSlots = dualRingSlotsForMiniPyramids(input.purposeBaseWidths, { gapNodes: 0 });
   const stressorSlots = dualRingSlotsForMiniPyramids(input.stressorBaseWidths, { gapNodes: 0 });
   const purposeRingAxial = Math.max(2, outerRingAxialRadiusForSlots(Math.max(1, purposeSlots)));
-  const stressorRingAxial = Math.max(
-    purposeRingAxial + minCompHops + 4,
-    outerRingAxialRadiusForSlots(Math.max(1, stressorSlots)),
-  );
-
-  // Build pixel radii from axial rings via equal-arc formula.
-  const purposeRingRadius = (spacing * 6 * purposeRingAxial) / (2 * Math.PI);
-  // Purpose bases face the inner annulus; annulus starts one hop outside the ring.
-  const innerAnnulusInner = purposeRingRadius + spacing;
-  const innerAnnulusOuter = innerAnnulusInner + spacing;
-  const componentInner = innerAnnulusOuter;
+  const innerAnnulusHops = 1;
   let componentHops = minCompHops;
-  // Grow component band if centered-hex capacity is insufficient.
   const capacityForHops = (hops: number): number => {
-    // rings 0..hops-1 around a center ≈ 1 + 3*k*(k+1) for k=hops-1 roughly
-    let cap = 1;
-    for (let k = 1; k < hops; k += 1) cap += 6 * k;
-    return cap;
+    let cap = 0;
+    for (let k = 0; k < hops; k += 1) cap += Math.max(1, 6 * (purposeRingAxial + innerAnnulusHops + k));
+    return Math.max(1, cap);
   };
   while (capacityForHops(componentHops) < Math.max(1, input.componentCount)) {
     componentHops += 1;
   }
+  const outerAnnulusHops = 1;
+  const componentInnerAxial = purposeRingAxial + innerAnnulusHops;
+  const componentOuterAxial = componentInnerAxial + componentHops - 1;
+  const stressorRingAxial = Math.max(
+    componentOuterAxial + outerAnnulusHops + 1,
+    outerRingAxialRadiusForSlots(Math.max(1, stressorSlots)),
+  );
+
+  // Equal-arc radii so ring circumference ≈ spacing · slotCount.
+  const purposeRingRadius = (spacing * 6 * purposeRingAxial) / (2 * Math.PI);
+  const innerAnnulusInner = purposeRingRadius + spacing;
+  const innerAnnulusOuter = innerAnnulusInner + spacing * innerAnnulusHops;
+  const componentInner = innerAnnulusOuter;
   const componentOuter = componentInner + spacing * componentHops;
   const outerAnnulusInner = componentOuter;
-  const outerAnnulusOuter = componentOuter + spacing; // minimize: 1 hop
+  const outerAnnulusOuter = componentOuter + spacing * outerAnnulusHops;
   const stressorRingRadius = Math.max(
-    outerAnnulusOuter,
+    outerAnnulusOuter + spacing * 0.5,
     (spacing * 6 * stressorRingAxial) / (2 * Math.PI),
   );
 
@@ -577,11 +582,96 @@ export function dualRingRadialStack(input: {
     purposeRingRadius,
     purposeRingAxial,
     innerAnnulus: { inner: innerAnnulusInner, outer: innerAnnulusOuter },
+    componentInnerAxial,
+    componentOuterAxial,
     componentBand: { inner: componentInner, outer: componentOuter, hops: componentHops },
     outerAnnulus: { inner: outerAnnulusInner, outer: Math.min(outerAnnulusOuter, stressorRingRadius) },
     stressorRingRadius,
     stressorRingAxial,
   };
+}
+
+/** Pixel radius of an axial ring under the dual-ring stack (matches painted lattice). */
+export function radiusForDualRingAxial(ring: number, stack: DualRingRadialStack, spacing = TRI_LATTICE_SPACING): number {
+  if (ring <= 0) return 0;
+  const p = stack.purposeRingAxial;
+  const c0 = stack.componentInnerAxial;
+  const c1 = stack.componentOuterAxial;
+  const s = stack.stressorRingAxial;
+  if (ring <= p) {
+    return (ring / p) * stack.purposeRingRadius;
+  }
+  if (ring < c0) {
+    const t = (ring - p) / Math.max(1, c0 - p);
+    return stack.purposeRingRadius + t * (stack.innerAnnulus.outer - stack.purposeRingRadius);
+  }
+  if (ring <= c1) {
+    const hops = Math.max(1, c1 - c0);
+    const t = (ring - c0) / hops;
+    return stack.componentBand.inner + t * (stack.componentBand.outer - stack.componentBand.inner);
+  }
+  if (ring < s) {
+    const t = (ring - c1) / Math.max(1, s - c1);
+    return stack.componentBand.outer + t * (stack.stressorRingRadius - stack.componentBand.outer);
+  }
+  return stack.stressorRingRadius + (ring - s) * spacing;
+}
+
+export interface DualRingProjection {
+  origin: Point;
+  spacing: number;
+  stack: DualRingRadialStack;
+}
+
+/** Warp axial → pixel using the dual-ring stack radii (same map as the painted lattice). */
+export function axialToDualRingPixel(cell: AxialPoint, proj: DualRingProjection): Point {
+  const ring = axialDistance({ q: 0, r: 0 }, cell);
+  if (ring === 0) return { x: proj.origin.x, y: proj.origin.y };
+  const slot = axialRingSlotIndex(cell);
+  const count = 6 * ring;
+  const angle = -Math.PI / 2 + (slot / count) * 2 * Math.PI;
+  const radius = radiusForDualRingAxial(ring, proj.stack, proj.spacing);
+  return {
+    x: proj.origin.x + radius * Math.cos(angle),
+    y: proj.origin.y + radius * Math.sin(angle),
+  };
+}
+
+/** Inverse of axialToDualRingPixel (nearest axial cell). */
+export function pixelToDualRingAxial(point: Point, proj: DualRingProjection): AxialPoint {
+  const dx = point.x - proj.origin.x;
+  const dy = point.y - proj.origin.y;
+  const radius = Math.hypot(dx, dy);
+  if (radius < 1e-9) return { q: 0, r: 0 };
+  const stack = proj.stack;
+  const maxRing = stack.stressorRingAxial + 12;
+  let bestRing = 1;
+  let bestErr = Infinity;
+  for (let ring = 1; ring <= maxRing; ring += 1) {
+    const target = radiusForDualRingAxial(ring, stack, proj.spacing);
+    const err = Math.abs(target - radius);
+    if (err < bestErr) {
+      bestErr = err;
+      bestRing = ring;
+    }
+  }
+  // Never rest in either annulus: snap to nearest occupied zone edge.
+  const inInnerAnnulus = bestRing > stack.purposeRingAxial && bestRing < stack.componentInnerAxial;
+  const inOuterAnnulus = bestRing > stack.componentOuterAxial && bestRing < stack.stressorRingAxial;
+  if (inInnerAnnulus) {
+    bestRing = radius < (stack.innerAnnulus.inner + stack.innerAnnulus.outer) / 2
+      ? stack.purposeRingAxial
+      : stack.componentInnerAxial;
+  } else if (inOuterAnnulus) {
+    bestRing = radius < (stack.outerAnnulus.inner + stack.outerAnnulus.outer) / 2
+      ? stack.componentOuterAxial
+      : stack.stressorRingAxial;
+  }
+  let angle = Math.atan2(dy, dx) + Math.PI / 2;
+  if (angle < 0) angle += 2 * Math.PI;
+  const count = 6 * bestRing;
+  const slot = ((Math.round((angle / (2 * Math.PI)) * count) % count) + count) % count;
+  return axialRing({ q: 0, r: 0 }, bestRing)[slot]!;
 }
 
 /**

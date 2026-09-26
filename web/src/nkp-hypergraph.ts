@@ -16,6 +16,8 @@ import {
   axialHopStep,
   axialKey,
   axialRing,
+  axialRingSlotIndex,
+  axialToDualRingPixel,
   axialToPixel,
   axialToRadialPixel,
   dilatedSubshapeApproach,
@@ -29,12 +31,14 @@ import {
   outerRingAxialRadiusForSlots,
   outerRingSlotsForPyramids,
   pixelToAxial,
+  pixelToDualRingAxial,
   pixelToFractionalAxial,
   pixelToRadialAxial,
   previewNearestFreeAxialPoint,
   pyramidLayersForCount,
   TRI_LATTICE_SPACING,
   type AxialPoint,
+  type DualRingProjection,
   type DualRingRadialStack,
   type ForceShapeGroup,
   type RadialProjection,
@@ -713,10 +717,12 @@ type SimForceNode = HyperForceNode & { x?: number; y?: number; vx?: number; vy?:
 export const FORCE_INTERACTION_DISTANCE_MAX = 220;
 /** Dual-ring redesign: attractor pressures at 25% of the prior baseline (28 → 7). */
 export const FORCE_INTERACTION_STRENGTH = 7;
-/** Component many-body charge at 25% of the prior −1400 baseline. */
-export const REGIONS_COMPONENT_CHARGE = -350;
+/** Components are pressure-free (no many-body charge). */
+export const REGIONS_COMPONENT_CHARGE = 0;
 /** Force↔component link strength at 25% of the prior 0.45 baseline. */
 export const REGIONS_LINK_STRENGTH = 0.1125;
+/** Bundle opacity when nothing is selected/focused (50% of the lit baseline 0.45). */
+export const REGIONS_BUNDLE_IDLE_OPACITY = 0.225;
 
 export interface ForceInteractionNode {
   id?: string;
@@ -989,6 +995,8 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         labelsGroup: any;
         coreBoundary: any;
         componentBoundary: any;
+        innerAnnulusInnerBoundary: any;
+        innerAnnulusOuterBoundary: any;
         coreBoundaryDivider: any;
         snapPreview: any;
         sim: any;
@@ -1132,6 +1140,14 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     return regionsDualRingStack(componentCount, currentAttractorKindCounts());
   }
 
+  function currentDualRingProjection(): DualRingProjection {
+    return {
+      origin: coreCenter,
+      spacing: REGIONS_TRI_LATTICE_SPACING,
+      stack: currentDualRingStack(),
+    };
+  }
+
   function currentZoneRadii(): { outerRadius: number; innerRadius: number } {
     const stack = currentDualRingStack();
     return {
@@ -1147,12 +1163,10 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
    */
   function applyLatticeHops(): void {
     const stack = currentDualRingStack();
-    const bandInner = stack.componentBand.inner;
-    const bandOuter = stack.componentBand.outer;
+    const proj = currentDualRingProjection();
     const cellInComponentZone = (cell: AxialPoint): boolean => {
-      const point = axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter);
-      const radius = Math.hypot(point.x - coreCenter.x, point.y - coreCenter.y);
-      return radius >= bandInner - 0.5 && radius <= bandOuter + 0.5;
+      const ring = Math.max(Math.abs(cell.q), Math.abs(cell.r), Math.abs(cell.q + cell.r));
+      return ring >= stack.componentInnerAxial && ring <= stack.componentOuterAxial;
     };
 
     // --- components ---
@@ -1161,12 +1175,12 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       if (node.fx != null || draggingNodeIds.has(node.id)) continue;
       let cell = componentCells.get(node.id);
       if (!cell) {
-        cell = pixelToAxial({ x: node.x ?? 0, y: node.y ?? 0 }, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+        cell = pixelToDualRingAxial({ x: node.x ?? 0, y: node.y ?? 0 }, proj);
         componentCells.set(node.id, cell);
       }
-      const frac = pixelToFractionalAxial({ x: node.x ?? 0, y: node.y ?? 0 }, REGIONS_TRI_LATTICE_SPACING, coreCenter);
-      if (axialFracDistance(frac, cell) >= LATTICE_HOP_THRESHOLD) {
-        const step = axialHopStep(cell, frac);
+      const toward = pixelToDualRingAxial({ x: node.x ?? 0, y: node.y ?? 0 }, proj);
+      if (axialFracDistance(toward, cell) >= LATTICE_HOP_THRESHOLD) {
+        const step = axialHopStep(cell, toward);
         if (step) {
           const candidate = { q: cell.q + step.q, r: cell.r + step.r };
           const occupied = occupiedKeysExcluding({ componentId: node.id });
@@ -1178,11 +1192,10 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       }
       if (!cellInComponentZone(cell)) {
         const occupied = occupiedKeysExcluding({ componentId: node.id });
-        const base = pixelToAxial(coreCenter, REGIONS_TRI_LATTICE_SPACING, coreCenter);
         let found: AxialPoint | undefined;
-        for (let radius = 0; !found && radius <= 40; radius += 1) {
-          for (const candidate of radius === 0 ? [base] : axialRing(base, radius)) {
-            if (!occupied.has(axialKey(candidate)) && cellInComponentZone(candidate)) {
+        for (let ring = stack.componentInnerAxial; !found && ring <= stack.componentOuterAxial; ring += 1) {
+          for (const candidate of axialRing({ q: 0, r: 0 }, ring)) {
+            if (!occupied.has(axialKey(candidate))) {
               found = candidate;
               break;
             }
@@ -1193,7 +1206,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
           componentCells.set(node.id, cell);
         }
       }
-      const point = axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+      const point = axialToDualRingPixel(cell, proj);
       node.x = point.x;
       node.y = point.y;
       latticeTargets.set(node.id, point);
@@ -1326,10 +1339,9 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
    */
   function refreshLatticeTargets(snapIds: ReadonlySet<string> = new Set()): void {
     const stack = currentDualRingStack();
-    const bandInner = stack.componentBand.inner;
-    const bandOuter = stack.componentBand.outer;
-    // Mid of 3-hop band: 2nd hop in from the outer edge.
-    const seedRadius = bandOuter - 2 * REGIONS_TRI_LATTICE_SPACING;
+    const proj = currentDualRingProjection();
+    // Mid of component band: 2nd hop in from the outer edge.
+    const seedRing = Math.max(stack.componentInnerAxial, stack.componentOuterAxial - 1);
 
     // Dominant-attractor ray for each component (fallback: attractor spawn angle).
     const attractorAngle = new Map<string, number>();
@@ -1347,7 +1359,12 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       }
     }
 
-    // --- components: pack into the component band, seeded on the dominant ray. ---
+    const inComponentBand = (cell: AxialPoint): boolean => {
+      const ring = Math.max(Math.abs(cell.q), Math.abs(cell.r), Math.abs(cell.q + cell.r));
+      return ring >= stack.componentInnerAxial && ring <= stack.componentOuterAxial;
+    };
+
+    // --- components: pack onto component-band axial rings, seeded on the dominant ray. ---
     const componentOccupied = new Set<string>();
     const componentAxialById = new Map<string, AxialPoint>();
     const orderedComponents = nodes
@@ -1360,34 +1377,29 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     for (const node of orderedComponents) {
       const dominantId = node.type === "component" ? node.dominantAttractorId : undefined;
       const angle = (dominantId ? attractorAngle.get(dominantId) : undefined) ?? 0;
-      const seedPoint = {
-        x: coreCenter.x + Math.cos(angle) * seedRadius,
-        y: coreCenter.y + Math.sin(angle) * seedRadius,
-      };
-      let preferred = snapIds.has(node.id)
-        ? seedPoint
-        : { x: node.x ?? seedPoint.x, y: node.y ?? seedPoint.y };
-      let radius = Math.hypot(preferred.x - coreCenter.x, preferred.y - coreCenter.y);
-      if (radius < bandInner || radius > bandOuter) preferred = seedPoint;
-      let axial = nearestFreeAxialPoint(preferred, componentOccupied, REGIONS_TRI_LATTICE_SPACING, coreCenter);
-      // Reject cells outside the component band.
-      const inBand = (cell: AxialPoint): boolean => {
-        const p = axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter);
-        const r = Math.hypot(p.x - coreCenter.x, p.y - coreCenter.y);
-        return r >= bandInner - 0.5 && r <= bandOuter + 0.5;
-      };
-      if (!inBand(axial) || componentOccupied.has(axialKey(axial))) {
+      const count = Math.max(1, 6 * seedRing);
+      let normalized = angle + Math.PI / 2;
+      while (normalized < 0) normalized += 2 * Math.PI;
+      while (normalized >= 2 * Math.PI) normalized -= 2 * Math.PI;
+      const seedSlot = ((Math.round((normalized / (2 * Math.PI)) * count) % count) + count) % count;
+      const seedCell = axialRing({ q: 0, r: 0 }, seedRing)[seedSlot]!;
+      let axial = snapIds.has(node.id)
+        ? seedCell
+        : pixelToDualRingAxial({ x: node.x ?? 0, y: node.y ?? 0 }, proj);
+      if (!inComponentBand(axial) || componentOccupied.has(axialKey(axial))) {
         let found: AxialPoint | undefined;
-        const base = pixelToAxial(seedPoint, REGIONS_TRI_LATTICE_SPACING, coreCenter);
-        for (let ring = 0; !found && ring <= 40; ring += 1) {
-          for (const candidate of ring === 0 ? [base] : axialRing(base, ring)) {
-            if (!componentOccupied.has(axialKey(candidate)) && inBand(candidate)) {
+        for (let ring = stack.componentInnerAxial; !found && ring <= stack.componentOuterAxial; ring += 1) {
+          const cells = axialRing({ q: 0, r: 0 }, ring);
+          const start = axialRingSlotIndex(seedCell) % Math.max(1, cells.length);
+          for (let i = 0; i < cells.length; i += 1) {
+            const candidate = cells[(start + i) % cells.length]!;
+            if (!componentOccupied.has(axialKey(candidate))) {
               found = candidate;
               break;
             }
           }
         }
-        axial = found ?? axial;
+        axial = found ?? seedCell;
       }
       componentOccupied.add(axialKey(axial));
       componentAxialById.set(node.id, axial);
@@ -1407,7 +1419,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       return {
         attractorId,
         forces: members.map((member) => ({ id: member.id, components: member.componentIds, kind: member.kind })),
-        anchor: pixelToAxial(anchorPixel, REGIONS_TRI_LATTICE_SPACING, coreCenter),
+        anchor: pixelToDualRingAxial(anchorPixel, proj),
       };
     });
     const layout = layoutAttractorDualRingMiniPyramids(shapeGroups, {
@@ -1415,7 +1427,6 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       stressorRing: stack.stressorRingAxial,
     });
     const forceAxialById = layout.targets;
-    // Merge purpose + stressor layer bins for bundling / rigid drag.
     const nextSubShapes = new Map<string, string[][]>();
     for (const attractorId of forceNodesByAttractor.keys()) {
       const purposeBins = layout.purposeSubShapesByAttractor.get(attractorId) ?? [];
@@ -1424,7 +1435,6 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     }
     subShapesByAttractor = nextSubShapes;
 
-    // Capture per-sub-shape rigid offsets + translation from the absolute layout.
     const nextRigid = new Map<string, {
       subShapes: Array<{
         forceIds: string[];
@@ -1467,10 +1477,10 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
 
     const nextTargets = new Map<string, Point>();
     for (const [id, axial] of componentAxialById) {
-      nextTargets.set(id, axialToPixel(axial, REGIONS_TRI_LATTICE_SPACING, coreCenter));
+      nextTargets.set(id, axialToDualRingPixel(axial, proj));
     }
     for (const [id, axial] of forceAxialById) {
-      nextTargets.set(id, axialToPixel(axial, REGIONS_TRI_LATTICE_SPACING, coreCenter));
+      nextTargets.set(id, axialToDualRingPixel(axial, proj));
     }
     latticeTargets = nextTargets;
 
@@ -1616,9 +1626,40 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
 
   // --- per-tick drawing, split out so Phase 5 can swap edges/labels cleanly ---
 
+  /** Mask that halves opacity where a hull crosses the component band. */
+  function ensureComponentBandMask(): string {
+    if (!built) return "";
+    const maskId = "nkp-hyper-component-band-mask";
+    let defs = built.svg.select("defs.nkp-hyper-defs");
+    if (defs.empty()) defs = built.svg.insert("defs", ":first-child").attr("class", "nkp-hyper-defs");
+    let mask = defs.select(`#${maskId}`);
+    if (mask.empty()) {
+      mask = defs.append("mask").attr("id", maskId).attr("maskUnits", "userSpaceOnUse");
+      mask.append("rect").attr("class", "nkp-hyper-mask-base").attr("fill", "white");
+      mask.append("path").attr("class", "nkp-hyper-mask-annulus").attr("fill", "#808080").attr("fill-rule", "evenodd");
+    }
+    const stack = currentDualRingStack();
+    const pad = 8000;
+    mask.select("rect.nkp-hyper-mask-base")
+      .attr("x", coreCenter.x - pad)
+      .attr("y", coreCenter.y - pad)
+      .attr("width", pad * 2)
+      .attr("height", pad * 2);
+    const R = stack.componentBand.outer;
+    const r = Math.max(0, stack.componentBand.inner);
+    const cx = coreCenter.x;
+    const cy = coreCenter.y;
+    const annulus = `M ${cx + R},${cy} A ${R},${R} 0 1 0 ${cx - R},${cy} A ${R},${R} 0 1 0 ${cx + R},${cy} `
+      + `M ${cx + r},${cy} A ${r},${r} 0 1 1 ${cx - r},${cy} A ${r},${r} 0 1 1 ${cx + r},${cy}`;
+    mask.select("path.nkp-hyper-mask-annulus").attr("d", annulus);
+    return `url(#${maskId})`;
+  }
+
   function positionRegions(): void {
+    const maskUrl = ensureComponentBandMask();
     regionSel?.each(function (this: SVGGElement, group: AttractorGroup) {
       // Dual-ring: one convex hull over all forces, painted below components.
+      // Component-band overlap is masked to 50% opacity.
       const forceIds = group.forceNodeIds;
       d3.select(this).selectAll("path.nkp-hyper-region-blob")
         .data([{ forceIds, index: 0, total: 1 }])
@@ -1629,6 +1670,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         .attr("stroke-width", REGION_PADDING * 2)
         .attr("stroke-linejoin", "round")
         .attr("stroke-linecap", "round")
+        .attr("mask", maskUrl)
         .attr("d", (item: { forceIds: string[] }) => regionCorePath(pointsOfForceIds(item.forceIds)));
     });
   }
@@ -1900,7 +1942,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     });
   }
 
-  function paintLattice(innerRadius: number, outerRadius: number): void {
+  function paintLattice(_innerRadius: number, _outerRadius: number): void {
     const b = built;
     if (!b) return;
     b.latticeG.style("display", showLattice ? null : "none");
@@ -1909,30 +1951,19 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       return;
     }
     const stack = currentDualRingStack();
-    const proj: RadialProjection = {
-      origin: coreCenter,
-      spacing: REGIONS_TRI_LATTICE_SPACING,
-      innerRadius: stack.componentBand.inner,
-      outerRadius: stack.stressorRingRadius,
-    };
-    const spacing = REGIONS_TRI_LATTICE_SPACING;
-    const maxRing = Math.max(1, Math.round(stack.stressorRingRadius / spacing)) + 8;
-    const inSkippedAnnulus = (radius: number): boolean =>
-      (radius > stack.innerAnnulus.inner && radius < stack.innerAnnulus.outer)
-      || (radius > stack.outerAnnulus.inner && radius < stack.outerAnnulus.outer);
+    const proj = currentDualRingProjection();
+    const maxRing = stack.stressorRingAxial + 8;
+    const inSkippedAnnulus = (ring: number): boolean =>
+      (ring > stack.purposeRingAxial && ring < stack.componentInnerAxial)
+      || (ring > stack.componentOuterAxial && ring < stack.stressorRingAxial);
     const points: Point[] = [];
     const edges: Array<[Point, Point]> = [];
     const pointByKey = new Map<string, Point>();
     for (let ring = 0; ring <= maxRing; ring += 1) {
+      if (inSkippedAnnulus(ring)) continue;
       const cells = ring === 0 ? [{ q: 0, r: 0 }] : axialRing({ q: 0, r: 0 }, ring);
       for (const cell of cells) {
-        const pixel = axialToRadialPixel(cell, proj);
-        const radius = Math.hypot(pixel.x - coreCenter.x, pixel.y - coreCenter.y);
-        if (inSkippedAnnulus(radius)) continue;
-        if (radius < innerRadius * 0.25 && ring > 0) {
-          // keep a light core lattice; dual-ring still draws purpose ring cells
-        }
-        void outerRadius;
+        const pixel = axialToDualRingPixel(cell, proj);
         const key = axialKey(cell);
         pointByKey.set(key, pixel);
         points.push(pixel);
@@ -1943,10 +1974,8 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
             Math.abs(other.r),
             Math.abs(-other.q - other.r),
           );
-          if (otherRing > maxRing) continue;
-          const otherPixel = pointByKey.get(axialKey(other)) ?? axialToRadialPixel(other, proj);
-          const otherRadius = Math.hypot(otherPixel.x - coreCenter.x, otherPixel.y - coreCenter.y);
-          if (inSkippedAnnulus(otherRadius)) continue;
+          if (otherRing > maxRing || inSkippedAnnulus(otherRing)) continue;
+          const otherPixel = pointByKey.get(axialKey(other)) ?? axialToDualRingPixel(other, proj);
           edges.push([pixel, otherPixel]);
         }
       }
@@ -2045,6 +2074,18 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       .attr("fill", "none")
       .attr("stroke", "var(--muted)")
       .attr("stroke-dasharray", "4 4");
+    const innerAnnulusInnerBoundary = coreG.append("circle")
+      .attr("class", "nkp-hyper-inner-annulus-inner")
+      .attr("data-inner-annulus-inner", "true")
+      .attr("fill", "none")
+      .attr("stroke", "var(--muted)")
+      .attr("stroke-dasharray", "4 4");
+    const innerAnnulusOuterBoundary = coreG.append("circle")
+      .attr("class", "nkp-hyper-inner-annulus-outer")
+      .attr("data-inner-annulus-outer", "true")
+      .attr("fill", "none")
+      .attr("stroke", "var(--muted)")
+      .attr("stroke-dasharray", "4 4");
     const coreBoundaryDivider = coreG.append("line")
       .attr("class", "nkp-hyper-core-boundary-divider")
       .attr("data-core-boundary-divider", "true")
@@ -2088,7 +2129,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       })
       .stop();
 
-    built = { svg, zoom, latticeG, regionsG, fusionG, edgesG, forceEdgesG, nodesG, labelsGroup, coreBoundary, componentBoundary, coreBoundaryDivider, snapPreview, sim, width, height, didFit: false, tip: createTooltip(host) };
+    built = { svg, zoom, latticeG, regionsG, fusionG, edgesG, forceEdgesG, nodesG, labelsGroup, coreBoundary, componentBoundary, innerAnnulusInnerBoundary, innerAnnulusOuterBoundary, coreBoundaryDivider, snapPreview, sim, width, height, didFit: false, tip: createTooltip(host) };
     return built;
   }
 
@@ -2306,7 +2347,11 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     bundleTrunkSel?.classed("is-lit", (bundle: RenderNestedBundle) => trunkLit(bundle));
     bundleMidBranchSel?.classed("is-lit", (branch: RenderMidBranch) => midLit(branch));
     bundleForceLeafSel?.classed("is-lit", (leaf: RenderForceLeaf) => leafLit(leaf));
-    bundleGroupSel?.classed("is-lit", (bundle: RenderNestedBundle) => trunkLit(bundle));
+    bundleGroupSel?.classed("is-lit", (bundle: RenderNestedBundle) => trunkLit(bundle))
+      .attr("opacity", (bundle: RenderNestedBundle) => {
+        if (!hasSelection) return REGIONS_BUNDLE_IDLE_OPACITY;
+        return trunkLit(bundle) ? 0.45 : 0.15;
+      });
     const regionLit = (group: AttractorGroup): boolean => {
       const key = `attractor:${group.attractorId}`;
       return !hasSelection || isSelected(key) || isConnected(key);
@@ -2356,6 +2401,8 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         const emptyInner = componentZoneRadius(0);
         b.coreBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", emptyOuter);
         b.componentBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", emptyInner);
+        b.innerAnnulusInnerBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", emptyInner);
+        b.innerAnnulusOuterBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", emptyInner);
         b.coreBoundaryDivider
           .attr("x1", coreCenter.x - emptyOuter)
           .attr("x2", coreCenter.x + emptyOuter)
@@ -2413,6 +2460,14 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       .attr("cx", coreCenter.x)
       .attr("cy", coreCenter.y)
       .attr("r", componentRadius);
+    b.innerAnnulusInnerBoundary
+      .attr("cx", coreCenter.x)
+      .attr("cy", coreCenter.y)
+      .attr("r", stack.innerAnnulus.inner);
+    b.innerAnnulusOuterBoundary
+      .attr("cx", coreCenter.x)
+      .attr("cy", coreCenter.y)
+      .attr("r", stack.innerAnnulus.outer);
     b.coreBoundaryDivider
       .attr("x1", coreCenter.x - coreRadius)
       .attr("x2", coreCenter.x + coreRadius)
@@ -2549,7 +2604,10 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       .data(nestedBundles, (bundle: RenderNestedBundle) => bundle.id)
       .join("g")
       .attr("class", "nkp-hyper-bundle")
-      .attr("opacity", (bundle: RenderNestedBundle) => bundle.focused ? 0.45 : 0.15);
+      .attr("opacity", (bundle: RenderNestedBundle) => {
+        if (lastSelected.size === 0) return REGIONS_BUNDLE_IDLE_OPACITY;
+        return bundle.focused ? 0.45 : 0.15;
+      });
     bundleTrunkSel = bundleGroupSel.selectAll("path.nkp-hyper-bundle-trunk")
       .data((bundle: RenderNestedBundle) => [bundle])
       .join("path")

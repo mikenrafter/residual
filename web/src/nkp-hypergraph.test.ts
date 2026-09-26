@@ -126,6 +126,8 @@ type RegionsViewModule = {
     outerAnnulus: { inner: number; outer: number };
     stressorRingRadius: number;
   };
+  REGIONS_COMPONENT_CHARGE?: number;
+  REGIONS_BUNDLE_IDLE_OPACITY?: number;
   attractorCoreDistance?: (
     nodes: { id: string; type: string; attractorId?: string; x?: number; y?: number }[],
     attractorId: string,
@@ -1139,18 +1141,33 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     expect(Number(boundary?.getAttribute("r"))).toBeCloseTo(stack?.stressorRingRadius ?? 0, 5);
   });
 
-  test("draws an inner dashed component boundary at the outer edge of the component band", () => {
+  test("draws dashed borders around the inner annulus (both edges)", () => {
     const { ctx, host } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options);
-    const outer = host.querySelector("[data-core-boundary]");
-    const inner = host.querySelector("[data-component-boundary]");
-    expect(inner).not.toBeNull();
-    expect(inner?.classList.contains("nkp-hyper-component-boundary")).toBe(true);
     const stack = dualStackFor(handle);
-    expect(Number(inner?.getAttribute("r"))).toBeCloseTo(stack?.componentBand.outer ?? 0, 5);
-    expect(Number(inner?.getAttribute("r"))).toBeLessThan(Number(outer?.getAttribute("r")));
+    const inner = host.querySelector("[data-inner-annulus-inner]");
+    const outer = host.querySelector("[data-inner-annulus-outer]");
+    expect(inner).not.toBeNull();
+    expect(outer).not.toBeNull();
     expect(inner?.getAttribute("stroke-dasharray")).toBeTruthy();
+    expect(outer?.getAttribute("stroke-dasharray")).toBeTruthy();
+    expect(Number(inner?.getAttribute("r"))).toBeCloseTo(stack?.innerAnnulus.inner ?? 0, 5);
+    expect(Number(outer?.getAttribute("r"))).toBeCloseTo(stack?.innerAnnulus.outer ?? 0, 5);
+  });
+
+  test("components are pressure-free (many-body charge is zero)", () => {
+    expect(regionsModule.REGIONS_COMPONENT_CHARGE).toBe(0);
+  });
+
+  test("with no selection, membership bundles render at half the lit opacity", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const idle = regionsModule.REGIONS_BUNDLE_IDLE_OPACITY ?? 0.225;
+    const trunk = host.querySelector("g.nkp-hyper-bundle");
+    expect(trunk).not.toBeNull();
+    expect(Number(trunk?.getAttribute("opacity"))).toBeCloseTo(idle, 5);
   });
 
   test("core boundary circle has an explicit visible stroke", () => {

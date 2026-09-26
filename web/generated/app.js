@@ -4173,17 +4173,26 @@ function pointInAnnulus(point, center, annulus) {
   return radius >= annulus.inner - 0.000001 && radius <= annulus.outer + 0.000001;
 }
 function shouldUseLongAnnulusArc(from, to, center, correctAnnulus, wrongAnnulus) {
-  const samples = 24;
-  for (let i = 1;i < samples; i += 1) {
+  const samples = 48;
+  let wrongHits = 0;
+  let correctEntries = 0;
+  let wasInCorrect = pointInAnnulus(from, center, correctAnnulus);
+  for (let i = 1;i <= samples; i += 1) {
     const t = i / samples;
     const point = {
       x: from.x + (to.x - from.x) * t,
       y: from.y + (to.y - from.y) * t
     };
     if (pointInAnnulus(point, center, wrongAnnulus))
-      return true;
+      wrongHits += 1;
+    const inCorrect = pointInAnnulus(point, center, correctAnnulus);
+    if (inCorrect && !wasInCorrect)
+      correctEntries += 1;
+    wasInCorrect = inCorrect;
   }
-  return false;
+  if (wrongHits > 0)
+    return true;
+  return correctEntries >= 2;
 }
 function longAnnulusArcPath(from, enter, center, annulus, options = {}) {
   const tangentDegrees = options.tangentDegrees ?? 10;
@@ -4549,34 +4558,110 @@ function dualRingRadialStack(input) {
   const purposeSlots = dualRingSlotsForMiniPyramids(input.purposeBaseWidths, { gapNodes: 0 });
   const stressorSlots = dualRingSlotsForMiniPyramids(input.stressorBaseWidths, { gapNodes: 0 });
   const purposeRingAxial = Math.max(2, outerRingAxialRadiusForSlots(Math.max(1, purposeSlots)));
-  const stressorRingAxial = Math.max(purposeRingAxial + minCompHops + 4, outerRingAxialRadiusForSlots(Math.max(1, stressorSlots)));
-  const purposeRingRadius = spacing * 6 * purposeRingAxial / (2 * Math.PI);
-  const innerAnnulusInner = purposeRingRadius + spacing;
-  const innerAnnulusOuter = innerAnnulusInner + spacing;
-  const componentInner = innerAnnulusOuter;
+  const innerAnnulusHops = 1;
   let componentHops = minCompHops;
   const capacityForHops = (hops) => {
-    let cap = 1;
-    for (let k = 1;k < hops; k += 1)
-      cap += 6 * k;
-    return cap;
+    let cap = 0;
+    for (let k = 0;k < hops; k += 1)
+      cap += Math.max(1, 6 * (purposeRingAxial + innerAnnulusHops + k));
+    return Math.max(1, cap);
   };
   while (capacityForHops(componentHops) < Math.max(1, input.componentCount)) {
     componentHops += 1;
   }
+  const outerAnnulusHops = 1;
+  const componentInnerAxial = purposeRingAxial + innerAnnulusHops;
+  const componentOuterAxial = componentInnerAxial + componentHops - 1;
+  const stressorRingAxial = Math.max(componentOuterAxial + outerAnnulusHops + 1, outerRingAxialRadiusForSlots(Math.max(1, stressorSlots)));
+  const purposeRingRadius = spacing * 6 * purposeRingAxial / (2 * Math.PI);
+  const innerAnnulusInner = purposeRingRadius + spacing;
+  const innerAnnulusOuter = innerAnnulusInner + spacing * innerAnnulusHops;
+  const componentInner = innerAnnulusOuter;
   const componentOuter = componentInner + spacing * componentHops;
   const outerAnnulusInner = componentOuter;
-  const outerAnnulusOuter = componentOuter + spacing;
-  const stressorRingRadius = Math.max(outerAnnulusOuter, spacing * 6 * stressorRingAxial / (2 * Math.PI));
+  const outerAnnulusOuter = componentOuter + spacing * outerAnnulusHops;
+  const stressorRingRadius = Math.max(outerAnnulusOuter + spacing * 0.5, spacing * 6 * stressorRingAxial / (2 * Math.PI));
   return {
     purposeRingRadius,
     purposeRingAxial,
     innerAnnulus: { inner: innerAnnulusInner, outer: innerAnnulusOuter },
+    componentInnerAxial,
+    componentOuterAxial,
     componentBand: { inner: componentInner, outer: componentOuter, hops: componentHops },
     outerAnnulus: { inner: outerAnnulusInner, outer: Math.min(outerAnnulusOuter, stressorRingRadius) },
     stressorRingRadius,
     stressorRingAxial
   };
+}
+function radiusForDualRingAxial(ring, stack, spacing = TRI_LATTICE_SPACING) {
+  if (ring <= 0)
+    return 0;
+  const p = stack.purposeRingAxial;
+  const c0 = stack.componentInnerAxial;
+  const c1 = stack.componentOuterAxial;
+  const s = stack.stressorRingAxial;
+  if (ring <= p) {
+    return ring / p * stack.purposeRingRadius;
+  }
+  if (ring < c0) {
+    const t = (ring - p) / Math.max(1, c0 - p);
+    return stack.purposeRingRadius + t * (stack.innerAnnulus.outer - stack.purposeRingRadius);
+  }
+  if (ring <= c1) {
+    const hops = Math.max(1, c1 - c0);
+    const t = (ring - c0) / hops;
+    return stack.componentBand.inner + t * (stack.componentBand.outer - stack.componentBand.inner);
+  }
+  if (ring < s) {
+    const t = (ring - c1) / Math.max(1, s - c1);
+    return stack.componentBand.outer + t * (stack.stressorRingRadius - stack.componentBand.outer);
+  }
+  return stack.stressorRingRadius + (ring - s) * spacing;
+}
+function axialToDualRingPixel(cell, proj) {
+  const ring = axialDistance({ q: 0, r: 0 }, cell);
+  if (ring === 0)
+    return { x: proj.origin.x, y: proj.origin.y };
+  const slot = axialRingSlotIndex(cell);
+  const count = 6 * ring;
+  const angle = -Math.PI / 2 + slot / count * 2 * Math.PI;
+  const radius = radiusForDualRingAxial(ring, proj.stack, proj.spacing);
+  return {
+    x: proj.origin.x + radius * Math.cos(angle),
+    y: proj.origin.y + radius * Math.sin(angle)
+  };
+}
+function pixelToDualRingAxial(point, proj) {
+  const dx = point.x - proj.origin.x;
+  const dy = point.y - proj.origin.y;
+  const radius = Math.hypot(dx, dy);
+  if (radius < 0.000000001)
+    return { q: 0, r: 0 };
+  const stack = proj.stack;
+  const maxRing = stack.stressorRingAxial + 12;
+  let bestRing = 1;
+  let bestErr = Infinity;
+  for (let ring = 1;ring <= maxRing; ring += 1) {
+    const target = radiusForDualRingAxial(ring, stack, proj.spacing);
+    const err = Math.abs(target - radius);
+    if (err < bestErr) {
+      bestErr = err;
+      bestRing = ring;
+    }
+  }
+  const inInnerAnnulus = bestRing > stack.purposeRingAxial && bestRing < stack.componentInnerAxial;
+  const inOuterAnnulus = bestRing > stack.componentOuterAxial && bestRing < stack.stressorRingAxial;
+  if (inInnerAnnulus) {
+    bestRing = radius < (stack.innerAnnulus.inner + stack.innerAnnulus.outer) / 2 ? stack.purposeRingAxial : stack.componentInnerAxial;
+  } else if (inOuterAnnulus) {
+    bestRing = radius < (stack.outerAnnulus.inner + stack.outerAnnulus.outer) / 2 ? stack.componentOuterAxial : stack.stressorRingAxial;
+  }
+  let angle = Math.atan2(dy, dx) + Math.PI / 2;
+  if (angle < 0)
+    angle += 2 * Math.PI;
+  const count = 6 * bestRing;
+  const slot = (Math.round(angle / (2 * Math.PI) * count) % count + count) % count;
+  return axialRing({ q: 0, r: 0 }, bestRing)[slot];
 }
 function axialRingSlotIndex(cell, center = { q: 0, r: 0 }) {
   const ring = axialDistance(center, cell);
@@ -4589,35 +4674,6 @@ function axialRingSlotIndex(cell, center = { q: 0, r: 0 }) {
 }
 function outerRingAxialRadiusForSlots(slotCount) {
   return Math.max(1, Math.ceil(Math.max(1, slotCount) / 6));
-}
-function radiusForAxialRing(ring, proj) {
-  if (ring <= 0)
-    return 0;
-  const spacing = proj.spacing;
-  const innerHops = Math.max(1, Math.round(proj.innerRadius / spacing));
-  const annulusHops = Math.max(1, Math.round((proj.outerRadius - proj.innerRadius) / spacing));
-  const outerHops = innerHops + annulusHops;
-  if (ring <= innerHops) {
-    return ring / innerHops * proj.innerRadius;
-  }
-  if (ring < outerHops) {
-    const t = (ring - innerHops) / (outerHops - innerHops);
-    return proj.innerRadius + t * (proj.outerRadius - proj.innerRadius);
-  }
-  return proj.outerRadius + (ring - outerHops) * spacing;
-}
-function axialToRadialPixel(cell, proj) {
-  const ring = axialDistance({ q: 0, r: 0 }, cell);
-  if (ring === 0)
-    return { x: proj.origin.x, y: proj.origin.y };
-  const slot = axialRingSlotIndex(cell);
-  const count = 6 * ring;
-  const angle = -Math.PI / 2 + slot / count * 2 * Math.PI;
-  const radius = radiusForAxialRing(ring, proj);
-  return {
-    x: proj.origin.x + radius * Math.cos(angle),
-    y: proj.origin.y + radius * Math.sin(angle)
-  };
 }
 function axialCellOnRingAtAngle(ring, angle) {
   if (ring <= 0)
@@ -4989,8 +5045,9 @@ function forceGlyphPath(kind) {
   const r = FORCE_CIRCLE_RADIUS;
   return `M-${r},0a${r},${r} 0 1,0 ${r * 2},0a${r},${r} 0 1,0 -${r * 2},0`;
 }
-var REGIONS_COMPONENT_CHARGE = -350;
+var REGIONS_COMPONENT_CHARGE = 0;
 var REGIONS_LINK_STRENGTH = 0.1125;
+var REGIONS_BUNDLE_IDLE_OPACITY = 0.225;
 function translateGroup(nodes, attractorId, dx, dy) {
   for (const node of nodes) {
     if (node.attractorId !== attractorId)
@@ -5123,6 +5180,13 @@ function createRegionsView(ctx) {
     const componentCount = nodes.filter((node) => node.type === "component").length;
     return regionsDualRingStack(componentCount, currentAttractorKindCounts());
   }
+  function currentDualRingProjection() {
+    return {
+      origin: coreCenter,
+      spacing: REGIONS_TRI_LATTICE_SPACING,
+      stack: currentDualRingStack()
+    };
+  }
   function currentZoneRadii() {
     const stack = currentDualRingStack();
     return {
@@ -5132,12 +5196,10 @@ function createRegionsView(ctx) {
   }
   function applyLatticeHops() {
     const stack = currentDualRingStack();
-    const bandInner = stack.componentBand.inner;
-    const bandOuter = stack.componentBand.outer;
+    const proj = currentDualRingProjection();
     const cellInComponentZone = (cell) => {
-      const point = axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter);
-      const radius = Math.hypot(point.x - coreCenter.x, point.y - coreCenter.y);
-      return radius >= bandInner - 0.5 && radius <= bandOuter + 0.5;
+      const ring = Math.max(Math.abs(cell.q), Math.abs(cell.r), Math.abs(cell.q + cell.r));
+      return ring >= stack.componentInnerAxial && ring <= stack.componentOuterAxial;
     };
     for (const node of nodes) {
       if (node.type !== "component")
@@ -5146,12 +5208,12 @@ function createRegionsView(ctx) {
         continue;
       let cell = componentCells.get(node.id);
       if (!cell) {
-        cell = pixelToAxial({ x: node.x ?? 0, y: node.y ?? 0 }, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+        cell = pixelToDualRingAxial({ x: node.x ?? 0, y: node.y ?? 0 }, proj);
         componentCells.set(node.id, cell);
       }
-      const frac = pixelToFractionalAxial({ x: node.x ?? 0, y: node.y ?? 0 }, REGIONS_TRI_LATTICE_SPACING, coreCenter);
-      if (axialFracDistance(frac, cell) >= LATTICE_HOP_THRESHOLD) {
-        const step = axialHopStep(cell, frac);
+      const toward = pixelToDualRingAxial({ x: node.x ?? 0, y: node.y ?? 0 }, proj);
+      if (axialFracDistance(toward, cell) >= LATTICE_HOP_THRESHOLD) {
+        const step = axialHopStep(cell, toward);
         if (step) {
           const candidate = { q: cell.q + step.q, r: cell.r + step.r };
           const occupied = occupiedKeysExcluding({ componentId: node.id });
@@ -5163,11 +5225,10 @@ function createRegionsView(ctx) {
       }
       if (!cellInComponentZone(cell)) {
         const occupied = occupiedKeysExcluding({ componentId: node.id });
-        const base = pixelToAxial(coreCenter, REGIONS_TRI_LATTICE_SPACING, coreCenter);
         let found;
-        for (let radius = 0;!found && radius <= 40; radius += 1) {
-          for (const candidate of radius === 0 ? [base] : axialRing(base, radius)) {
-            if (!occupied.has(axialKey(candidate)) && cellInComponentZone(candidate)) {
+        for (let ring = stack.componentInnerAxial;!found && ring <= stack.componentOuterAxial; ring += 1) {
+          for (const candidate of axialRing({ q: 0, r: 0 }, ring)) {
+            if (!occupied.has(axialKey(candidate))) {
               found = candidate;
               break;
             }
@@ -5178,7 +5239,7 @@ function createRegionsView(ctx) {
           componentCells.set(node.id, cell);
         }
       }
-      const point = axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+      const point = axialToDualRingPixel(cell, proj);
       node.x = point.x;
       node.y = point.y;
       latticeTargets.set(node.id, point);
@@ -5304,9 +5365,8 @@ function createRegionsView(ctx) {
   }
   function refreshLatticeTargets(snapIds = new Set) {
     const stack = currentDualRingStack();
-    const bandInner = stack.componentBand.inner;
-    const bandOuter = stack.componentBand.outer;
-    const seedRadius = bandOuter - 2 * REGIONS_TRI_LATTICE_SPACING;
+    const proj = currentDualRingProjection();
+    const seedRing = Math.max(stack.componentInnerAxial, stack.componentOuterAxial - 1);
     const attractorAngle = new Map;
     {
       const byAttractor = new Map;
@@ -5322,6 +5382,10 @@ function createRegionsView(ctx) {
         attractorAngle.set(attractorId, Math.atan2(c.y - coreCenter.y, c.x - coreCenter.x));
       }
     }
+    const inComponentBand = (cell) => {
+      const ring = Math.max(Math.abs(cell.q), Math.abs(cell.r), Math.abs(cell.q + cell.r));
+      return ring >= stack.componentInnerAxial && ring <= stack.componentOuterAxial;
+    };
     const componentOccupied = new Set;
     const componentAxialById = new Map;
     const orderedComponents = nodes.filter((node) => node.type === "component").sort((left, right) => {
@@ -5332,32 +5396,29 @@ function createRegionsView(ctx) {
     for (const node of orderedComponents) {
       const dominantId = node.type === "component" ? node.dominantAttractorId : undefined;
       const angle = (dominantId ? attractorAngle.get(dominantId) : undefined) ?? 0;
-      const seedPoint = {
-        x: coreCenter.x + Math.cos(angle) * seedRadius,
-        y: coreCenter.y + Math.sin(angle) * seedRadius
-      };
-      let preferred = snapIds.has(node.id) ? seedPoint : { x: node.x ?? seedPoint.x, y: node.y ?? seedPoint.y };
-      let radius = Math.hypot(preferred.x - coreCenter.x, preferred.y - coreCenter.y);
-      if (radius < bandInner || radius > bandOuter)
-        preferred = seedPoint;
-      let axial = nearestFreeAxialPoint(preferred, componentOccupied, REGIONS_TRI_LATTICE_SPACING, coreCenter);
-      const inBand = (cell) => {
-        const p = axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter);
-        const r = Math.hypot(p.x - coreCenter.x, p.y - coreCenter.y);
-        return r >= bandInner - 0.5 && r <= bandOuter + 0.5;
-      };
-      if (!inBand(axial) || componentOccupied.has(axialKey(axial))) {
+      const count = Math.max(1, 6 * seedRing);
+      let normalized = angle + Math.PI / 2;
+      while (normalized < 0)
+        normalized += 2 * Math.PI;
+      while (normalized >= 2 * Math.PI)
+        normalized -= 2 * Math.PI;
+      const seedSlot = (Math.round(normalized / (2 * Math.PI) * count) % count + count) % count;
+      const seedCell = axialRing({ q: 0, r: 0 }, seedRing)[seedSlot];
+      let axial = snapIds.has(node.id) ? seedCell : pixelToDualRingAxial({ x: node.x ?? 0, y: node.y ?? 0 }, proj);
+      if (!inComponentBand(axial) || componentOccupied.has(axialKey(axial))) {
         let found;
-        const base = pixelToAxial(seedPoint, REGIONS_TRI_LATTICE_SPACING, coreCenter);
-        for (let ring = 0;!found && ring <= 40; ring += 1) {
-          for (const candidate of ring === 0 ? [base] : axialRing(base, ring)) {
-            if (!componentOccupied.has(axialKey(candidate)) && inBand(candidate)) {
+        for (let ring = stack.componentInnerAxial;!found && ring <= stack.componentOuterAxial; ring += 1) {
+          const cells = axialRing({ q: 0, r: 0 }, ring);
+          const start = axialRingSlotIndex(seedCell) % Math.max(1, cells.length);
+          for (let i = 0;i < cells.length; i += 1) {
+            const candidate = cells[(start + i) % cells.length];
+            if (!componentOccupied.has(axialKey(candidate))) {
               found = candidate;
               break;
             }
           }
         }
-        axial = found ?? axial;
+        axial = found ?? seedCell;
       }
       componentOccupied.add(axialKey(axial));
       componentAxialById.set(node.id, axial);
@@ -5376,7 +5437,7 @@ function createRegionsView(ctx) {
       return {
         attractorId,
         forces: members.map((member) => ({ id: member.id, components: member.componentIds, kind: member.kind })),
-        anchor: pixelToAxial(anchorPixel, REGIONS_TRI_LATTICE_SPACING, coreCenter)
+        anchor: pixelToDualRingAxial(anchorPixel, proj)
       };
     });
     const layout = layoutAttractorDualRingMiniPyramids(shapeGroups, {
@@ -5421,10 +5482,10 @@ function createRegionsView(ctx) {
     rigidAttractors = nextRigid;
     const nextTargets = new Map;
     for (const [id, axial] of componentAxialById) {
-      nextTargets.set(id, axialToPixel(axial, REGIONS_TRI_LATTICE_SPACING, coreCenter));
+      nextTargets.set(id, axialToDualRingPixel(axial, proj));
     }
     for (const [id, axial] of forceAxialById) {
-      nextTargets.set(id, axialToPixel(axial, REGIONS_TRI_LATTICE_SPACING, coreCenter));
+      nextTargets.set(id, axialToDualRingPixel(axial, proj));
     }
     latticeTargets = nextTargets;
     for (const node of nodes) {
@@ -5549,10 +5610,35 @@ function createRegionsView(ctx) {
     const transform = d3.zoomIdentity.translate(built.width / 2 - scale * ((minX + maxX) / 2), built.height / 2 - scale * ((minY + maxY) / 2)).scale(scale);
     built.svg.transition().duration(400).call(built.zoom.transform, transform);
   }
+  function ensureComponentBandMask() {
+    if (!built)
+      return "";
+    const maskId = "nkp-hyper-component-band-mask";
+    let defs = built.svg.select("defs.nkp-hyper-defs");
+    if (defs.empty())
+      defs = built.svg.insert("defs", ":first-child").attr("class", "nkp-hyper-defs");
+    let mask = defs.select(`#${maskId}`);
+    if (mask.empty()) {
+      mask = defs.append("mask").attr("id", maskId).attr("maskUnits", "userSpaceOnUse");
+      mask.append("rect").attr("class", "nkp-hyper-mask-base").attr("fill", "white");
+      mask.append("path").attr("class", "nkp-hyper-mask-annulus").attr("fill", "#808080").attr("fill-rule", "evenodd");
+    }
+    const stack = currentDualRingStack();
+    const pad = 8000;
+    mask.select("rect.nkp-hyper-mask-base").attr("x", coreCenter.x - pad).attr("y", coreCenter.y - pad).attr("width", pad * 2).attr("height", pad * 2);
+    const R = stack.componentBand.outer;
+    const r = Math.max(0, stack.componentBand.inner);
+    const cx = coreCenter.x;
+    const cy = coreCenter.y;
+    const annulus = `M ${cx + R},${cy} A ${R},${R} 0 1 0 ${cx - R},${cy} A ${R},${R} 0 1 0 ${cx + R},${cy} ` + `M ${cx + r},${cy} A ${r},${r} 0 1 1 ${cx - r},${cy} A ${r},${r} 0 1 1 ${cx + r},${cy}`;
+    mask.select("path.nkp-hyper-mask-annulus").attr("d", annulus);
+    return `url(#${maskId})`;
+  }
   function positionRegions() {
+    const maskUrl = ensureComponentBandMask();
     regionSel?.each(function(group) {
       const forceIds = group.forceNodeIds;
-      d3.select(this).selectAll("path.nkp-hyper-region-blob").data([{ forceIds, index: 0, total: 1 }]).join("path").attr("class", "nkp-hyper-region-blob").attr("fill", colorFor(group.attractorId)).attr("stroke", colorFor(group.attractorId)).attr("stroke-width", REGION_PADDING * 2).attr("stroke-linejoin", "round").attr("stroke-linecap", "round").attr("d", (item) => regionCorePath(pointsOfForceIds(item.forceIds)));
+      d3.select(this).selectAll("path.nkp-hyper-region-blob").data([{ forceIds, index: 0, total: 1 }]).join("path").attr("class", "nkp-hyper-region-blob").attr("fill", colorFor(group.attractorId)).attr("stroke", colorFor(group.attractorId)).attr("stroke-width", REGION_PADDING * 2).attr("stroke-linejoin", "round").attr("stroke-linecap", "round").attr("mask", maskUrl).attr("d", (item) => regionCorePath(pointsOfForceIds(item.forceIds)));
     });
   }
   function positionFusionHulls() {
@@ -5754,7 +5840,7 @@ function createRegionsView(ctx) {
       return anchor.y;
     });
   }
-  function paintLattice(innerRadius, outerRadius) {
+  function paintLattice(_innerRadius, _outerRadius) {
     const b = built;
     if (!b)
       return;
@@ -5764,38 +5850,27 @@ function createRegionsView(ctx) {
       return;
     }
     const stack = currentDualRingStack();
-    const proj = {
-      origin: coreCenter,
-      spacing: REGIONS_TRI_LATTICE_SPACING,
-      innerRadius: stack.componentBand.inner,
-      outerRadius: stack.stressorRingRadius
-    };
-    const spacing = REGIONS_TRI_LATTICE_SPACING;
-    const maxRing = Math.max(1, Math.round(stack.stressorRingRadius / spacing)) + 8;
-    const inSkippedAnnulus = (radius) => radius > stack.innerAnnulus.inner && radius < stack.innerAnnulus.outer || radius > stack.outerAnnulus.inner && radius < stack.outerAnnulus.outer;
+    const proj = currentDualRingProjection();
+    const maxRing = stack.stressorRingAxial + 8;
+    const inSkippedAnnulus = (ring) => ring > stack.purposeRingAxial && ring < stack.componentInnerAxial || ring > stack.componentOuterAxial && ring < stack.stressorRingAxial;
     const points = [];
     const edges = [];
     const pointByKey = new Map;
     for (let ring = 0;ring <= maxRing; ring += 1) {
+      if (inSkippedAnnulus(ring))
+        continue;
       const cells = ring === 0 ? [{ q: 0, r: 0 }] : axialRing({ q: 0, r: 0 }, ring);
       for (const cell of cells) {
-        const pixel = axialToRadialPixel(cell, proj);
-        const radius = Math.hypot(pixel.x - coreCenter.x, pixel.y - coreCenter.y);
-        if (inSkippedAnnulus(radius))
-          continue;
-        if (radius < innerRadius * 0.25 && ring > 0) {}
+        const pixel = axialToDualRingPixel(cell, proj);
         const key = axialKey(cell);
         pointByKey.set(key, pixel);
         points.push(pixel);
         for (const neighbor of [{ q: 1, r: 0 }, { q: 0, r: 1 }, { q: -1, r: 1 }]) {
           const other = { q: cell.q + neighbor.q, r: cell.r + neighbor.r };
           const otherRing = Math.max(Math.abs(other.q), Math.abs(other.r), Math.abs(-other.q - other.r));
-          if (otherRing > maxRing)
+          if (otherRing > maxRing || inSkippedAnnulus(otherRing))
             continue;
-          const otherPixel = pointByKey.get(axialKey(other)) ?? axialToRadialPixel(other, proj);
-          const otherRadius = Math.hypot(otherPixel.x - coreCenter.x, otherPixel.y - coreCenter.y);
-          if (inSkippedAnnulus(otherRadius))
-            continue;
+          const otherPixel = pointByKey.get(axialKey(other)) ?? axialToDualRingPixel(other, proj);
           edges.push([pixel, otherPixel]);
         }
       }
@@ -5859,6 +5934,8 @@ function createRegionsView(ctx) {
     const coreG = content.append("g").attr("class", "nkp-hyper-core");
     const coreBoundary = coreG.append("circle").attr("class", "nkp-hyper-core-boundary").attr("data-core-boundary", "true").attr("fill", "none").attr("stroke", "var(--muted)").attr("stroke-dasharray", "4 4");
     const componentBoundary = coreG.append("circle").attr("class", "nkp-hyper-component-boundary").attr("data-component-boundary", "true").attr("fill", "none").attr("stroke", "var(--muted)").attr("stroke-dasharray", "4 4");
+    const innerAnnulusInnerBoundary = coreG.append("circle").attr("class", "nkp-hyper-inner-annulus-inner").attr("data-inner-annulus-inner", "true").attr("fill", "none").attr("stroke", "var(--muted)").attr("stroke-dasharray", "4 4");
+    const innerAnnulusOuterBoundary = coreG.append("circle").attr("class", "nkp-hyper-inner-annulus-outer").attr("data-inner-annulus-outer", "true").attr("fill", "none").attr("stroke", "var(--muted)").attr("stroke-dasharray", "4 4");
     const coreBoundaryDivider = coreG.append("line").attr("class", "nkp-hyper-core-boundary-divider").attr("data-core-boundary-divider", "true").attr("stroke", "var(--muted)").attr("stroke-dasharray", "4 4");
     const regionsG = content.append("g").attr("class", "nkp-hyper-regions");
     const fusionG = content.append("g").attr("class", "nkp-hyper-fusion");
@@ -5876,7 +5953,7 @@ function createRegionsView(ctx) {
       recomputeLabelNudges(true);
       positionLabels();
     }).stop();
-    built = { svg, zoom, latticeG, regionsG, fusionG, edgesG, forceEdgesG, nodesG, labelsGroup, coreBoundary, componentBoundary, coreBoundaryDivider, snapPreview, sim, width, height, didFit: false, tip: createTooltip(host) };
+    built = { svg, zoom, latticeG, regionsG, fusionG, edgesG, forceEdgesG, nodesG, labelsGroup, coreBoundary, componentBoundary, innerAnnulusInnerBoundary, innerAnnulusOuterBoundary, coreBoundaryDivider, snapPreview, sim, width, height, didFit: false, tip: createTooltip(host) };
     return built;
   }
   function attractorSpawnAngles(attractorIds) {
@@ -6043,7 +6120,11 @@ function createRegionsView(ctx) {
     bundleTrunkSel?.classed("is-lit", (bundle) => trunkLit(bundle));
     bundleMidBranchSel?.classed("is-lit", (branch) => midLit(branch));
     bundleForceLeafSel?.classed("is-lit", (leaf) => leafLit(leaf));
-    bundleGroupSel?.classed("is-lit", (bundle) => trunkLit(bundle));
+    bundleGroupSel?.classed("is-lit", (bundle) => trunkLit(bundle)).attr("opacity", (bundle) => {
+      if (!hasSelection)
+        return REGIONS_BUNDLE_IDLE_OPACITY;
+      return trunkLit(bundle) ? 0.45 : 0.15;
+    });
     const regionLit = (group) => {
       const key = `attractor:${group.attractorId}`;
       return !hasSelection || isSelected(key) || isConnected(key);
@@ -6091,6 +6172,8 @@ function createRegionsView(ctx) {
         const emptyInner2 = componentZoneRadius(0);
         b2.coreBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", emptyOuter2);
         b2.componentBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", emptyInner2);
+        b2.innerAnnulusInnerBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", emptyInner2);
+        b2.innerAnnulusOuterBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", emptyInner2);
         b2.coreBoundaryDivider.attr("x1", coreCenter.x - emptyOuter2).attr("x2", coreCenter.x + emptyOuter2).attr("y1", coreCenter.y).attr("y2", coreCenter.y);
       }
       b2.sim.nodes([]);
@@ -6136,6 +6219,8 @@ function createRegionsView(ctx) {
     const componentRadius = stack.componentBand.outer;
     b.coreBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", coreRadius);
     b.componentBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", componentRadius);
+    b.innerAnnulusInnerBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", stack.innerAnnulus.inner);
+    b.innerAnnulusOuterBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", stack.innerAnnulus.outer);
     b.coreBoundaryDivider.attr("x1", coreCenter.x - coreRadius).attr("x2", coreCenter.x + coreRadius).attr("y1", coreCenter.y).attr("y2", coreCenter.y);
     paintLattice(stack.componentBand.inner, stack.stressorRingRadius);
     const prevById = byId;
@@ -6232,7 +6317,11 @@ function createRegionsView(ctx) {
     }));
     const fusionData = model.fusionGroups.map((ids) => ({ id: [...ids].sort().join("\x00"), ids }));
     fusionSel = b.fusionG.selectAll("path.nkp-hyper-fusion-hull").data(fusionData, (item) => item.id).join("path").attr("class", "nkp-hyper-fusion-hull").attr("data-fusion-region", "true").attr("role", "img").attr("aria-label", (item) => `Fusion candidate region for ${item.ids.join(", ")}`).attr("fill", "#808080").attr("fill-opacity", 0.14).attr("stroke", "var(--warn)").attr("stroke-width", 2).attr("stroke-dasharray", "3 4").attr("stroke-linejoin", "round");
-    bundleGroupSel = b.edgesG.selectAll("g.nkp-hyper-bundle").data(nestedBundles, (bundle) => bundle.id).join("g").attr("class", "nkp-hyper-bundle").attr("opacity", (bundle) => bundle.focused ? 0.45 : 0.15);
+    bundleGroupSel = b.edgesG.selectAll("g.nkp-hyper-bundle").data(nestedBundles, (bundle) => bundle.id).join("g").attr("class", "nkp-hyper-bundle").attr("opacity", (bundle) => {
+      if (lastSelected.size === 0)
+        return REGIONS_BUNDLE_IDLE_OPACITY;
+      return bundle.focused ? 0.45 : 0.15;
+    });
     bundleTrunkSel = bundleGroupSel.selectAll("path.nkp-hyper-bundle-trunk").data((bundle) => [bundle]).join("path").attr("class", "nkp-hyper-bundle-trunk").attr("fill", "none").attr("stroke", (bundle) => colorFor(bundle.attractorId)).attr("aria-label", (bundle) => `${bundle.componentId} linked to attractor ${bundle.attractorId}`);
     bundleMidBranchSel = bundleGroupSel.selectAll("path.nkp-hyper-bundle-mid-branch").data((bundle) => bundle.subShapes.map((sub) => ({
       id: `${bundle.id}:mid:${sub.key}`,

@@ -479,6 +479,17 @@ describe("shouldUseLongAnnulusArc (dual-ring)", () => {
       outer,
     )).toBe(true);
   });
+
+  test("a chord that enters the correct annulus twice also requests a long arc", () => {
+    // Vertical chord through the inner annulus, the hole, then the annulus again.
+    expect(mod.shouldUseLongAnnulusArc?.(
+      { x: 0, y: 200 },
+      { x: 0, y: -200 },
+      center,
+      inner,
+      outer,
+    )).toBe(true);
+  });
 });
 
 describe("dualRingMembershipGeometry (dual-ring)", () => {

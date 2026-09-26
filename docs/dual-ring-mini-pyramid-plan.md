@@ -11,6 +11,16 @@ Referentiable plan for the purpose/stressor dual-ring redesign on `view-landscap
 
 Implemented (lattice + geometry + hypergraph wiring + `web/generated/app.js`).
 
+### Follow-ups (2026-09-26)
+
+- Nodes and lattice share `axialToDualRingPixel` (fixes lattice/purpose misalignment).
+- Components pack onto component-band axial rings only; stressors on `stressorRingAxial` beyond the outer annulus.
+- Long-arc also when a chord enters the correct annulus twice.
+- Components pressure-free (`REGIONS_COMPONENT_CHARGE = 0`).
+- Idle (no-selection) bundle opacity = 50% of lit (`REGIONS_BUNDLE_IDLE_OPACITY`).
+- Hull mask halves opacity through the component band.
+- Dashed borders on both edges of the inner annulus.
+
 ## Radial stack (center → out)
 
 1. **Purpose ring** — mini-pyramids, apex inward, base facing components

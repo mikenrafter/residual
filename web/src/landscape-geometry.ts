@@ -567,7 +567,7 @@ function pointInAnnulus(
   return radius >= annulus.inner - 1e-6 && radius <= annulus.outer + 1e-6;
 }
 
-/** True when the straight segment `from→to` enters `wrongAnnulus`. */
+/** True when the straight segment `from→to` enters `wrongAnnulus`, or crosses `correctAnnulus` twice. */
 export function shouldUseLongAnnulusArc(
   from: Point,
   to: Point,
@@ -575,17 +575,24 @@ export function shouldUseLongAnnulusArc(
   correctAnnulus: { inner: number; outer: number },
   wrongAnnulus: { inner: number; outer: number },
 ): boolean {
-  void correctAnnulus;
-  const samples = 24;
-  for (let i = 1; i < samples; i += 1) {
+  const samples = 48;
+  let wrongHits = 0;
+  let correctEntries = 0;
+  let wasInCorrect = pointInAnnulus(from, center, correctAnnulus);
+  for (let i = 1; i <= samples; i += 1) {
     const t = i / samples;
     const point = {
       x: from.x + (to.x - from.x) * t,
       y: from.y + (to.y - from.y) * t,
     };
-    if (pointInAnnulus(point, center, wrongAnnulus)) return true;
+    if (pointInAnnulus(point, center, wrongAnnulus)) wrongHits += 1;
+    const inCorrect = pointInAnnulus(point, center, correctAnnulus);
+    if (inCorrect && !wasInCorrect) correctEntries += 1;
+    wasInCorrect = inCorrect;
   }
-  return false;
+  if (wrongHits > 0) return true;
+  // Same annulus twice: entered, left, entered again.
+  return correctEntries >= 2;
 }
 
 /**
