@@ -656,6 +656,7 @@ export interface DualRingProjection {
   origin: Point;
   spacing: number;
   stack: DualRingRadialStack;
+  canonical?: CanonicalCurvedSprocketLattice;
 }
 
 export interface CurvedLatticePathOptions {
@@ -786,6 +787,159 @@ export function curvedSprocketPathPoints(
   return paths;
 }
 
+export interface CanonicalCurvedSprocketCellDimension {
+  width: number;
+  height: number;
+}
+
+export interface CanonicalCurvedSprocketBoundaryCell extends AxialPoint {
+  halfHeight: boolean;
+}
+
+export interface CanonicalCurvedSprocketBoundaryVertex {
+  direction: "clockwise" | "counterclockwise";
+  fromIndex: number;
+  toIndex: number;
+  points: Point[];
+}
+
+export interface CanonicalCurvedSprocketLattice {
+  origin: Point;
+  innerRadius: number;
+  outerRadius: number;
+  cellCount: number;
+  boundaryHeight: number;
+  cellDimensions: CanonicalCurvedSprocketCellDimension[];
+  boundaryCells: {
+    top: CanonicalCurvedSprocketBoundaryCell[];
+    bottom: CanonicalCurvedSprocketBoundaryCell[];
+  };
+  indexedBoundaryVertices: CanonicalCurvedSprocketBoundaryVertex[];
+  meshPaths: Point[][];
+  projectPyramidCells: (
+    cells: AxialPoint[],
+    options: { orientation: "purpose" | "stressor" | "inner" | "outer" },
+  ) => Array<AxialPoint & Point>;
+  inverseLookup: (point: Point) => { cell: AxialPoint; inspectedCandidates: number };
+}
+
+export interface ProjectedDualRingPyramidCells {
+  backend: "canonical-curved-sprocket";
+  cells: Array<AxialPoint & Point>;
+}
+
+/**
+ * The canonical curved mesh. Its cells are rectangular in lattice space:
+ * every column has one fixed circumferential width and every row has one
+ * fixed radial height. Only the clipped top and bottom boundary cells are
+ * half-height; their centre-to-centre spacing remains the same as every
+ * other row. All consumers retain the indexed geometry returned here.
+ */
+export function canonicalCurvedSprocketLattice(input: {
+  origin: Point;
+  innerRadius: number;
+  outerRadius: number;
+  cellCount: number;
+  boundaryHeight?: number;
+  radiusForRing?: (ring: number, orientation: "purpose" | "stressor" | "inner" | "outer") => number;
+  slotCountForRing?: (ring: number) => number;
+}): CanonicalCurvedSprocketLattice {
+  const cellCount = Math.max(3, Math.round(input.cellCount));
+  const innerRadius = Math.max(0, input.innerRadius);
+  const outerRadius = Math.max(innerRadius + 1, input.outerRadius);
+  const boundaryHeight = Math.max(1, Math.round(input.boundaryHeight ?? 1));
+  const radialSpan = outerRadius - innerRadius;
+  const width = (2 * Math.PI * outerRadius) / cellCount;
+  const height = radialSpan / boundaryHeight;
+  const dimensions = Array.from({ length: cellCount * boundaryHeight }, () => ({ width, height }));
+  const top = Array.from({ length: cellCount }, (_, q) => ({ q, r: 0, halfHeight: true }));
+  const bottom = Array.from({ length: cellCount }, (_, q) => ({ q, r: boundaryHeight + 1, halfHeight: true }));
+
+  const directedEdges: CanonicalCurvedSprocketBoundaryVertex[] = [];
+  const boundaryPaths = curvedSprocketPathPoints(
+    input.origin,
+    innerRadius,
+    outerRadius,
+    cellCount,
+    (2 * Math.PI) / cellCount,
+    0.12,
+    12,
+  );
+  for (let index = 0; index < cellCount; index += 1) {
+    const path = boundaryPaths[index * 2]!;
+    const fromIndex = index;
+    const toIndex = (index + 1) % cellCount;
+    directedEdges.push({ direction: "clockwise", fromIndex, toIndex, points: path.map((point) => ({ ...point })) });
+    directedEdges.push({
+      direction: "counterclockwise",
+      fromIndex: toIndex,
+      toIndex: fromIndex,
+      points: [...path].reverse().map((point) => ({ ...point })),
+    });
+  }
+
+  const project = (cell: AxialPoint, orientation: "purpose" | "stressor" | "inner" | "outer"): AxialPoint & Point => {
+    // Use the same axial ring ordering used by the rest of the lattice
+    // backend. This preserves adjacency for pyramid cells: q/r are not
+    // treated as unrelated Cartesian coordinates and neighboring cells do
+    // not collapse onto the same angular slot.
+    const ring = axialDistance({ q: 0, r: 0 }, cell);
+    const row = Math.max(0, Math.min(boundaryHeight, ring));
+    const ringSlots = Math.max(1, input.slotCountForRing?.(ring) ?? 6 * ring);
+    const ringSlot = ring === 0 ? 0 : axialRingSlotIndex(cell);
+    const slot = ring === 0
+      ? 0
+      : Math.round((ringSlot / ringSlots) * cellCount) % cellCount;
+    const pointsOutward = orientation === "outer" || orientation === "stressor";
+    const radius = input.radiusForRing?.(ring, orientation)
+      ?? (pointsOutward
+        ? innerRadius + (row * radialSpan) / Math.max(1, boundaryHeight)
+        : outerRadius - (row * radialSpan) / Math.max(1, boundaryHeight));
+    const point = curvedSprocketSlotPoint(input.origin, radius, cellCount, slot);
+    return { ...cell, ...point };
+  };
+
+  const lattice: CanonicalCurvedSprocketLattice = {
+    origin: { ...input.origin },
+    innerRadius,
+    outerRadius,
+    cellCount,
+    boundaryHeight,
+    cellDimensions: dimensions,
+    boundaryCells: { top, bottom },
+    indexedBoundaryVertices: directedEdges,
+    meshPaths: boundaryPaths.map((path) => path.map((point) => ({ ...point }))),
+    projectPyramidCells: (cells, options) => cells.map((cell) => project(cell, options.orientation)),
+    inverseLookup: (point) => {
+      const dx = point.x - input.origin.x;
+      const dy = point.y - input.origin.y;
+      const radius = Math.hypot(dx, dy);
+      const radialRatio = (radius - innerRadius) / radialSpan;
+      const row = Math.max(0, Math.min(boundaryHeight, Math.round(radialRatio * boundaryHeight)));
+      const angle = Math.atan2(dy, dx);
+      const normalized = ((angle + Math.PI / 2) / (2 * Math.PI) + 1) % 1;
+      const slot = Math.round(normalized * cellCount) % cellCount;
+      if (row === 0) return { cell: { q: 0, r: 0 }, inspectedCandidates: 3 };
+      const ringSlots = Math.max(1, 6 * row);
+      const ringSlot = Math.round((slot / cellCount) * ringSlots) % ringSlots;
+      const ringCells = axialRing({ q: 0, r: 0 }, row);
+      return { cell: ringCells[ringSlot] ?? { q: 0, r: row }, inspectedCandidates: 3 };
+    },
+  };
+  return lattice;
+}
+
+export function projectDualRingPyramidCells(input: {
+  cells: AxialPoint[];
+  orientation: "purpose" | "stressor";
+  lattice: CanonicalCurvedSprocketLattice;
+}): ProjectedDualRingPyramidCells {
+  return {
+    backend: "canonical-curved-sprocket",
+    cells: input.lattice.projectPyramidCells(input.cells, { orientation: input.orientation }),
+  };
+}
+
 /**
  * Cartesian cell → pixel under the circular warp. q/r remain ordinary x/y
  * coordinates, but each square-grid ring is bent onto a circular ring around
@@ -793,6 +947,10 @@ export function curvedSprocketPathPoints(
  * rendering, so the displayed curved grid is the snapping grid.
  */
 export function axialToDualRingPixel(cell: AxialPoint, proj: DualRingProjection): Point {
+  if (proj.canonical) {
+    const projected = proj.canonical.projectPyramidCells([cell], { orientation: "inner" })[0];
+    if (projected) return { x: projected.x, y: projected.y };
+  }
   const ring = axialDistance({ q: 0, r: 0 }, cell);
   if (ring === 0) return { ...proj.origin };
   const radius = radiusForDualRingAxial(ring, proj.stack, proj.spacing);

@@ -4355,7 +4355,78 @@ function curvedSprocketPathPoints(origin, innerRadius, outerRadius, count, sweep
   }
   return paths;
 }
+function canonicalCurvedSprocketLattice(input) {
+  const cellCount = Math.max(3, Math.round(input.cellCount));
+  const innerRadius = Math.max(0, input.innerRadius);
+  const outerRadius = Math.max(innerRadius + 1, input.outerRadius);
+  const boundaryHeight = Math.max(1, Math.round(input.boundaryHeight ?? 1));
+  const radialSpan = outerRadius - innerRadius;
+  const width = 2 * Math.PI * outerRadius / cellCount;
+  const height = radialSpan / boundaryHeight;
+  const dimensions = Array.from({ length: cellCount * boundaryHeight }, () => ({ width, height }));
+  const top = Array.from({ length: cellCount }, (_, q) => ({ q, r: 0, halfHeight: true }));
+  const bottom = Array.from({ length: cellCount }, (_, q) => ({ q, r: boundaryHeight + 1, halfHeight: true }));
+  const directedEdges = [];
+  const boundaryPaths = curvedSprocketPathPoints(input.origin, innerRadius, outerRadius, cellCount, 2 * Math.PI / cellCount, 0.12, 12);
+  for (let index = 0;index < cellCount; index += 1) {
+    const path = boundaryPaths[index * 2];
+    const fromIndex = index;
+    const toIndex = (index + 1) % cellCount;
+    directedEdges.push({ direction: "clockwise", fromIndex, toIndex, points: path.map((point) => ({ ...point })) });
+    directedEdges.push({
+      direction: "counterclockwise",
+      fromIndex: toIndex,
+      toIndex: fromIndex,
+      points: [...path].reverse().map((point) => ({ ...point }))
+    });
+  }
+  const project = (cell, orientation) => {
+    const ring = axialDistance({ q: 0, r: 0 }, cell);
+    const row = Math.max(0, Math.min(boundaryHeight, ring));
+    const ringSlots = Math.max(1, input.slotCountForRing?.(ring) ?? 6 * ring);
+    const ringSlot = ring === 0 ? 0 : axialRingSlotIndex(cell);
+    const slot = ring === 0 ? 0 : Math.round(ringSlot / ringSlots * cellCount) % cellCount;
+    const pointsOutward = orientation === "outer" || orientation === "stressor";
+    const radius = input.radiusForRing?.(ring, orientation) ?? (pointsOutward ? innerRadius + row * radialSpan / Math.max(1, boundaryHeight) : outerRadius - row * radialSpan / Math.max(1, boundaryHeight));
+    const point = curvedSprocketSlotPoint(input.origin, radius, cellCount, slot);
+    return { ...cell, ...point };
+  };
+  const lattice = {
+    origin: { ...input.origin },
+    innerRadius,
+    outerRadius,
+    cellCount,
+    boundaryHeight,
+    cellDimensions: dimensions,
+    boundaryCells: { top, bottom },
+    indexedBoundaryVertices: directedEdges,
+    meshPaths: boundaryPaths.map((path) => path.map((point) => ({ ...point }))),
+    projectPyramidCells: (cells, options) => cells.map((cell) => project(cell, options.orientation)),
+    inverseLookup: (point) => {
+      const dx = point.x - input.origin.x;
+      const dy = point.y - input.origin.y;
+      const radius = Math.hypot(dx, dy);
+      const radialRatio = (radius - innerRadius) / radialSpan;
+      const row = Math.max(0, Math.min(boundaryHeight, Math.round(radialRatio * boundaryHeight)));
+      const angle = Math.atan2(dy, dx);
+      const normalized = ((angle + Math.PI / 2) / (2 * Math.PI) + 1) % 1;
+      const slot = Math.round(normalized * cellCount) % cellCount;
+      if (row === 0)
+        return { cell: { q: 0, r: 0 }, inspectedCandidates: 3 };
+      const ringSlots = Math.max(1, 6 * row);
+      const ringSlot = Math.round(slot / cellCount * ringSlots) % ringSlots;
+      const ringCells = axialRing({ q: 0, r: 0 }, row);
+      return { cell: ringCells[ringSlot] ?? { q: 0, r: row }, inspectedCandidates: 3 };
+    }
+  };
+  return lattice;
+}
 function axialToDualRingPixel(cell, proj) {
+  if (proj.canonical) {
+    const projected = proj.canonical.projectPyramidCells([cell], { orientation: "inner" })[0];
+    if (projected)
+      return { x: projected.x, y: projected.y };
+  }
   const ring = axialDistance({ q: 0, r: 0 }, cell);
   if (ring === 0)
     return { ...proj.origin };
@@ -4892,6 +4963,8 @@ function createRegionsView(ctx) {
   let labelShiftByKey = new Map;
   let groupColorById = new Map;
   let latticeTargets = new Map;
+  let canonicalLatticeKey = "";
+  let canonicalLattice;
   let componentCells = new Map;
   let rigidAttractors = new Map;
   let subShapesByAttractor = new Map;
@@ -4955,10 +5028,32 @@ function createRegionsView(ctx) {
     return regionsDualRingStack(componentCount, currentAttractorKindCounts());
   }
   function currentDualRingProjection() {
+    const stack = currentDualRingStack();
+    const key = [
+      coreCenter.x,
+      coreCenter.y,
+      stack.stressorRingAxial,
+      stack.componentInnerAxial,
+      stack.componentOuterAxial,
+      stack.stressorRingRadius
+    ].join(":");
+    if (key !== canonicalLatticeKey) {
+      canonicalLatticeKey = key;
+      canonicalLattice = canonicalCurvedSprocketLattice({
+        origin: coreCenter,
+        innerRadius: 0,
+        outerRadius: stack.stressorRingRadius,
+        cellCount: Math.max(6, 6 * (stack.stressorRingAxial + 12)),
+        boundaryHeight: Math.max(1, stack.stressorRingAxial + 12),
+        radiusForRing: (ring) => radiusForDualRingAxial(ring, stack, REGIONS_TRI_LATTICE_SPACING),
+        slotCountForRing: (ring) => Math.max(1, 6 * ring)
+      });
+    }
     return {
       origin: coreCenter,
       spacing: REGIONS_TRI_LATTICE_SPACING,
-      stack: currentDualRingStack()
+      stack,
+      canonical: canonicalLattice
     };
   }
   function currentZoneRadii() {
@@ -5552,8 +5647,14 @@ function createRegionsView(ctx) {
       if (plane.outer <= inner + 1)
         continue;
       const count = plane.id === "purpose" ? 6 * stack.purposeRingAxial : plane.id === "components" ? 6 * stack.componentOuterAxial : 6 * stack.stressorRingAxial;
-      const paths = curvedSprocketPathPoints(coreCenter, inner, plane.outer, count, 2 * Math.PI / count * 2, 0.12, 12);
-      paths.forEach((path, index) => {
+      const lattice = canonicalCurvedSprocketLattice({
+        origin: coreCenter,
+        innerRadius: inner,
+        outerRadius: plane.outer,
+        cellCount: count,
+        boundaryHeight: Math.max(1, Math.round((plane.outer - inner) / spacing))
+      });
+      lattice.meshPaths.forEach((path, index) => {
         lines.push({ id: `${plane.id}:sprocket:${index}`, plane: plane.id, points: path });
       });
     }

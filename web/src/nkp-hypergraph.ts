@@ -19,7 +19,7 @@ import {
   axialRingSlotIndex,
   axialCellOnRingAtAngle,
   axialToDualRingPixel,
-  curvedSprocketPathPoints,
+  canonicalCurvedSprocketLattice,
   dilatedSubshapeApproach,
   dualRingRadialStack,
   isInAnnulus,
@@ -35,8 +35,10 @@ import {
   pixelToFractionalAxial,
   pixelToRadialAxial,
   pyramidLayersForCount,
+  radiusForDualRingAxial,
   TRI_LATTICE_SPACING,
   type AxialPoint,
+  type CanonicalCurvedSprocketLattice,
   type DualRingProjection,
   type DualRingRadialStack,
   type ForceShapeGroup,
@@ -1027,6 +1029,8 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   let labelShiftByKey = new Map<string, number>();
   let groupColorById = new Map<string, string>();
   let latticeTargets = new Map<string, Point>();
+  let canonicalLatticeKey = "";
+  let canonicalLattice: CanonicalCurvedSprocketLattice | undefined;
   /** Component nodes' current lattice cells (hop-to-hop). */
   let componentCells = new Map<string, AxialPoint>();
   /**
@@ -1126,10 +1130,32 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   }
 
   function currentDualRingProjection(): DualRingProjection {
+    const stack = currentDualRingStack();
+    const key = [
+      coreCenter.x,
+      coreCenter.y,
+      stack.stressorRingAxial,
+      stack.componentInnerAxial,
+      stack.componentOuterAxial,
+      stack.stressorRingRadius,
+    ].join(":");
+    if (key !== canonicalLatticeKey) {
+      canonicalLatticeKey = key;
+      canonicalLattice = canonicalCurvedSprocketLattice({
+        origin: coreCenter,
+        innerRadius: 0,
+        outerRadius: stack.stressorRingRadius,
+        cellCount: Math.max(6, 6 * (stack.stressorRingAxial + 12)),
+        boundaryHeight: Math.max(1, stack.stressorRingAxial + 12),
+        radiusForRing: (ring) => radiusForDualRingAxial(ring, stack, REGIONS_TRI_LATTICE_SPACING),
+        slotCountForRing: (ring) => Math.max(1, 6 * ring),
+      });
+    }
     return {
       origin: coreCenter,
       spacing: REGIONS_TRI_LATTICE_SPACING,
-      stack: currentDualRingStack(),
+      stack,
+      canonical: canonicalLattice,
     };
   }
 
@@ -1840,16 +1866,14 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         : plane.id === "components"
           ? 6 * stack.componentOuterAxial
           : 6 * stack.stressorRingAxial;
-      const paths = curvedSprocketPathPoints(
-        coreCenter,
-        inner,
-        plane.outer,
-        count,
-        (2 * Math.PI / count) * 2,
-        0.12,
-        12,
-      );
-      paths.forEach((path, index) => {
+      const lattice = canonicalCurvedSprocketLattice({
+        origin: coreCenter,
+        innerRadius: inner,
+        outerRadius: plane.outer,
+        cellCount: count,
+        boundaryHeight: Math.max(1, Math.round((plane.outer - inner) / spacing)),
+      });
+      lattice.meshPaths.forEach((path, index) => {
         lines.push({ id: `${plane.id}:sprocket:${index}`, plane: plane.id, points: path });
       });
     }

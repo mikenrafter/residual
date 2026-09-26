@@ -911,3 +911,146 @@ describe("snapPyramidTopsToSharedRay", () => {
     }
   });
 });
+
+/**
+ * Canonical curved-sprocket lattice contract. These tests intentionally use a
+ * dynamic module shape while the backend is being introduced: missing exports
+ * fail as behavior assertions instead of preventing the focused suite from
+ * running.
+ */
+type CanonicalCurvedSprocketLattice = {
+  cellDimensions: Array<{ width: number; height: number }>;
+  boundaryCells: {
+    top: Array<{ q: number; r: number; halfHeight: boolean }>;
+    bottom: Array<{ q: number; r: number; halfHeight: boolean }>;
+  };
+  indexedBoundaryVertices: Array<{
+    direction: "clockwise" | "counterclockwise";
+    fromIndex: number;
+    toIndex: number;
+    points: Array<{ x: number; y: number }>;
+  }>;
+  projectPyramidCells: (
+    cells: Array<{ q: number; r: number }>,
+    options: { orientation: "purpose" | "stressor" | "inner" | "outer" },
+  ) => Array<{ q: number; r: number; x: number; y: number }>;
+  inverseLookup: (point: { x: number; y: number }) => {
+    cell: { q: number; r: number };
+    inspectedCandidates: number;
+  };
+};
+
+type CanonicalLatticeModule = {
+  canonicalCurvedSprocketLattice?: (input: {
+    origin: { x: number; y: number };
+    innerRadius: number;
+    outerRadius: number;
+    cellCount: number;
+    boundaryHeight?: number;
+  }) => CanonicalCurvedSprocketLattice;
+  projectDualRingPyramidCells?: (input: {
+    cells: Array<{ q: number; r: number }>;
+    orientation: "purpose" | "stressor";
+    lattice: CanonicalCurvedSprocketLattice;
+  }) => {
+    backend: "canonical-curved-sprocket";
+    cells: Array<{ q: number; r: number; x: number; y: number }>;
+  };
+};
+
+let canonicalLattice: CanonicalLatticeModule = {};
+
+describe("canonicalCurvedSprocketLattice", () => {
+  beforeAll(async () => {
+    canonicalLattice = (await import("./landscape-triangular-lattice")) as CanonicalLatticeModule;
+  });
+
+  function makeLattice(): CanonicalCurvedSprocketLattice | undefined {
+    return canonicalLattice.canonicalCurvedSprocketLattice?.({
+      origin: { x: 0, y: 0 },
+      innerRadius: 120,
+      outerRadius: 300,
+      cellCount: 24,
+      boundaryHeight: 18,
+    });
+  }
+
+  test("parameterized lattice exposes equal dimensions for every curved cell", () => {
+    const lattice = makeLattice();
+    expect(lattice).toBeDefined();
+    expect(lattice!.cellDimensions.length).toBeGreaterThan(0);
+    const widths = lattice!.cellDimensions.map((dimension) => dimension.width);
+    const heights = lattice!.cellDimensions.map((dimension) => dimension.height);
+    expect(new Set(widths).size).toBe(1);
+    expect(new Set(heights).size).toBe(1);
+    expect(widths[0]).toBeGreaterThan(0);
+    expect(heights[0]).toBeGreaterThan(0);
+  });
+
+  test("reports half-height top and bottom boundary cells", () => {
+    const lattice = makeLattice();
+    expect(lattice).toBeDefined();
+    expect(lattice!.boundaryCells.top.length).toBeGreaterThan(0);
+    expect(lattice!.boundaryCells.bottom.length).toBeGreaterThan(0);
+    expect(lattice!.boundaryCells.top.every((cell) => cell.halfHeight)).toBe(true);
+    expect(lattice!.boundaryCells.bottom.every((cell) => cell.halfHeight)).toBe(true);
+    expect(lattice!.boundaryCells.top.map(({ q, r }) => `${q},${r}`)).not.toEqual(
+      lattice!.boundaryCells.bottom.map(({ q, r }) => `${q},${r}`),
+    );
+  });
+
+  test("preserves shared indexed boundary vertices in both directions", () => {
+    const lattice = makeLattice();
+    expect(lattice).toBeDefined();
+    const byEdge = new Map<string, Array<{ x: number; y: number }>>();
+    for (const edge of lattice!.indexedBoundaryVertices) {
+      expect(edge.toIndex).not.toBe(edge.fromIndex);
+      expect(edge.points.length).toBeGreaterThan(1);
+      byEdge.set(`${edge.fromIndex}->${edge.toIndex}`, edge.points);
+    }
+    for (const edge of lattice!.indexedBoundaryVertices) {
+      const reverse = byEdge.get(`${edge.toIndex}->${edge.fromIndex}`);
+      expect(reverse).toBeDefined();
+      expect(reverse).toEqual([...edge.points].reverse());
+    }
+  });
+
+  test("makes stressor and outer pyramid orientation explicit", () => {
+    const lattice = makeLattice();
+    expect(lattice).toBeDefined();
+    const cells = [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 0, r: -1 }];
+    const stressor = lattice!.projectPyramidCells(cells, { orientation: "stressor" });
+    const outer = lattice!.projectPyramidCells(cells, { orientation: "outer" });
+    expect(stressor).toHaveLength(cells.length);
+    expect(outer).toHaveLength(cells.length);
+    expect(stressor).toEqual(outer);
+  });
+
+  test("projects dual-ring pyramid cells through the canonical backend", () => {
+    const lattice = makeLattice();
+    expect(lattice).toBeDefined();
+    const cells = [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 1, r: -1 }];
+    const projected = canonicalLattice.projectDualRingPyramidCells?.({
+      cells,
+      orientation: "purpose",
+      lattice: lattice!,
+    });
+    expect(projected).toBeDefined();
+    expect(projected!.backend).toBe("canonical-curved-sprocket");
+    expect(projected!.cells.map(({ q, r }) => ({ q, r }))).toEqual(cells);
+    for (const cell of projected!.cells) {
+      expect(Number.isFinite(cell.x)).toBe(true);
+      expect(Number.isFinite(cell.y)).toBe(true);
+    }
+  });
+
+  test("inverse lookup has a bounded candidate contract instead of exhaustive q/r scanning", () => {
+    const lattice = makeLattice();
+    expect(lattice).toBeDefined();
+    const result = lattice!.inverseLookup({ x: 214, y: -97 });
+    expect(result.cell).toEqual(expect.objectContaining({ q: expect.any(Number), r: expect.any(Number) }));
+    // Candidate work should stay local to nearby indexed rings, not scale as
+    // the square of the outer radius or enumerate every q/r pair.
+    expect(result.inspectedCandidates).toBeLessThan(24 * 3);
+  });
+});
