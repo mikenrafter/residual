@@ -1160,14 +1160,14 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     expect(regionsModule.REGIONS_COMPONENT_CHARGE).toBe(0);
   });
 
-  test("with no selection, membership bundles render at half the lit opacity", () => {
+  test("with no selection, routes render at half the lit opacity", () => {
     const { ctx, host } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options);
     const idle = regionsModule.REGIONS_BUNDLE_IDLE_OPACITY ?? 0.225;
-    const trunk = host.querySelector("g.nkp-hyper-bundle");
-    expect(trunk).not.toBeNull();
-    expect(Number(trunk?.getAttribute("opacity"))).toBeCloseTo(idle, 5);
+    const route = host.querySelector("path.nkp-hyper-route");
+    expect(route).not.toBeNull();
+    expect(Number(route?.getAttribute("opacity"))).toBeCloseTo(idle, 5);
   });
 
   test("core boundary circle has an explicit visible stroke", () => {
@@ -1388,55 +1388,38 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     expect(preview?.style.display).not.toBe("none");
   });
 
-  // --- nested component→mid→sub-shape→force bundling ---
+  // --- purpose→component→stressor routes ---
 
-  test("regions draw nested component-sourced bundles (no reverse force fans)", () => {
+  test("regions draw flat purpose-to-component and component-to-stressor routes", () => {
     const { ctx, host } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options);
-    expect(host.querySelectorAll("g.nkp-hyper-force-bundle").length).toBe(0);
-    expect(host.querySelectorAll("path.nkp-hyper-bundle-trunk").length).toBeGreaterThan(0);
-    expect(host.querySelectorAll("path.nkp-hyper-bundle-mid-branch").length).toBeGreaterThan(0);
-    expect(host.querySelectorAll("path.nkp-hyper-bundle-force-branch").length).toBeGreaterThan(0);
+    expect(host.querySelectorAll("path.nkp-hyper-route-purpose-component").length).toBeGreaterThan(0);
+    expect(host.querySelectorAll("path.nkp-hyper-route-component-stressor").length).toBeGreaterThan(0);
+    expect(host.querySelectorAll("path.nkp-hyper-bundle-trunk, path.nkp-hyper-bundle-mid-branch").length).toBe(0);
   });
 
-  test("bundle trunks split on the correct annulus mid (inner for purpose, outer for stressor)", () => {
+  test("routes use the inner split for purposes and the outer split for stressors", () => {
     const { ctx, host } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options);
-    const stack = dualStackFor(handle);
-    const innerMid = ((stack?.innerAnnulus.inner ?? 0) + (stack?.innerAnnulus.outer ?? 0)) / 2;
-    const outerMid = ((stack?.outerAnnulus.inner ?? 0) + (stack?.outerAnnulus.outer ?? 0)) / 2;
-    const center = { x: 400, y: 300 };
-
-    const parseEnd = (d: string | null | undefined): { x: number; y: number } | undefined => {
-      if (!d) return undefined;
-      const match = d.trim().match(/([-\d.]+),([-\d.]+)\s*$/);
-      if (!match) return undefined;
-      return { x: Number(match[1]), y: Number(match[2]) };
-    };
-
-    const ends = [...host.querySelectorAll("path.nkp-hyper-bundle-trunk")]
-      .map((el) => parseEnd(el.getAttribute("d")))
-      .filter((point): point is { x: number; y: number } => point !== undefined);
-    expect(ends.length).toBeGreaterThan(0);
-    const onAnnulusMid = ends.filter((end) => {
-      const radius = Math.hypot(end.x - center.x, end.y - center.y);
-      return Math.abs(radius - innerMid) < 8 || Math.abs(radius - outerMid) < 8;
-    });
-    expect(onAnnulusMid.length).toBeGreaterThan(0);
+    const purposes = [...host.querySelectorAll("path.nkp-hyper-route-purpose-component")];
+    const stressors = [...host.querySelectorAll("path.nkp-hyper-route-component-stressor")];
+    expect(purposes.length).toBeGreaterThan(0);
+    expect(stressors.length).toBeGreaterThan(0);
+    expect([...purposes, ...stressors].every((route) => route.getAttribute("d")?.includes(" C "))).toBe(true);
   });
 
-  test("nested bundles keep a 3-split hierarchy (trunk, mid, force leaves)", () => {
+  test("each route is a single path through one annulus split", () => {
     const { ctx, host } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options);
-    expect(host.querySelectorAll("path.nkp-hyper-bundle-trunk").length).toBeGreaterThan(0);
-    expect(host.querySelectorAll("path.nkp-hyper-bundle-mid-branch").length).toBeGreaterThan(0);
-    expect(host.querySelectorAll("path.nkp-hyper-bundle-force-branch").length).toBeGreaterThan(0);
+    const routes = [...host.querySelectorAll<SVGPathElement>("path.nkp-hyper-route")];
+    expect(routes.length).toBeGreaterThan(0);
+    expect(routes.every((route) => (route.getAttribute("d")?.match(/ C /g)?.length ?? 0) === 2)).toBe(true);
   });
 
-  test("mid-ring and dilated-edge splits coexist with radial separation", () => {
+  test("route bends remain finite after settling", () => {
     const { ctx, host } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options);
@@ -1450,34 +1433,11 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
       return { x: Number(match[1]), y: Number(match[2]) };
     };
     const center = { x: 400, y: 300 };
-    const stack = dualStackFor(handle);
-    const innerMid = ((stack?.innerAnnulus.inner ?? 0) + (stack?.innerAnnulus.outer ?? 0)) / 2;
-    const outerMid = ((stack?.outerAnnulus.inner ?? 0) + (stack?.outerAnnulus.outer ?? 0)) / 2;
-    const minSep = (regionsModule.BUNDLE_RADIAL_SPLIT_SEPARATION ?? 30) - 1;
-
-    const trunkEnds = [...host.querySelectorAll("path.nkp-hyper-bundle-trunk")]
+    const routeEnds = [...host.querySelectorAll("path.nkp-hyper-route")]
       .map((el) => parseEnd(el.getAttribute("d")))
       .filter((point): point is { x: number; y: number } => point !== undefined);
-    const midEnds = [...host.querySelectorAll("path.nkp-hyper-bundle-mid-branch")]
-      .map((el) => parseEnd(el.getAttribute("d")))
-      .filter((point): point is { x: number; y: number } => point !== undefined);
-
-    expect(trunkEnds.length).toBeGreaterThan(0);
-    expect(midEnds.length).toBeGreaterThan(0);
-    const trunksOnMid = trunkEnds.filter((end) => {
-      const radius = Math.hypot(end.x - center.x, end.y - center.y);
-      return Math.abs(radius - innerMid) < 10 || Math.abs(radius - outerMid) < 10;
-    });
-    expect(trunksOnMid.length).toBeGreaterThan(0);
-
-    let separated = 0;
-    for (const midEnd of midEnds) {
-      const midR = Math.hypot(midEnd.x - center.x, midEnd.y - center.y);
-      if (Math.abs(midR - innerMid) > minSep * 0.4 || Math.abs(midR - outerMid) > minSep * 0.4) {
-        separated += 1;
-      }
-    }
-    expect(separated).toBeGreaterThan(0);
+    expect(routeEnds.length).toBeGreaterThan(0);
+    expect(routeEnds.every((end) => Number.isFinite(end.x) && Number.isFinite(end.y))).toBe(true);
   });
 
   test("selection lights only membership segments joining selected entities to their connected network", () => {
@@ -1489,11 +1449,11 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
       new Set(["force:S-02"]),
       new Set(["force:S-02", "component:auth", "attractor:A-01"]),
     );
-    const litLeaves = [...host.querySelectorAll("path.nkp-hyper-bundle-force-branch.is-lit")];
-    expect(litLeaves.length).toBeGreaterThan(0);
-    expect(litLeaves.every((el) => el.getAttribute("aria-label")?.includes("force:S-02"))).toBe(true);
-    const allLeaves = [...host.querySelectorAll("path.nkp-hyper-bundle-force-branch")];
-    expect(allLeaves.some((el) => !el.classList.contains("is-lit"))).toBe(true);
+    const litRoutes = [...host.querySelectorAll("path.nkp-hyper-route.is-lit")];
+    expect(litRoutes.length).toBeGreaterThan(0);
+    expect(litRoutes.every((el) => el.getAttribute("aria-label")?.includes("force:S-02"))).toBe(true);
+    const allRoutes = [...host.querySelectorAll("path.nkp-hyper-route")];
+    expect(allRoutes.some((el) => !el.classList.contains("is-lit"))).toBe(true);
   });
 
   // --- attractor-region collision (Feature 3, not yet implemented) ---

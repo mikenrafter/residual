@@ -533,7 +533,11 @@ export interface DualRingRadialStack {
 
 /**
  * Pixel radii + axial ring indices for the dual-ring stack.
- * Axial layout (center → out): purpose ≤ P | inner annulus | components | outer annulus | stressors ≥ S.
+ * Equilateral axial lattice projected onto circular rings.
+ * Axial layout: purpose ≤ P | empty annulus rings | components | empty | stressors ≥ S.
+ * With the default 1-hop annulus the empty set is empty (P and P+1 are adjacent);
+ * the visual annulus is the half-spacing band between those rings, and tessellation
+ * skips edges that cross it.
  */
 export function dualRingRadialStack(input: {
   purposeBaseWidths: readonly number[];
@@ -546,34 +550,48 @@ export function dualRingRadialStack(input: {
   const minCompHops = input.minComponentHops ?? 3;
   const purposeSlots = dualRingSlotsForMiniPyramids(input.purposeBaseWidths, { gapNodes: 0 });
   const stressorSlots = dualRingSlotsForMiniPyramids(input.stressorBaseWidths, { gapNodes: 0 });
-  const purposeRingAxial = Math.max(2, outerRingAxialRadiusForSlots(Math.max(1, purposeSlots)));
+  // A six-slot first ring still carries a two-slot empty attractor gap. Do not
+  // reserve a second hop unless the purpose bases actually need it.
+  const purposeRingAxial = Math.max(1, outerRingAxialRadiusForSlots(Math.max(1, purposeSlots)));
+  // One hop of radial clearance after the purpose bases (not an extra empty axial ring).
   const innerAnnulusHops = 1;
   let componentHops = minCompHops;
+  const componentInnerAxial = purposeRingAxial + innerAnnulusHops;
   const capacityForHops = (hops: number): number => {
     let cap = 0;
-    for (let k = 0; k < hops; k += 1) cap += Math.max(1, 6 * (purposeRingAxial + innerAnnulusHops + k));
+    for (let k = 0; k < hops; k += 1) cap += Math.max(1, 6 * (componentInnerAxial + k));
     return Math.max(1, cap);
   };
   while (capacityForHops(componentHops) < Math.max(1, input.componentCount)) {
     componentHops += 1;
   }
   const outerAnnulusHops = 1;
-  const componentInnerAxial = purposeRingAxial + innerAnnulusHops;
   const componentOuterAxial = componentInnerAxial + componentHops - 1;
   const stressorRingAxial = Math.max(
     componentOuterAxial + outerAnnulusHops + 1,
     outerRingAxialRadiusForSlots(Math.max(1, stressorSlots)),
   );
 
-  // Equal-arc radii so ring circumference ≈ spacing · slotCount.
+  // Project every axial ring radially. This keeps the ring slots evenly spaced
+  // around a circle while retaining axial adjacency for the triangular mesh.
   const purposeRingRadius = (spacing * 6 * purposeRingAxial) / (2 * Math.PI);
-  const innerAnnulusInner = purposeRingRadius + spacing;
-  const innerAnnulusOuter = innerAnnulusInner + spacing * innerAnnulusHops;
-  const componentInner = innerAnnulusOuter;
-  const componentOuter = componentInner + spacing * componentHops;
+  // Keep the component band's original outer edge. Tightening the inner gap
+  // therefore moves only its inner boundary out, instead of shrinking the
+  // whole center-side layout toward the origin.
+  const componentInner = purposeRingRadius + spacing * 1.75;
+  // Cartesian boundaries land on the same x/y coordinate steps as the grid;
+  // this keeps a component dragged to the outer edge on a real lattice cell.
+  const componentOuter = Math.ceil((componentInner + spacing * componentHops) / spacing) * spacing;
+  // The gap follows the purpose circle. Components begin one complete lattice
+  // row beyond the gap, on the first component ring.
+  const innerAnnulusInner = purposeRingRadius + spacing * 0.25;
+  // Extend the dotted boundary outward to the component boundary.
+  const innerAnnulusOuter = componentInner;
   const outerAnnulusInner = componentOuter;
   const outerAnnulusOuter = componentOuter + spacing * outerAnnulusHops;
   const stressorRingRadius = Math.max(
+    // Leave a visible separation after the outer annulus. The stressor ring
+    // must not be swallowed by the annulus band.
     outerAnnulusOuter + spacing * 0.5,
     (spacing * 6 * stressorRingAxial) / (2 * Math.PI),
   );
@@ -591,24 +609,41 @@ export function dualRingRadialStack(input: {
   };
 }
 
-/** Pixel radius of an axial ring under the dual-ring stack (matches painted lattice). */
+/** True when an axial ring lies in either empty annulus (no tessellation / no nodes). */
+export function isDualRingAnnulusRing(ring: number, stack: DualRingRadialStack): boolean {
+  if (ring <= 0) return false;
+  return (ring > stack.purposeRingAxial && ring < stack.componentInnerAxial)
+    || (ring > stack.componentOuterAxial && ring < stack.stressorRingAxial);
+}
+
+/** True when an edge between two zone rings would paint through an annulus gap. */
+export function crossesDualRingAnnulus(
+  ringA: number,
+  ringB: number,
+  stack: DualRingRadialStack,
+): boolean {
+  const lo = Math.min(ringA, ringB);
+  const hi = Math.max(ringA, ringB);
+  if (lo <= stack.purposeRingAxial && hi >= stack.componentInnerAxial) return true;
+  if (lo <= stack.componentOuterAxial && hi >= stack.stressorRingAxial) return true;
+  return false;
+}
+
+/** Pixel radius of an axial ring under the dual-ring radial projection. */
 export function radiusForDualRingAxial(ring: number, stack: DualRingRadialStack, spacing = TRI_LATTICE_SPACING): number {
   if (ring <= 0) return 0;
   const p = stack.purposeRingAxial;
   const c0 = stack.componentInnerAxial;
   const c1 = stack.componentOuterAxial;
   const s = stack.stressorRingAxial;
-  if (ring <= p) {
-    return (ring / p) * stack.purposeRingRadius;
-  }
+  if (ring <= p) return (ring / p) * stack.purposeRingRadius;
   if (ring < c0) {
     const t = (ring - p) / Math.max(1, c0 - p);
-    return stack.purposeRingRadius + t * (stack.innerAnnulus.outer - stack.purposeRingRadius);
+    return stack.purposeRingRadius + t * (stack.componentBand.inner - stack.purposeRingRadius);
   }
   if (ring <= c1) {
     const hops = Math.max(1, c1 - c0);
-    const t = (ring - c0) / hops;
-    return stack.componentBand.inner + t * (stack.componentBand.outer - stack.componentBand.inner);
+    return stack.componentBand.inner + ((ring - c0) / hops) * (stack.componentBand.outer - stack.componentBand.inner);
   }
   if (ring < s) {
     const t = (ring - c1) / Math.max(1, s - c1);
@@ -623,55 +658,189 @@ export interface DualRingProjection {
   stack: DualRingRadialStack;
 }
 
-/** Warp axial → pixel using the dual-ring stack radii (same map as the painted lattice). */
-export function axialToDualRingPixel(cell: AxialPoint, proj: DualRingProjection): Point {
-  const ring = axialDistance({ q: 0, r: 0 }, cell);
-  if (ring === 0) return { x: proj.origin.x, y: proj.origin.y };
-  const slot = axialRingSlotIndex(cell);
-  const count = 6 * ring;
-  const angle = -Math.PI / 2 + (slot / count) * 2 * Math.PI;
-  const radius = radiusForDualRingAxial(ring, proj.stack, proj.spacing);
+export interface CurvedLatticePathOptions {
+  /** Amount of angular bow, in radians, at the middle of the path. */
+  curvature?: number;
+  /** Number of straight segments used to approximate the smooth path. */
+  samples?: number;
+}
+
+export function curvedSprocketSlotPoint(
+  origin: Point,
+  radius: number,
+  count: number,
+  slot: number,
+): Point {
+  const safeCount = Math.max(1, Math.round(count));
+  const normalizedSlot = ((slot % safeCount) + safeCount) % safeCount;
+  const angle = -Math.PI / 2 + (normalizedSlot / safeCount) * Math.PI * 2;
   return {
-    x: proj.origin.x + radius * Math.cos(angle),
-    y: proj.origin.y + radius * Math.sin(angle),
+    x: origin.x + radius * Math.cos(angle),
+    y: origin.y + radius * Math.sin(angle),
   };
 }
 
-/** Inverse of axialToDualRingPixel (nearest axial cell). */
+/**
+ * Sample a curved edge in polar space. A straight SVG segment between two
+ * circularly-warped cells still looks like a chord; this keeps the edge on
+ * the same circular Cartesian warp as the lattice itself.
+ */
+export function curvedLatticePathPoints(
+  from: Point,
+  to: Point,
+  origin: Point,
+  options: CurvedLatticePathOptions = {},
+): Point[] {
+  const samples = Math.max(2, Math.round(options.samples ?? 12));
+  const fromDx = from.x - origin.x;
+  const fromDy = from.y - origin.y;
+  const toDx = to.x - origin.x;
+  const toDy = to.y - origin.y;
+  const fromRadius = Math.hypot(fromDx, fromDy);
+  const toRadius = Math.hypot(toDx, toDy);
+  if (fromRadius < 1e-9 || toRadius < 1e-9) {
+    return [from, to];
+  }
+  const fromAngle = Math.atan2(fromDy, fromDx);
+  let angleDelta = Math.atan2(toDy, toDx) - fromAngle;
+  while (angleDelta > Math.PI) angleDelta -= Math.PI * 2;
+  while (angleDelta < -Math.PI) angleDelta += Math.PI * 2;
+  const curvature = options.curvature ?? 0.16;
+  const points: Point[] = [];
+  for (let i = 0; i <= samples; i += 1) {
+    if (i === 0) {
+      points.push({ ...from });
+      continue;
+    }
+    if (i === samples) {
+      points.push({ ...to });
+      continue;
+    }
+    const t = i / samples;
+    const radius = fromRadius + (toRadius - fromRadius) * t;
+    const angle = fromAngle + angleDelta * t + curvature * Math.sign(angleDelta || 1) * Math.sin(Math.PI * t);
+    points.push({
+      x: origin.x + radius * Math.cos(angle),
+      y: origin.y + radius * Math.sin(angle),
+    });
+  }
+  return points;
+}
+
+/**
+ * Two-directional curved sprocket mesh. Every outer-boundary vertex emits a
+ * paired +sweep/-sweep stroke from the exact same point; the opposing angular
+ * slopes are what create the repeated rhombi. The boundaries themselves are
+ * not mesh lines and may be drawn separately by the caller.
+ */
+export function curvedSprocketPathPoints(
+  origin: Point,
+  innerRadius: number,
+  outerRadius: number,
+  count: number,
+  sweep = 0.6,
+  curvature = 0.12,
+  samples = 12,
+): Point[][] {
+  const safeCount = Math.max(1, Math.round(count));
+  const safeSamples = Math.max(2, Math.round(samples));
+  const paths: Point[][] = [];
+  const step = (Math.PI * 2) / safeCount;
+  // The sweep is topological: it must land on another indexed boundary
+  // vertex, never between vertices. This makes the inner endpoints shared by
+  // opposite-direction curves instead of merely visually adjacent.
+  const sweepSteps = Math.max(1, Math.round(sweep / step));
+  const lockedSweep = sweepSteps * step;
+  const start = -Math.PI / 2;
+  const outerPoints = Array.from({ length: safeCount }, (_, index) =>
+    curvedSprocketSlotPoint(origin, outerRadius, safeCount, index));
+  const innerPoints = Array.from({ length: safeCount }, (_, index) =>
+    curvedSprocketSlotPoint(origin, innerRadius, safeCount, index));
+  const path = (outer: Point, inner: Point, angle0: number, angle1: number, bend: number): Point[] => {
+    const points: Point[] = [];
+    for (let i = 0; i <= safeSamples; i += 1) {
+      if (i === 0) {
+        points.push({ ...outer });
+        continue;
+      }
+      if (i === safeSamples) {
+        points.push({ ...inner });
+        continue;
+      }
+      const t = i / safeSamples;
+      const radius = outerRadius + (innerRadius - outerRadius) * t;
+      const angle = angle0 + (angle1 - angle0) * t + bend * Math.sin(Math.PI * t);
+      points.push({ x: origin.x + radius * Math.cos(angle), y: origin.y + radius * Math.sin(angle) });
+    }
+    return points;
+  };
+  for (let i = 0; i < safeCount; i += 1) {
+    const angle = start + i * step;
+    // Keep these adjacent and sourced from the same `angle`: callers can
+    // rely on path[2*i] and path[2*i+1] being one opposite-direction pair.
+    const plusIndex = (i + sweepSteps) % safeCount;
+    const minusIndex = (i - sweepSteps + safeCount) % safeCount;
+    paths.push(path(outerPoints[i]!, innerPoints[plusIndex]!, angle, angle + lockedSweep, curvature));
+    paths.push(path(outerPoints[i]!, innerPoints[minusIndex]!, angle, angle - lockedSweep, -curvature));
+  }
+  return paths;
+}
+
+/**
+ * Cartesian cell → pixel under the circular warp. q/r remain ordinary x/y
+ * coordinates, but each square-grid ring is bent onto a circular ring around
+ * the landscape center. The same function is used for node homes and lattice
+ * rendering, so the displayed curved grid is the snapping grid.
+ */
+export function axialToDualRingPixel(cell: AxialPoint, proj: DualRingProjection): Point {
+  const ring = axialDistance({ q: 0, r: 0 }, cell);
+  if (ring === 0) return { ...proj.origin };
+  const radius = radiusForDualRingAxial(ring, proj.stack, proj.spacing);
+  const count = Math.max(1, 6 * ring);
+  return curvedSprocketSlotPoint(proj.origin, radius, count, axialRingSlotIndex(cell));
+}
+
+/** Inverse of the circular Cartesian warp; picks the nearest curved grid cell. */
 export function pixelToDualRingAxial(point: Point, proj: DualRingProjection): AxialPoint {
   const dx = point.x - proj.origin.x;
   const dy = point.y - proj.origin.y;
-  const radius = Math.hypot(dx, dy);
-  if (radius < 1e-9) return { q: 0, r: 0 };
-  const stack = proj.stack;
-  const maxRing = stack.stressorRingAxial + 12;
-  let bestRing = 1;
-  let bestErr = Infinity;
+  if (Math.hypot(dx, dy) < 1e-9) return { q: 0, r: 0 };
+  const maxRing = proj.stack.stressorRingAxial + 12;
+  const targetRadius = Math.hypot(dx, dy);
+  let nearestRing = 0;
+  let nearestRingDistance = Math.abs(targetRadius);
+  // Ring radii are monotone. Scan only the radial bands first; this avoids the
+  // previous O(n²) Cartesian search on every drag/update lookup.
   for (let ring = 1; ring <= maxRing; ring += 1) {
-    const target = radiusForDualRingAxial(ring, stack, proj.spacing);
-    const err = Math.abs(target - radius);
-    if (err < bestErr) {
-      bestErr = err;
-      bestRing = ring;
+    const distance = Math.abs(radiusForDualRingAxial(ring, proj.stack, proj.spacing) - targetRadius);
+    if (distance < nearestRingDistance) {
+      nearestRing = ring;
+      nearestRingDistance = distance;
     }
   }
-  // Never rest in either annulus: snap to nearest occupied zone edge.
-  const inInnerAnnulus = bestRing > stack.purposeRingAxial && bestRing < stack.componentInnerAxial;
-  const inOuterAnnulus = bestRing > stack.componentOuterAxial && bestRing < stack.stressorRingAxial;
-  if (inInnerAnnulus) {
-    bestRing = radius < (stack.innerAnnulus.inner + stack.innerAnnulus.outer) / 2
-      ? stack.purposeRingAxial
-      : stack.componentInnerAxial;
-  } else if (inOuterAnnulus) {
-    bestRing = radius < (stack.outerAnnulus.inner + stack.outerAnnulus.outer) / 2
-      ? stack.componentOuterAxial
-      : stack.stressorRingAxial;
+  if (nearestRing === 0) return { q: 0, r: 0 };
+  const count = 6 * nearestRing;
+  const angle = Math.atan2(dy, dx);
+  const normalized = ((angle + Math.PI / 2) / (Math.PI * 2) + 1) % 1;
+  const slot = Math.round(normalized * count);
+  let best = axialRing({ q: 0, r: 0 }, nearestRing)[slot % count]!;
+  let bestDistance = Infinity;
+  for (const ring of [nearestRing - 1, nearestRing, nearestRing + 1]) {
+    if (ring <= 0 || ring > maxRing) continue;
+    const ringCells = axialRing({ q: 0, r: 0 }, ring);
+    const ringCount = ringCells.length;
+    const ringSlot = Math.round(normalized * ringCount);
+    for (let offset = -1; offset <= 1; offset += 1) {
+      const candidate = ringCells[(ringSlot + offset + ringCount) % ringCount]!;
+      const candidatePixel = axialToDualRingPixel(candidate, proj);
+      const distance = Math.hypot(candidatePixel.x - point.x, candidatePixel.y - point.y);
+      if (distance < bestDistance) {
+        best = candidate;
+        bestDistance = distance;
+      }
+    }
   }
-  let angle = Math.atan2(dy, dx) + Math.PI / 2;
-  if (angle < 0) angle += 2 * Math.PI;
-  const count = 6 * bestRing;
-  const slot = ((Math.round((angle / (2 * Math.PI)) * count) % count) + count) % count;
-  return axialRing({ q: 0, r: 0 }, bestRing)[slot]!;
+  return best;
 }
 
 /**
@@ -1389,6 +1558,50 @@ export function previewNearestFreeAxialPoint(
   origin: Point = { x: 0, y: 0 },
 ): AxialPoint {
   return nearestFreeAxialPoint(point, occupiedKeys, spacing, origin);
+}
+
+/**
+ * Cartesian counterpart used by component dragging. When the attempted cell
+ * is occupied, candidates on the first free square-grid ring are considered
+ * from the attempted cell back toward `dragOrigin` first.
+ */
+export function nearestFreeCartesianPoint(
+  point: Point,
+  occupiedKeys: ReadonlySet<string>,
+  spacing = TRI_LATTICE_SPACING,
+  origin: Point = { x: 0, y: 0 },
+  dragOrigin?: Point,
+): AxialPoint {
+  const base = {
+    q: Math.round((point.x - origin.x) / spacing),
+    r: Math.round((point.y - origin.y) / spacing),
+  };
+  if (!occupiedKeys.has(axialKey(base))) return base;
+  const preferred = dragOrigin ?? point;
+  const direction = {
+    x: preferred.x - (origin.x + base.q * spacing),
+    y: preferred.y - (origin.y + base.r * spacing),
+  };
+  for (let radius = 1; ; radius += 1) {
+    const candidates: AxialPoint[] = [];
+    for (let q = base.q - radius; q <= base.q + radius; q += 1) {
+      for (let r = base.r - radius; r <= base.r + radius; r += 1) {
+        if (Math.max(Math.abs(q - base.q), Math.abs(r - base.r)) !== radius) continue;
+        candidates.push({ q, r });
+      }
+    }
+    candidates.sort((left, right) => {
+      const leftDx = left.q - base.q;
+      const leftDy = left.r - base.r;
+      const rightDx = right.q - base.q;
+      const rightDy = right.r - base.r;
+      const leftAlong = leftDx * direction.x + leftDy * direction.y;
+      const rightAlong = rightDx * direction.x + rightDy * direction.y;
+      return rightAlong - leftAlong || left.q - right.q || left.r - right.r;
+    });
+    const free = candidates.find((candidate) => !occupiedKeys.has(axialKey(candidate)));
+    if (free) return free;
+  }
 }
 
 export interface ForceShapeGroup {

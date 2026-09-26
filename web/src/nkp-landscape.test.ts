@@ -44,7 +44,6 @@ function fixture(open: boolean): void {
         <label data-landscape-for="heatmap" data-test="counts"></label>
         <label data-landscape-for="regions" data-test="focus"></label>
         <label data-landscape-for="regions" data-test="lock"><input type="checkbox" data-regions-lock-toggle /></label>
-        <label data-landscape-for="regions" data-test="lock-components"><input type="checkbox" data-regions-lock-components-toggle /></label>
         <label data-landscape-for="regions" data-test="keep-sim"><input type="checkbox" data-regions-keep-simulating-toggle /></label>
         <button type="button" data-landscape-reset-view>reset view</button>
         <button type="button" data-landscape-deselect-all>deselect all</button>
@@ -163,7 +162,7 @@ describe("landscape controls", () => {
     handle.destroy();
   });
 
-  test("regions bundle trunks split on the ergodic boundaries, not a tension slider", async () => {
+  test("regions routes split at annuli, not a tension slider", async () => {
     const { state } = selectionFixture();
     const handle = mountLandscape(document.body, () => state, d3);
     await pickView("regions");
@@ -171,8 +170,8 @@ describe("landscape controls", () => {
     const host = document.querySelector("[data-landscape]")!;
     // Slider is bundle-view-only now.
     expect(hidden("tension")).toBe(true);
-    const componentTrunk = host.querySelector("path.nkp-hyper-bundle-trunk");
-    expect(componentTrunk?.getAttribute("d")).toBeTruthy();
+    const route = host.querySelector("path.nkp-hyper-route");
+    expect(route?.getAttribute("d")).toBeTruthy();
     handle.destroy();
   });
 
@@ -238,8 +237,6 @@ describe("rendered-page integration", () => {
     expect(shell).toContain("data-regions-lock-toggle");
     expect(shell).toContain("data-regions-lattice-toggle");
     expect(shell).toMatch(/data-regions-lock-toggle[^>]*checked|checked[^>]*data-regions-lock-toggle/);
-    expect(shell).toContain("data-regions-lock-components-toggle");
-    expect(shell).toContain("lock components");
   });
 
   test("the landscape fixture exposes a regions keep-simulating checkbox", () => {

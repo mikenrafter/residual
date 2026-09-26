@@ -1,0 +1,86 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Curved Cartesian lattice generator</title>
+<style>
+  :root { color-scheme: light; font: 14px system-ui, sans-serif; }
+  body { margin: 0; display: grid; grid-template-columns: 250px 1fr; min-height: 100vh; background: #f4f1eb; color: #302a24; }
+  aside { padding: 20px; background: #fffdf9; border-right: 1px solid #ded7cd; }
+  h1 { margin: 0 0 8px; font-size: 18px; }
+  p { margin: 0 0 18px; line-height: 1.4; color: #71685e; }
+  label { display: block; margin: 14px 0 5px; }
+  input { width: 100%; box-sizing: border-box; accent-color: #8b5e34; }
+  output { float: right; color: #8b5e34; }
+  main { display: grid; place-items: center; padding: 20px; }
+  canvas { width: min(86vw, 760px); height: min(86vw, 760px); background: white; box-shadow: 0 8px 30px #5f4d3920; }
+  code { font-size: 12px; }
+</style>
+<aside>
+  <h1>Curved Cartesian lattice</h1>
+  <p>Only two bent coordinate families. Every outer vertex emits a matched clockwise/counterclockwise pair; their crossings form the rhombi.</p>
+  <label>Inner radius <output id="innerOut"></output><input id="inner" type="range" min="80" max="220" value="150"></label>
+  <label>Outer radius <output id="outerOut"></output><input id="outer" type="range" min="230" max="340" value="310"></label>
+  <label>Lines per family <output id="countOut"></output><input id="count" type="range" min="8" max="28" value="18"></label>
+  <label>Angular steps <output id="sweepOut"></output><input id="sweep" type="range" min="1" max="8" value="2"></label>
+  <label>Curve <output id="curveOut"></output><input id="curve" type="range" min="-100" max="100" value="18"></label>
+  <label>Boundary width <output id="widthOut"></output><input id="width" type="range" min="1" max="8" value="3"></label>
+  <p><code>generator: polar warp of Cartesian coordinate families</code></p>
+</aside>
+<main><canvas id="canvas" width="760" height="760"></canvas></main>
+<script>
+  const canvas = document.querySelector('#canvas');
+  const ctx = canvas.getContext('2d');
+  const center = { x: canvas.width / 2, y: canvas.height / 2 };
+  const controls = ['inner', 'outer', 'count', 'sweep', 'curve', 'width'];
+  const value = (name) => Number(document.querySelector('#' + name).value);
+  const point = (radius, angle) => ({ x: center.x + radius * Math.cos(angle), y: center.y + radius * Math.sin(angle) });
+
+  function sprocketPath(outer, inner, angle0, angle1, bend) {
+    const samples = 28;
+    ctx.beginPath();
+    for (let i = 0; i <= samples; i++) {
+      const t = i / samples;
+      // Each stroke crosses the annulus from the outer boundary to the inner
+      // boundary. Opposing angular slopes make the diamond/rhombus cells.
+      const radius = outer + (inner - outer) * t;
+      const angle = angle0 + (angle1 - angle0) * t + bend * Math.sin(Math.PI * t);
+      const p = point(radius, angle);
+      if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
+  }
+
+  function draw() {
+    const inner = value('inner');
+    const outer = value('outer');
+    const count = value('count');
+    const sweep = value('sweep') * Math.PI * 2 / count;
+    const curve = value('curve') / 100 * 0.24;
+    const width = value('width');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#966b3f';
+    ctx.lineWidth = 2.2;
+    const step = Math.PI * 2 / count;
+    const start = -Math.PI / 2;
+    // The two families are the curved images of the two Cartesian axes.
+    for (let i = 0; i < count; i++) {
+      const a = start + i * step;
+      sprocketPath(outer, inner, a, a + sweep, curve);
+      sprocketPath(outer, inner, a, a - sweep, -curve);
+    }
+    ctx.strokeStyle = '#2d2d2d';
+    ctx.lineWidth = width;
+    for (const radius of [inner, outer]) {
+      ctx.beginPath();
+      ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+  function update() {
+    for (const name of controls) document.querySelector('#' + name + 'Out').textContent = value(name);
+    draw();
+  }
+  for (const name of controls) document.querySelector('#' + name).addEventListener('input', update);
+  update();
+</script>

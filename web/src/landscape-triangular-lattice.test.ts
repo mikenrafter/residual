@@ -519,6 +519,21 @@ describe("axialHopStep / hop threshold helpers", () => {
  * dynamically so missing names fail as undefined assertions, not import errors.
  */
 type DualRingLatticeModule = {
+  curvedLatticePathPoints?: (
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+    origin: { x: number; y: number },
+    options?: { curvature?: number; samples?: number },
+  ) => Array<{ x: number; y: number }>;
+  curvedSprocketPathPoints?: (
+    origin: { x: number; y: number },
+    innerRadius: number,
+    outerRadius: number,
+    count: number,
+    sweep?: number,
+    curvature?: number,
+    samples?: number,
+  ) => Array<Array<{ x: number; y: number }>>;
   miniPyramidLayersForCount?: (n: number) => number[];
   partitionMiniPyramidLayers?: (layers: readonly number[]) => Array<{
     kind: string;
@@ -865,5 +880,34 @@ describe("snapPyramidTopsToSharedRay", () => {
     const cross = p.x * s.y - p.y * s.x;
     const scale = Math.hypot(p.x, p.y) * Math.hypot(s.x, s.y);
     expect(Math.abs(cross) / Math.max(scale, 1e-9)).toBeLessThan(0.35);
+  });
+
+  test("curved lattice paths preserve endpoints while bowing between circular cells", () => {
+    const from = { x: 100, y: 0 };
+    const to = { x: 0, y: 100 };
+    const points = dualRing.curvedLatticePathPoints?.(from, to, { x: 0, y: 0 }, {
+      curvature: 0.2,
+      samples: 8,
+    });
+    expect(points).toHaveLength(9);
+    expect(points?.[0]).toEqual(from);
+    expect(points?.at(-1)).toEqual(to);
+    expect(points?.some((point) => point.x < 65 && point.y > 75)).toBe(true);
+  });
+
+  test("sprocket strokes leave each outer vertex as an opposite-direction pair", () => {
+    const paths = dualRing.curvedSprocketPathPoints?.({ x: 0, y: 0 }, 150, 310, 18, 0.66, 0.12, 12);
+    expect(paths).toHaveLength(36);
+    for (let i = 0; i < 18; i += 1) {
+      const clockwise = paths?.[i * 2]!;
+      const counterclockwise = paths?.[i * 2 + 1]!;
+      expect(clockwise[0]).toEqual(counterclockwise[0]);
+      const plusInner = clockwise.at(-1)!;
+      const minusInner = counterclockwise.at(-1)!;
+      const plusOwner = paths?.[((i - 4 + 18) % 18) * 2]!.at(-1)!;
+      const minusOwner = paths?.[((i + 4) % 18) * 2 + 1]!.at(-1)!;
+      expect(plusInner).toEqual(minusOwner);
+      expect(minusInner).toEqual(plusOwner);
+    }
   });
 });

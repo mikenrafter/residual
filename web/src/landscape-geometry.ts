@@ -649,6 +649,10 @@ function annulusBandAroundMid(mid: number, halfWidth: number): { inner: number; 
 /**
  * Component → correct-annulus mid → approach → force. Uses a long ±10° arc
  * when the short hop would cross the wrong annulus.
+ *
+ * Pass concrete `innerAnnulus` / `outerAnnulus` bands when available so long-arc
+ * detection matches the drawn gaps. Without them, bands are synthesized around
+ * the mid radii (tests / legacy callers).
  */
 export function dualRingMembershipGeometry(input: {
   from: Point;
@@ -657,6 +661,8 @@ export function dualRingMembershipGeometry(input: {
   center: Point;
   innerAnnulusMid: number;
   outerAnnulusMid: number;
+  innerAnnulus?: { inner: number; outer: number };
+  outerAnnulus?: { inner: number; outer: number };
   approach?: Point;
   tangentDegrees?: number;
 }): {
@@ -666,14 +672,18 @@ export function dualRingMembershipGeometry(input: {
   route: "short" | "long-arc";
   midSplit: Point;
 } {
-  const half = Math.max(
+  const fallbackHalf = Math.max(
     8,
     Math.abs(input.outerAnnulusMid - input.innerAnnulusMid) * 0.25,
   );
   const correctMid = input.forceKind === "purpose" ? input.innerAnnulusMid : input.outerAnnulusMid;
   const wrongMid = input.forceKind === "purpose" ? input.outerAnnulusMid : input.innerAnnulusMid;
-  const correctAnnulus = annulusBandAroundMid(correctMid, half);
-  const wrongAnnulus = annulusBandAroundMid(wrongMid, half);
+  const correctAnnulus = input.forceKind === "purpose"
+    ? (input.innerAnnulus ?? annulusBandAroundMid(correctMid, fallbackHalf))
+    : (input.outerAnnulus ?? annulusBandAroundMid(correctMid, fallbackHalf));
+  const wrongAnnulus = input.forceKind === "purpose"
+    ? (input.outerAnnulus ?? annulusBandAroundMid(wrongMid, fallbackHalf))
+    : (input.innerAnnulus ?? annulusBandAroundMid(wrongMid, fallbackHalf));
 
   const forceAngle = Math.atan2(input.force.y - input.center.y, input.force.x - input.center.x);
   const radialMid: Point = {

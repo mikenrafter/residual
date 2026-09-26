@@ -142,7 +142,6 @@ const CONTROL_SELECTOR = [
   "[data-regions-focus]",
   "[data-regions-names-toggle]",
   "[data-regions-lock-toggle]",
-  "[data-regions-lock-components-toggle]",
   "[data-regions-lattice-toggle]",
   "[data-regions-keep-simulating-toggle]",
 ].join(", ");
@@ -282,10 +281,9 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
       const focusComponent = syncFocusOptions(container.querySelector<HTMLSelectElement>("[data-regions-focus]"), state);
       const showNames = container.querySelector<HTMLInputElement>("[data-regions-names-toggle]")?.checked ?? true;
       const lockRegions = container.querySelector<HTMLInputElement>("[data-regions-lock-toggle]")?.checked ?? true;
-      const lockComponents = container.querySelector<HTMLInputElement>("[data-regions-lock-components-toggle]")?.checked ?? false;
       const showLattice = container.querySelector<HTMLInputElement>("[data-regions-lattice-toggle]")?.checked ?? false;
       const keepSimulating = container.querySelector<HTMLInputElement>("[data-regions-keep-simulating-toggle]")?.checked ?? false;
-      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, lockComponents, showLattice, keepSimulating, ...(focusComponent ? { focusComponent } : {}) });
+      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, showLattice, keepSimulating, ...(focusComponent ? { focusComponent } : {}) });
     } else {
       const minCouplingStrength = syncMinCouplingStrength(container, state, filters);
       if (view === "heatmap") {
