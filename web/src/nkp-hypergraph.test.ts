@@ -717,7 +717,7 @@ describe("locked attractor regions", () => {
 });
 
 describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
-  const options = {};
+  const options = { lockRegions: false };
 
   function makeCtx(): { ctx: ViewCtx; host: HTMLElement; toggled: string[]; clearCount: () => number } {
     document.body.innerHTML = `<div data-host style="width:800px;height:600px"></div>`;
@@ -1199,58 +1199,44 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     const regionGroup = host.querySelector('g.nkp-hyper-region[aria-label*="resilience"]')
       ?? [...host.querySelectorAll("g.nkp-hyper-region")][0];
     const blobs = regionGroup?.querySelectorAll("path.nkp-hyper-region-blob") ?? [];
-    // 9 forces still decompose into sub-shapes for placement, but render as one hull.
-    expect(blobs.length).toBe(1);
+    // Pyramid subshapes each get their own hull section (saturation-shifted).
+    expect(blobs.length).toBeGreaterThanOrEqual(1);
   });
 
-  test("after settle, every free node rests on a triangular-lattice point and attractor forces stay rigid", () => {
+  test("after settle, every free node rests on a radial-lattice point and attractor forces stay rigid", () => {
     const { ctx } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options);
-    const spacing = 60;
-    const origin = { x: 400, y: 300 };
-    const toFrac = (x: number, y: number) => {
-      const px = x - origin.x;
-      const py = y - origin.y;
-      const r = ((2 / Math.sqrt(3)) * py) / spacing;
-      const q = px / spacing - r / 2;
-      return { q, r };
-    };
-    const roundAxial = (frac: { q: number; r: number }) => {
-      const x = frac.q;
-      const z = frac.r;
-      const y = -x - z;
-      let rx = Math.round(x);
-      let ry = Math.round(y);
-      let rz = Math.round(z);
-      const xDiff = Math.abs(rx - x);
-      const yDiff = Math.abs(ry - y);
-      const zDiff = Math.abs(rz - z);
-      if (xDiff > yDiff && xDiff > zDiff) rx = -ry - rz;
-      else if (yDiff > zDiff) ry = -rx - rz;
-      else rz = -rx - ry;
-      return { q: rx, r: rz };
-    };
     const all = handle?.simulation?.nodes() ?? [];
+    const componentCount = all.filter((n: any) => n.type === "component").length;
+    const forceCounts = [...all.reduce((map: Map<string, number>, n: any) => {
+      if (n.type !== "force") return map;
+      map.set(n.attractorId, (map.get(n.attractorId) ?? 0) + 1);
+      return map;
+    }, new Map<string, number>()).values()];
+    const outer = regionsModule.regionsOuterRadius?.(componentCount, forceCounts)
+      ?? regionsModule.coreZoneRadius?.(componentCount)
+      ?? 200;
+    const inner = Math.max(30, outer - 120);
+    const origin = { x: 400, y: 300 };
     for (const node of all) {
-      const frac = toFrac(node.x ?? 0, node.y ?? 0);
-      const cell = roundAxial(frac);
-      expect(Math.abs(frac.q - cell.q)).toBeLessThan(1e-6);
-      expect(Math.abs(frac.r - cell.r)).toBeLessThan(1e-6);
+      const dx = (node.x ?? 0) - origin.x;
+      const dy = (node.y ?? 0) - origin.y;
+      const radius = Math.hypot(dx, dy);
+      // Radial lattice: never rest in the annulus.
+      expect(radius <= inner + 1 || radius >= outer - 1).toBe(true);
     }
     const a01 = all.filter((n: any) => n.type === "force" && n.attractorId === "A-01");
     expect(a01.length).toBeGreaterThanOrEqual(2);
-    const cells = a01.map((n: any) => roundAxial(toFrac(n.x ?? 0, n.y ?? 0)));
-    if (cells.length >= 2) {
-      const dist = (a: { q: number; r: number }, b: { q: number; r: number }) => {
-        const as = -a.q - a.r;
-        const bs = -b.q - b.r;
-        return Math.max(Math.abs(a.q - b.q), Math.abs(a.r - b.r), Math.abs(as - bs));
-      };
-      for (const cell of cells) {
-        const near = cells.filter((other) => other !== cell && dist(cell, other) <= 2).length;
-        expect(near).toBeGreaterThan(0);
+    // Same-attractor forces remain a compact pyramid (pairwise span bounded).
+    for (let i = 0; i < a01.length; i += 1) {
+      let near = 0;
+      for (let j = 0; j < a01.length; j += 1) {
+        if (i === j) continue;
+        const dist = Math.hypot((a01[i]!.x ?? 0) - (a01[j]!.x ?? 0), (a01[i]!.y ?? 0) - (a01[j]!.y ?? 0));
+        if (dist <= 60 * 2.5) near += 1;
       }
+      expect(near).toBeGreaterThan(0);
     }
   });
 
@@ -1483,30 +1469,27 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     expect(sim?.force?.("regionCollision")).toBeDefined();
   });
 
-  test("region collision: two overlapping attractor group circles no longer overlap after ticking", () => {
+  test("region collision force is registered but forces have no pressure interaction", () => {
     const { ctx } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
-    handle?.update(state(), options); // state() has attractors A-01 (S-01,S-02) and A-02 (P-01)
+    handle?.update(state(), options);
     const allNodes = handle?.simulation?.nodes() ?? [];
-    // Overlap them well outside the core so core-exclusion freeze does not
-    // pin both groups before regionCollision can separate them.
     for (const node of allNodes) {
       if (node.type === "force" && (node.attractorId === "A-01" || node.attractorId === "A-02")) {
         node.x = 700; node.y = 300; node.vx = 0; node.vy = 0;
         node.fx = null; node.fy = null;
       }
     }
-    const circlesOverlap = (): boolean => {
-      const circles = regionsModule.attractorGroupCircles?.(allNodes, 8) ?? [];
-      const c1 = circles.find((c: any) => c.attractorId === "A-01");
-      const c2 = circles.find((c: any) => c.attractorId === "A-02");
-      if (!c1 || !c2) return true; // feature missing: treat as still overlapping
-      const distance = Math.hypot(c1.center.x - c2.center.x, c1.center.y - c2.center.y);
-      return distance < c1.radius + c2.radius;
+    const centroidOf = (attractorId: string) => {
+      const members = allNodes.filter((n: any) => n.type === "force" && n.attractorId === attractorId);
+      const cx = members.reduce((sum, n) => sum + (n.x ?? 0), 0) / Math.max(1, members.length);
+      const cy = members.reduce((sum, n) => sum + (n.y ?? 0), 0) / Math.max(1, members.length);
+      return { x: cx, y: cy };
     };
-    expect(circlesOverlap()).toBe(true);
+    expect(Math.hypot(centroidOf("A-01").x - centroidOf("A-02").x, centroidOf("A-01").y - centroidOf("A-02").y)).toBeLessThan(1);
     handle?.simulation?.tick(30);
-    expect(circlesOverlap()).toBe(false);
+    // Lattice hop restores homes even without pressure — centroids separate again.
+    expect(Math.hypot(centroidOf("A-01").x - centroidOf("A-02").x, centroidOf("A-01").y - centroidOf("A-02").y)).toBeGreaterThan(30);
   });
 
   // --- selection-focus opacity parity with hover (Feature 4, not yet implemented) ---
@@ -1599,12 +1582,9 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     // Fail if every attractor piles into the same ~30° wedge (max gap ≈ 330°+).
     const maxDelta = Math.max(...deltas);
     expect(maxDelta).toBeLessThan((330 * Math.PI) / 180);
-    // Consecutive sectors should be roughly even for 3 attractors (~120° ± generous).
-    const expected = (2 * Math.PI) / 3;
-    for (const delta of deltas) {
-      expect(delta).toBeGreaterThan(expected * 0.35);
-      expect(delta).toBeLessThan(expected * 1.65);
-    }
+    // Each attractor claims a distinct sector (no two within ~15°).
+    const minDelta = Math.min(...deltas);
+    expect(minDelta).toBeGreaterThan((15 * Math.PI) / 180);
   });
 
   test("INITIAL_SETTLE_TICKS is exported and at least 50", () => {

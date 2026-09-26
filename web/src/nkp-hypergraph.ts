@@ -17,17 +17,23 @@ import {
   axialKey,
   axialRing,
   axialToPixel,
+  axialToRadialPixel,
   dilatedSubshapeApproach,
+  isInAnnulus,
   LATTICE_HOP_THRESHOLD,
-  layoutAttractorForceShapes,
+  layoutAttractorPyramidsOnRing,
   nearestFreeAxialPoint,
+  outerRingAxialRadiusForSlots,
+  outerRingSlotsForPyramids,
   pixelToAxial,
   pixelToFractionalAxial,
+  pixelToRadialAxial,
   previewNearestFreeAxialPoint,
-  rotateAxialOffsets,
+  pyramidLayersForCount,
   TRI_LATTICE_SPACING,
   type AxialPoint,
   type ForceShapeGroup,
+  type RadialProjection,
 } from "./landscape-triangular-lattice";
 
 export interface HyperComponentNode {
@@ -440,6 +446,38 @@ export function componentZoneRadius(componentCount: number): number {
 }
 
 /**
+ * Outer ergodic radius: at least the component-driven core zone, grown until
+ * the outer axial ring has enough slots for every pyramid base plus gap nodes.
+ */
+export function regionsOuterRadius(
+  componentCount: number,
+  attractorForceCounts: readonly number[],
+): number {
+  let outer = coreZoneRadius(componentCount);
+  if (attractorForceCounts.length === 0) return outer;
+  const bases = attractorForceCounts.map((count) => pyramidLayersForCount(count)[0] ?? 1);
+  const slotCount = outerRingSlotsForPyramids(bases, 1);
+  const minRing = outerRingAxialRadiusForSlots(slotCount);
+  const spacing = REGIONS_TRI_LATTICE_SPACING;
+  for (let guard = 0; guard < 200; guard += 1) {
+    const inner = Math.max(CORE_ZONE_BASE_RADIUS * 0.5, outer - COMPONENT_ZONE_INSET);
+    const innerHops = Math.max(1, Math.round(inner / spacing));
+    const annulusHops = Math.max(1, Math.round((outer - inner) / spacing));
+    const outerHops = innerHops + annulusHops;
+    if (outerHops >= minRing) return outer;
+    outer += spacing;
+  }
+  return outer;
+}
+
+/** Axial ring index of the outer ergodic barrier under the current radii. */
+export function outerBarrierAxialRing(innerRadius: number, outerRadius: number, spacing = REGIONS_TRI_LATTICE_SPACING): number {
+  const innerHops = Math.max(1, Math.round(innerRadius / spacing));
+  const annulusHops = Math.max(1, Math.round((outerRadius - innerRadius) / spacing));
+  return innerHops + annulusHops;
+}
+
+/**
  * Projects `point` onto the boundary of the circle of `radius` around
  * `center` when it lies outside it; points already inside are unchanged.
  */
@@ -845,7 +883,11 @@ export function editRegionForceOffset(lock: RegionLock, forceId: string, point: 
 export interface RegionsRenderOptions extends NkpHypergraphOptions {
   /** Draw attractor names above their regions. */
   showNames?: boolean;
-  /** Pin each attractor's force nodes as a movable region. */
+  /**
+   * When true (default), forces stay on the canonical static pyramid layout;
+   * dragging a subshape snaps it back home. When false, drag commits a new
+   * home until the next full re-layout or re-lock.
+   */
   lockRegions?: boolean;
   /**
    * When true, pin component nodes in place (still snap to tessellation after
@@ -853,6 +895,8 @@ export interface RegionsRenderOptions extends NkpHypergraphOptions {
    * dragging an attractor pulls its attached components.
    */
   lockComponents?: boolean;
+  /** Draw the triangular lattice faintly below everything (annulus excluded). */
+  showLattice?: boolean;
   /** When true, hold alphaTarget above zero so the simulation stays warm. */
   keepSimulating?: boolean;
 }
@@ -908,12 +952,13 @@ export interface RegionsViewHandle {
  */
 export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   const { host, d3 } = ctx;
-  const lockState: RegionsLockState = ctx.lockState ?? { enabled: false, locks: new Map() };
+  const lockState: RegionsLockState = ctx.lockState ?? { enabled: true, locks: new Map() };
 
   let built:
     | {
         svg: any;
         zoom: any;
+        latticeG: any;
         regionsG: any;
         fusionG: any;
         edgesG: any;
@@ -955,6 +1000,8 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   let lastState: PendingState | undefined;
   let keepSimulating = false;
   let lockComponents = false;
+  let showLattice = false;
+  let regionsLocked = true;
   let hoveredNode: SimNode | undefined;
   let hoveredAttractorId: string | undefined;
   /** Snapshot of other components' occupied lattice cells, captured at drag
@@ -1038,19 +1085,29 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       !occupied.has(axialKey({ q: offset.q + translation.q, r: offset.r + translation.r })));
   }
 
+  function currentForceCounts(): number[] {
+    return [...nodes.reduce((map, node) => {
+      if (node.type !== "force") return map;
+      map.set(node.attractorId, (map.get(node.attractorId) ?? 0) + 1);
+      return map;
+    }, new Map<string, number>()).values()];
+  }
+
+  function currentZoneRadii(): { outerRadius: number; innerRadius: number } {
+    const componentCount = nodes.filter((node) => node.type === "component").length;
+    const outerRadius = regionsOuterRadius(componentCount, currentForceCounts());
+    const innerRadius = Math.max(CORE_ZONE_BASE_RADIUS * 0.5, outerRadius - COMPONENT_ZONE_INSET);
+    return { outerRadius, innerRadius };
+  }
+
   /**
-   * After physics integration, hop nodes whose continuous position drifted
-   * past LATTICE_HOP_THRESHOLD from their lattice cell, then hard-snap every
-   * free node onto a lattice point. Components only snap inside the inner
-   * ring; forces only snap outside the outer ring (never in the annulus).
-   * Sub-shapes may reorient (60° lattice steps) in response to forces —
-   * flattening toward the outer boundary without going fully flat unless
-   * the sub-shape is a size-2 pill.
+   * After physics integration, hop components whose continuous position drifted
+   * past LATTICE_HOP_THRESHOLD, then hard-snap free forces onto their lattice
+   * homes. Components stay inside the inner ring; forces stay outside the outer
+   * ring (never in the annulus).
    */
   function applyLatticeHops(): void {
-    const componentCount = nodes.filter((node) => node.type === "component").length;
-    const outerRadius = coreZoneRadius(componentCount);
-    const innerRadius = componentZoneRadius(componentCount);
+    const { outerRadius, innerRadius } = currentZoneRadii();
     const cellInComponentZone = (cell: AxialPoint): boolean => {
       const point = axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter);
       return Math.hypot(point.x - coreCenter.x, point.y - coreCenter.y) <= innerRadius + 0.5;
@@ -1104,153 +1161,19 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       latticeTargets.set(node.id, point);
     }
 
-    // --- attractor sub-shapes (rigid within, independent across; may reorient) ---
-    const attractorIds = [...new Set(
-      nodes.filter((node): node is SimForceNode => node.type === "force").map((node) => node.attractorId),
-    )];
-    for (const attractorId of attractorIds) {
-      if (draggingRegionIds.has(attractorId)) continue;
-      const shape = rigidAttractors.get(attractorId);
-      if (!shape) continue;
-      for (let subShapeIndex = 0; subShapeIndex < shape.subShapes.length; subShapeIndex += 1) {
-        const current = rigidAttractors.get(attractorId);
-        if (!current) break;
-        const subShape = current.subShapes[subShapeIndex]!;
-        const members = nodes.filter((node): node is SimForceNode =>
-          node.type === "force"
-          && node.attractorId === attractorId
-          && subShape.forceIds.includes(node.id));
-        if (members.length === 0) continue;
-        if (members.some((member) => draggingNodeIds.has(member.id))) continue;
-
-        const continuous = centroid(members.map((member) => ({ x: member.x ?? 0, y: member.y ?? 0 })));
-        if (!continuous) continue;
-
-        type Candidate = {
-          offsets: Map<string, AxialPoint>;
-          translation: AxialPoint;
-          score: number;
-        };
-        let best: Candidate | undefined;
-        for (let rot = 0; rot < 6; rot += 1) {
-          const rotated = rot === 0
-            ? { corner: { q: 0, r: 0 }, offsets: new Map(subShape.offsets) }
-            : rotateAxialOffsets(subShape.offsets, rot);
-          const baseTranslation = {
-            q: subShape.translation.q + rotated.corner.q,
-            r: subShape.translation.r + rotated.corner.r,
-          };
-          const shapeCentroid = centroid(
-            absoluteCellsForSubShape({ offsets: rotated.offsets, translation: baseTranslation }).map((cell) =>
-              axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter)),
-          );
-          if (!shapeCentroid) continue;
-          const fracCentroid = pixelToFractionalAxial(continuous, REGIONS_TRI_LATTICE_SPACING, coreCenter);
-          const shapeCentroidAxial = pixelToFractionalAxial(shapeCentroid, REGIONS_TRI_LATTICE_SPACING, coreCenter);
-          const desiredTranslation = {
-            q: baseTranslation.q + (fracCentroid.q - shapeCentroidAxial.q),
-            r: baseTranslation.r + (fracCentroid.r - shapeCentroidAxial.r),
-          };
-          let translation = baseTranslation;
-          if (axialFracDistance(desiredTranslation, baseTranslation) >= LATTICE_HOP_THRESHOLD) {
-            const step = axialHopStep(baseTranslation, desiredTranslation);
-            if (step) {
-              translation = { q: baseTranslation.q + step.q, r: baseTranslation.r + step.r };
-            }
-          }
-
-          const occupied = occupiedKeysExcluding({ attractorId, subShapeIndex });
-          const cells = absoluteCellsForSubShape({ offsets: rotated.offsets, translation });
-          if (!translationClear({ offsets: rotated.offsets }, translation, occupied)) continue;
-          if (!cells.every(cellOutsideCore)) continue;
-
-          const pixels = cells.map((cell) => axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter));
-          let matchError = 0;
-          for (const member of members) {
-            const offset = rotated.offsets.get(member.id);
-            if (!offset) continue;
-            const absolute = {
-              q: offset.q + translation.q,
-              r: offset.r + translation.r,
-            };
-            const point = axialToPixel(absolute, REGIONS_TRI_LATTICE_SPACING, coreCenter);
-            matchError += Math.hypot((member.x ?? 0) - point.x, (member.y ?? 0) - point.y) ** 2;
-          }
-          const shapeCenter = centroid(pixels);
-          let flatBonus = 0;
-          if (shapeCenter && pixels.length >= 2) {
-            const radial = normalizeVec(shapeCenter.x - coreCenter.x, shapeCenter.y - coreCenter.y);
-            const tangent = { x: -radial.y, y: radial.x };
-            let minRadial = Infinity;
-            let maxRadial = -Infinity;
-            let minTan = Infinity;
-            let maxTan = -Infinity;
-            for (const point of pixels) {
-              const dx = point.x - shapeCenter.x;
-              const dy = point.y - shapeCenter.y;
-              const alongR = dx * radial.x + dy * radial.y;
-              const alongT = dx * tangent.x + dy * tangent.y;
-              minRadial = Math.min(minRadial, alongR);
-              maxRadial = Math.max(maxRadial, alongR);
-              minTan = Math.min(minTan, alongT);
-              maxTan = Math.max(maxTan, alongT);
-            }
-            const radialSpan = maxRadial - minRadial;
-            const tanSpan = maxTan - minTan;
-            const distToCore = Math.hypot(shapeCenter.x - coreCenter.x, shapeCenter.y - coreCenter.y);
-            const nearBoundary = distToCore <= outerRadius + REGIONS_TRI_LATTICE_SPACING * 1.5;
-            if (nearBoundary) {
-              const minRadialAllowed = members.length <= 2 ? 0 : REGIONS_TRI_LATTICE_SPACING * 0.45;
-              if (radialSpan + 1e-6 >= minRadialAllowed) {
-                flatBonus = tanSpan - radialSpan;
-              } else {
-                flatBonus = -1e6;
-              }
-            }
-          }
-          const score = -matchError + flatBonus * 40;
-          if (!best || score > best.score) {
-            best = { offsets: rotated.offsets, translation, score };
-          }
-        }
-
-        if (!best) {
-          // Fall back to current pose snapped outside the core.
-          best = {
-            offsets: subShape.offsets,
-            translation: subShape.translation,
-            score: -Infinity,
-          };
-        }
-
-        const next = {
-          forceIds: subShape.forceIds,
-          offsets: best.offsets,
-          translation: best.translation,
-        };
-        const nextSubShapes = current.subShapes.map((item, index) =>
-          index === subShapeIndex ? next : item);
-        rigidAttractors.set(attractorId, { subShapes: nextSubShapes });
-
-        for (const member of members) {
-          if (draggingNodeIds.has(member.id)) continue;
-          const offset = next.offsets.get(member.id);
-          if (!offset) continue;
-          const absolute = {
-            q: offset.q + next.translation.q,
-            r: offset.r + next.translation.r,
-          };
-          let point = axialToPixel(absolute, REGIONS_TRI_LATTICE_SPACING, coreCenter);
-          // Uphold outer boundary without freezing — never leave a force in the annulus.
-          point = clampOutsideCore(point, coreCenter, outerRadius);
-          member.x = point.x;
-          member.y = point.y;
-          latticeTargets.set(member.id, point);
-          if (regionPinnedIds.has(member.id)) {
-            member.fx = point.x;
-            member.fy = point.y;
-          }
-        }
+    // --- forces: stay on lattice homes (canonical when locked, sticky when unlocked).
+    // No auto-reorient — pyramids only move via drag or full re-layout.
+    for (const node of nodes) {
+      if (node.type !== "force") continue;
+      if (draggingNodeIds.has(node.id) || draggingRegionIds.has(node.attractorId)) continue;
+      const point = latticeTargets.get(node.id);
+      if (!point) continue;
+      const clamped = clampOutsideCore(point, coreCenter, outerRadius);
+      node.x = clamped.x;
+      node.y = clamped.y;
+      if (regionPinnedIds.has(node.id)) {
+        node.fx = clamped.x;
+        node.fy = clamped.y;
       }
     }
   }
@@ -1308,8 +1231,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
    */
   const coreExclusionForce = (): void => {
     if (lockState.enabled) return;
-    const componentCount = nodes.filter((node) => node.type === "component").length;
-    const radius = coreZoneRadius(componentCount);
+    const { outerRadius: radius } = currentZoneRadii();
     for (const node of nodes) {
       if (node.type !== "force") continue;
       if (draggingNodeIds.has(node.id)) continue;
@@ -1351,8 +1273,20 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
    */
   function refreshLatticeTargets(snapIds: ReadonlySet<string> = new Set()): void {
     const componentCount = nodes.filter((node) => node.type === "component").length;
-    const outerRadius = coreZoneRadius(componentCount);
-    const innerRadius = componentZoneRadius(componentCount);
+    const forceCounts = [...nodes.reduce((map, node) => {
+      if (node.type !== "force") return map;
+      map.set(node.attractorId, (map.get(node.attractorId) ?? 0) + 1);
+      return map;
+    }, new Map<string, number>()).values()];
+    const outerRadius = regionsOuterRadius(componentCount, forceCounts);
+    const innerRadius = Math.max(CORE_ZONE_BASE_RADIUS * 0.5, outerRadius - COMPONENT_ZONE_INSET);
+    const proj: RadialProjection = {
+      origin: coreCenter,
+      spacing: REGIONS_TRI_LATTICE_SPACING,
+      innerRadius,
+      outerRadius,
+    };
+    const ringAxialRadius = outerBarrierAxialRing(innerRadius, outerRadius);
 
     // --- components: nearest-free-point search on the shared triangular
     // lattice. Nodes outside snapIds are ordered first so they claim (and
@@ -1368,19 +1302,32 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         return rightStable - leftStable || left.id.localeCompare(right.id);
       });
     for (const node of orderedComponents) {
-      const axial = nearestFreeAxialPoint(
-        { x: node.x ?? 0, y: node.y ?? 0 },
-        componentOccupied,
-        REGIONS_TRI_LATTICE_SPACING,
-        coreCenter,
-      );
+      let axial = pixelToRadialAxial({ x: node.x ?? 0, y: node.y ?? 0 }, proj);
+      // Components stay inside the inner barrier — never in the annulus.
+      const pixel = axialToRadialPixel(axial, proj);
+      const dist = Math.hypot(pixel.x - coreCenter.x, pixel.y - coreCenter.y);
+      if (dist > innerRadius || isInAnnulus(dist, innerRadius, outerRadius)) {
+        axial = nearestFreeAxialPoint(
+          clampToCore({ x: node.x ?? 0, y: node.y ?? 0 }, coreCenter, innerRadius),
+          componentOccupied,
+          REGIONS_TRI_LATTICE_SPACING,
+          coreCenter,
+        );
+      }
+      if (componentOccupied.has(axialKey(axial))) {
+        axial = nearestFreeAxialPoint(
+          { x: node.x ?? 0, y: node.y ?? 0 },
+          componentOccupied,
+          REGIONS_TRI_LATTICE_SPACING,
+          coreCenter,
+        );
+      }
       componentOccupied.add(axialKey(axial));
       componentAxialById.set(node.id, axial);
     }
     componentCells = componentAxialById;
 
-    // --- forces: shape-driven layout per attractor group, anchored at each
-    // group's current force centroid. ---
+    // --- forces: pyramid frustums packed on the outer ring with gap nodes. ---
     const forceNodesByAttractor = new Map<string, SimForceNode[]>();
     for (const node of nodes) {
       if (node.type !== "force") continue;
@@ -1393,10 +1340,13 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       return {
         attractorId,
         forces: members.map((member) => ({ id: member.id, components: member.componentIds, kind: member.kind })),
-        anchor: pixelToAxial(anchorPixel, REGIONS_TRI_LATTICE_SPACING, coreCenter),
+        anchor: pixelToRadialAxial(anchorPixel, proj),
       };
     });
-    const { targets: forceAxialById, subShapesByAttractor: nextSubShapes } = layoutAttractorForceShapes(shapeGroups);
+    const { targets: forceAxialById, subShapesByAttractor: nextSubShapes } = layoutAttractorPyramidsOnRing(
+      shapeGroups,
+      ringAxialRadius,
+    );
     subShapesByAttractor = nextSubShapes;
 
     // Capture per-sub-shape rigid offsets + translation from the absolute layout.
@@ -1441,8 +1391,8 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     rigidAttractors = nextRigid;
 
     const nextTargets = new Map<string, Point>();
-    for (const [id, axial] of componentAxialById) nextTargets.set(id, axialToPixel(axial, REGIONS_TRI_LATTICE_SPACING, coreCenter));
-    for (const [id, axial] of forceAxialById) nextTargets.set(id, axialToPixel(axial, REGIONS_TRI_LATTICE_SPACING, coreCenter));
+    for (const [id, axial] of componentAxialById) nextTargets.set(id, axialToRadialPixel(axial, proj));
+    for (const [id, axial] of forceAxialById) nextTargets.set(id, axialToRadialPixel(axial, proj));
     latticeTargets = nextTargets;
 
     for (const node of nodes) {
@@ -1530,6 +1480,37 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     return groupColorById.get(attractorId) ?? "var(--muted)";
   }
 
+  /** Slight saturation shifts so each pyramid subshape hull reads as its own section. */
+  function subshapeHullColor(attractorId: string, index: number, total: number): string {
+    const base = colorFor(attractorId);
+    const match = base.match(/hsl\(\s*([\d.]+)\s+([\d.]+)%\s+([\d.]+)%\s*\)/i);
+    if (!match || total <= 1) return base;
+    const hue = Number(match[1]);
+    const sat = Number(match[2]);
+    const light = Number(match[3]);
+    const shift = (index - (total - 1) / 2) * 7;
+    const nextSat = Math.max(28, Math.min(88, sat + shift));
+    return `hsl(${hue} ${nextSat}% ${light}%)`;
+  }
+
+  function subshapeBinsForAttractor(attractorId: string): string[][] {
+    const bins = subShapesByAttractor.get(attractorId);
+    if (bins && bins.length > 0) return bins;
+    const forceIds = nodes
+      .filter((node): node is SimForceNode => node.type === "force" && node.attractorId === attractorId)
+      .map((node) => node.id);
+    return forceIds.length > 0 ? [forceIds] : [];
+  }
+
+  function pointsOfForceIds(forceIds: readonly string[]): Point[] {
+    return forceIds
+      .map((id) => {
+        const node = byId.get(id);
+        return node ? { x: node.x ?? 0, y: node.y ?? 0 } : undefined;
+      })
+      .filter((point): point is Point => point !== undefined);
+  }
+
   function canvasSize(): { width: number; height: number } {
     return {
       width: host.clientWidth > 0 ? host.clientWidth : DEFAULT_CANVAS_WIDTH,
@@ -1566,8 +1547,19 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   // --- per-tick drawing, split out so Phase 5 can swap edges/labels cleanly ---
 
   function positionRegions(): void {
-    regionSel?.select("path.nkp-hyper-region-blob").attr("d", (group: AttractorGroup) =>
-      regionCorePath(pointsOfGroup(group)));
+    regionSel?.each(function (this: SVGGElement, group: AttractorGroup) {
+      const bins = subshapeBinsForAttractor(group.attractorId);
+      d3.select(this).selectAll("path.nkp-hyper-region-blob")
+        .data(bins.map((forceIds, index) => ({ forceIds, index, total: bins.length })))
+        .join("path")
+        .attr("class", "nkp-hyper-region-blob")
+        .attr("fill", (item: { index: number; total: number }) => subshapeHullColor(group.attractorId, item.index, item.total))
+        .attr("stroke", (item: { index: number; total: number }) => subshapeHullColor(group.attractorId, item.index, item.total))
+        .attr("stroke-width", REGION_PADDING * 2)
+        .attr("stroke-linejoin", "round")
+        .attr("stroke-linecap", "round")
+        .attr("d", (item: { forceIds: string[] }) => regionCorePath(pointsOfForceIds(item.forceIds)));
+    });
   }
 
   function positionFusionHulls(): void {
@@ -1585,9 +1577,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
    * visible. Force→component fans are not drawn.
    */
   function positionEdges(): void {
-    const componentCount = nodes.filter((node) => node.type === "component").length;
-    const outerRadius = coreZoneRadius(componentCount);
-    const innerRadius = componentZoneRadius(componentCount);
+    const { outerRadius, innerRadius } = currentZoneRadii();
     const midRadius = (innerRadius + outerRadius) / 2;
 
     const geometryByBundle = new Map<string, {
@@ -1858,6 +1848,68 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     });
   }
 
+  function paintLattice(innerRadius: number, outerRadius: number): void {
+    const b = built;
+    if (!b) return;
+    b.latticeG.style("display", showLattice ? null : "none");
+    if (!showLattice) {
+      b.latticeG.selectAll("*").remove();
+      return;
+    }
+    const proj: RadialProjection = {
+      origin: coreCenter,
+      spacing: REGIONS_TRI_LATTICE_SPACING,
+      innerRadius,
+      outerRadius,
+    };
+    const spacing = REGIONS_TRI_LATTICE_SPACING;
+    const innerHops = Math.max(1, Math.round(innerRadius / spacing));
+    const annulusHops = Math.max(1, Math.round((outerRadius - innerRadius) / spacing));
+    const outerHops = innerHops + annulusHops;
+    const maxRing = outerHops + 8;
+    const points: Point[] = [];
+    const edges: Array<[Point, Point]> = [];
+    const pointByKey = new Map<string, Point>();
+    for (let ring = 0; ring <= maxRing; ring += 1) {
+      if (ring > innerHops && ring < outerHops) continue; // skip annulus
+      const cells = ring === 0 ? [{ q: 0, r: 0 }] : axialRing({ q: 0, r: 0 }, ring);
+      for (const cell of cells) {
+        const pixel = axialToRadialPixel(cell, proj);
+        const key = axialKey(cell);
+        pointByKey.set(key, pixel);
+        points.push(pixel);
+        for (const neighbor of [{ q: 1, r: 0 }, { q: 0, r: 1 }, { q: -1, r: 1 }]) {
+          const other = { q: cell.q + neighbor.q, r: cell.r + neighbor.r };
+          const otherRing = Math.max(
+            Math.abs(other.q),
+            Math.abs(other.r),
+            Math.abs(-other.q - other.r),
+          );
+          // Only draw edges to cells we also render (and prefer one direction).
+          if (otherRing > maxRing) continue;
+          if (otherRing > innerHops && otherRing < outerHops) continue;
+          const otherPixel = pointByKey.get(axialKey(other)) ?? axialToRadialPixel(other, proj);
+          edges.push([pixel, otherPixel]);
+        }
+      }
+    }
+    b.latticeG.selectAll("line.nkp-hyper-lattice-edge")
+      .data(edges.map((pair, index) => ({ id: index, pair })))
+      .join("line")
+      .attr("class", "nkp-hyper-lattice-edge")
+      .attr("x1", (d: { pair: [Point, Point] }) => d.pair[0].x)
+      .attr("y1", (d: { pair: [Point, Point] }) => d.pair[0].y)
+      .attr("x2", (d: { pair: [Point, Point] }) => d.pair[1].x)
+      .attr("y2", (d: { pair: [Point, Point] }) => d.pair[1].y);
+    b.latticeG.selectAll("circle.nkp-hyper-lattice-point")
+      .data(points.map((point, index) => ({ id: index, point })))
+      .join("circle")
+      .attr("class", "nkp-hyper-lattice-point")
+      .attr("r", 1.25)
+      .attr("cx", (d: { point: Point }) => d.point.x)
+      .attr("cy", (d: { point: Point }) => d.point.y);
+  }
+
   function tick(): void {
     if (!built) return;
     positionRegions();
@@ -1877,9 +1929,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   }
 
   function clampAllNodesToCoreZones(): void {
-    const componentCount = nodes.filter((node) => node.type === "component").length;
-    const outerRadius = coreZoneRadius(componentCount);
-    const innerRadius = componentZoneRadius(componentCount);
+    const { outerRadius, innerRadius } = currentZoneRadii();
     for (const node of nodes) {
       if (node.type === "component") {
         const clamped = clampToCore({ x: node.x ?? 0, y: node.y ?? 0 }, coreCenter, innerRadius);
@@ -1913,6 +1963,10 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       "nkp-hyper",
       "Forces linked to the components they touch, grouped into attractor regions",
     );
+    const latticeG = content.append("g")
+      .attr("class", "nkp-hyper-lattice")
+      .attr("data-regions-lattice", "true")
+      .style("display", "none");
     const coreG = content.append("g").attr("class", "nkp-hyper-core");
     const coreBoundary = coreG.append("circle")
       .attr("class", "nkp-hyper-core-boundary")
@@ -1950,18 +2004,18 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
 
     const sim = d3.forceSimulation([])
       .force("link", d3.forceLink([]).id((item: SimNode) => item.id).distance(80).strength(0.45))
-      .force("charge", d3.forceManyBody().strength((item: SimNode) => item.type === "component" ? -1400 : -180))
+      .force("charge", d3.forceManyBody().strength((item: SimNode) => item.type === "component" ? -1400 : 0))
       .force("x", d3.forceX(width / 2).strength(0.03))
       .force("y", d3.forceY(height / 2).strength(0.03))
       .force("collision", d3.forceCollide().radius((item: SimNode) => item.type === "component"
         ? REGIONS_COMPONENT_COLLISION_RADIUS
-        : REGIONS_FORCE_COLLISION_RADIUS).strength(0.9))
+        : 0).strength(0.9))
       .force("lattice", latticeForce)
-      .force("cohesion", createAttractorCohesionForce(ATTRACTOR_COHESION_STRENGTH))
-      .force("interaction", createForceInteractionForce())
+      .force("cohesion", (_alpha: number) => {})
+      .force("interaction", (_alpha: number) => {})
       .force("coreContainment", coreContainmentForce)
       .force("coreExclusion", coreExclusionForce)
-      .force("regionCollision", createRegionCollisionForce())
+      .force("regionCollision", (_alpha: number) => {})
       .on("tick", simTick)
       .on("end", () => {
         recomputeLabelNudges(true);
@@ -1969,7 +2023,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       })
       .stop();
 
-    built = { svg, zoom, regionsG, fusionG, edgesG, forceEdgesG, nodesG, labelsGroup, coreBoundary, componentBoundary, coreBoundaryDivider, snapPreview, sim, width, height, didFit: false, tip: createTooltip(host) };
+    built = { svg, zoom, latticeG, regionsG, fusionG, edgesG, forceEdgesG, nodesG, labelsGroup, coreBoundary, componentBoundary, coreBoundaryDivider, snapPreview, sim, width, height, didFit: false, tip: createTooltip(host) };
     return built;
   }
 
@@ -2002,8 +2056,8 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     spawnAngles: ReadonlyMap<string, number>,
   ): { x: number; y: number } {
     const offset = deterministicOffset(item.id);
-    const outerRadius = coreZoneRadius(componentCount);
-    const innerRadius = componentZoneRadius(componentCount);
+    const outerRadius = regionsOuterRadius(componentCount, currentForceCounts());
+    const innerRadius = Math.max(CORE_ZONE_BASE_RADIUS * 0.5, outerRadius - COMPONENT_ZONE_INSET);
     if (item.type === "force") {
       const siblings = [...placed.values()].filter(
         (node): node is SimForceNode => node.type === "force" && node.attractorId === item.attractorId && node.x !== undefined,
@@ -2043,9 +2097,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   }
 
   function applyNodeDrag(node: SimNode, point: { x: number; y: number }): void {
-    const componentCount = nodes.filter((n) => n.type === "component").length;
-    const outerRadius = coreZoneRadius(componentCount);
-    const innerRadius = componentZoneRadius(componentCount);
+    const { outerRadius, innerRadius } = currentZoneRadii();
     if (node.type === "force") {
       const peerIds = subShapeForceIds(node.id);
       const from = { x: node.x ?? 0, y: node.y ?? 0 };
@@ -2174,6 +2226,8 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     const options = rawOptions as RegionsRenderOptions;
     keepSimulating = options.keepSimulating === true;
     lockComponents = options.lockComponents === true;
+    showLattice = options.showLattice === true;
+    regionsLocked = options.lockRegions ?? true;
     const model = buildNkpHypergraphModel(state, options);
 
     if (model.nodes.length === 0) {
@@ -2203,7 +2257,8 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       }
       b.sim.nodes([]);
       (b.sim.force("link") as any).links([]);
-      syncRegionLocks([], options.lockRegions === true);
+      syncRegionLocks([], regionsLocked);
+      paintLattice(emptyInner, emptyOuter);
       regionSel = b.regionsG.selectAll("g.nkp-hyper-region").data([]).join("g");
       fusionSel = b.fusionG.selectAll("path.nkp-hyper-fusion-hull").data([]).join("path");
       bundleGroupSel = b.edgesG.selectAll("g.nkp-hyper-bundle").data([]).join("g");
@@ -2233,8 +2288,9 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
 
     coreCenter = { x: width / 2, y: height / 2 };
     const componentCount = model.nodes.filter((item) => item.type === "component").length;
-    const coreRadius = coreZoneRadius(componentCount);
-    const componentRadius = componentZoneRadius(componentCount);
+    const forceCounts = model.groups.map((group) => group.forceNodeIds.length);
+    const coreRadius = regionsOuterRadius(componentCount, forceCounts);
+    const componentRadius = Math.max(CORE_ZONE_BASE_RADIUS * 0.5, coreRadius - COMPONENT_ZONE_INSET);
     b.coreBoundary
       .attr("cx", coreCenter.x)
       .attr("cy", coreCenter.y)
@@ -2248,6 +2304,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       .attr("x2", coreCenter.x + coreRadius)
       .attr("y1", coreCenter.y)
       .attr("y2", coreCenter.y);
+    paintLattice(componentRadius, coreRadius);
 
     // --- merge nodes by id: survivors keep x/y/vx/vy/fx/fy, newcomers seed, exits just don't reappear ---
     const prevById = byId;
@@ -2272,30 +2329,31 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
 
     b.sim.nodes(nodes);
     (b.sim.force("link") as any).links(links);
-    syncRegionLocks(model.groups, options.lockRegions === true);
+    syncRegionLocks(model.groups, regionsLocked);
     syncComponentLocks();
     b.sim.alpha(0.3).restart();
 
-    // --- regions: filled + wide-stroked core (inflates into a blob), draggable to move their forces.
-    // Composite (5+) attractors still assign forces onto touching sub-shape
-    // slots, but the region renders as one merged hull over every member. ---
+    // --- regions: one filled hull section per pyramid subshape (triangle/pill),
+    // each with a slight saturation shift; group remains draggable as a unit. ---
     regionSel = b.regionsG.selectAll("g.nkp-hyper-region")
       .data(model.groups, (group: AttractorGroup) => group.attractorId)
-      .join((enter: any) => {
-        const g = enter.append("g").attr("class", "nkp-hyper-region");
-        g.append("path").attr("class", "nkp-hyper-region-blob");
-        return g;
-      });
+      .join((enter: any) => enter.append("g").attr("class", "nkp-hyper-region"));
     regionSel
       .attr("opacity", (group: AttractorGroup) => group.focused ? 0.16 : 0.07)
       .attr("aria-label", (group: AttractorGroup) => group.tooltip)
       .attr("tabindex", 0);
-    regionSel.select("path.nkp-hyper-region-blob")
-      .attr("fill", (group: AttractorGroup) => group.color)
-      .attr("stroke", (group: AttractorGroup) => group.color)
-      .attr("stroke-width", REGION_PADDING * 2)
-      .attr("stroke-linejoin", "round")
-      .attr("stroke-linecap", "round");
+    regionSel.each(function (this: SVGGElement, group: AttractorGroup) {
+      const bins = subshapeBinsForAttractor(group.attractorId);
+      d3.select(this).selectAll("path.nkp-hyper-region-blob")
+        .data(bins.map((forceIds, index) => ({ forceIds, index, total: bins.length })))
+        .join("path")
+        .attr("class", "nkp-hyper-region-blob")
+        .attr("fill", (item: { index: number; total: number }) => subshapeHullColor(group.attractorId, item.index, item.total))
+        .attr("stroke", (item: { index: number; total: number }) => subshapeHullColor(group.attractorId, item.index, item.total))
+        .attr("stroke-width", REGION_PADDING * 2)
+        .attr("stroke-linejoin", "round")
+        .attr("stroke-linecap", "round");
+    });
     regionSel.on("click", (_event: MouseEvent, group: AttractorGroup) => ctx.onToggle(`attractor:${group.attractorId}` as EntityKey));
     regionSel.call(d3.drag()
       .on("start", (event: { active: boolean }, group: AttractorGroup) => {
@@ -2330,8 +2388,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         }
         translateGroup(nodes, group.attractorId, event.dx, event.dy);
         {
-          const componentCount = nodes.filter((n) => n.type === "component").length;
-          const radius = coreZoneRadius(componentCount);
+          const { outerRadius: radius } = currentZoneRadii();
           for (const node of nodes) {
             if (node.type !== "force" || node.attractorId !== group.attractorId) continue;
             const clamped = clampOutsideCore({ x: node.x ?? 0, y: node.y ?? 0 }, coreCenter, radius);
@@ -2480,27 +2537,61 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         for (const id of peerIds) draggingNodeIds.delete(id);
         dragComponentOccupied = undefined;
         built?.snapPreview.style("display", "none");
-        refreshLatticeTargets(new Set(peerIds));
-        if (lockState.enabled && node.type === "force") {
-          const lock = lockState.locks.get(node.attractorId);
-          if (lock) {
-            let edited = lock;
-            for (const id of peerIds) {
-              const peer = byId.get(id);
-              if (!peer) continue;
-              edited = editRegionForceOffset(edited, id, { x: peer.x ?? 0, y: peer.y ?? 0 });
-            }
-            lockState.locks.set(node.attractorId, edited);
-            for (const id of peerIds) {
-              const peer = byId.get(id);
-              if (!peer) continue;
-              peer.fx = peer.x;
-              peer.fy = peer.y;
-              regionPinnedIds.add(id);
-            }
-            return;
+        if (regionsLocked && node.type === "force") {
+          // Locked: drag is ephemeral — snap subshape back to canonical homes.
+          for (const id of peerIds) {
+            const peer = byId.get(id);
+            const home = latticeTargets.get(id);
+            if (!peer || !home) continue;
+            peer.x = home.x;
+            peer.y = home.y;
+            peer.fx = home.x;
+            peer.fy = home.y;
+            regionPinnedIds.add(id);
           }
+          tick();
+          return;
         }
+        if (!regionsLocked && node.type === "force") {
+          // Unlocked: commit sticky homes, reversing along the drag arc if occupied.
+          const occupied = occupiedKeysExcluding({});
+          for (const id of peerIds) occupied.delete(axialKey(pixelToAxial({
+            x: byId.get(id)?.x ?? 0,
+            y: byId.get(id)?.y ?? 0,
+          }, REGIONS_TRI_LATTICE_SPACING, coreCenter)));
+          const primary = byId.get(node.id);
+          const home = latticeTargets.get(node.id);
+          if (primary && home) {
+            const from = home;
+            const to = { x: primary.x ?? 0, y: primary.y ?? 0 };
+            const dx = from.x - to.x;
+            const dy = from.y - to.y;
+            let accepted = { ...to };
+            for (let step = 0; step <= 12; step += 1) {
+              const t = step / 12;
+              const candidate = { x: to.x + dx * t, y: to.y + dy * t };
+              const cell = nearestFreeAxialPoint(candidate, occupied, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+              if (!occupied.has(axialKey(cell))) {
+                accepted = axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+                break;
+              }
+            }
+            const shiftX = accepted.x - to.x;
+            const shiftY = accepted.y - to.y;
+            for (const id of peerIds) {
+              const peer = byId.get(id);
+              if (!peer) continue;
+              peer.x = (peer.x ?? 0) + shiftX;
+              peer.y = (peer.y ?? 0) + shiftY;
+              latticeTargets.set(id, { x: peer.x, y: peer.y });
+              peer.fx = null;
+              peer.fy = null;
+            }
+          }
+          tick();
+          return;
+        }
+        refreshLatticeTargets(new Set(peerIds));
         if (lockComponents && node.type === "component") {
           node.fx = node.x;
           node.fy = node.y;

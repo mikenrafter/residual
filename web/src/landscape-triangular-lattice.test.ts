@@ -9,11 +9,21 @@ import {
   decomposeAttractorSize,
   dilateAxialOneLayer,
   dilatedSubshapeApproach,
+  isCompleteOddPyramidStage,
   LATTICE_HOP_THRESHOLD,
   layoutAttractorForceShapes,
   nearestFreeAxialPoint,
+  outerRadiusForPyramidPacking,
+  outerRadiusForRingSlots,
+  outerRingSlotsForPyramids,
+  partitionPyramidSubshapes,
   placeCompositeShapes,
   previewNearestFreeAxialPoint,
+  pyramidCellsForLayers,
+  pyramidLayersForCount,
+  axialRing,
+  axialToRadialPixel,
+  layoutAttractorPyramidsOnRing,
   rotateAxial,
   rotateAxialOffsets,
   shapePatternForSize,
@@ -21,6 +31,145 @@ import {
   type ForceShapeGroup,
   type SimilarityForce,
 } from "./landscape-triangular-lattice";
+
+describe("pyramidLayersForCount", () => {
+  test.each([
+    [1, [1]],
+    [2, [2]],
+    [3, [3]],
+    [4, [3, 1]],
+    [5, [3, 2]],
+    [6, [4, 2]],
+    [7, [4, 3]],
+    [8, [5, 3]],
+    [9, [5, 4]],
+    [10, [5, 4, 1]],
+    [11, [5, 4, 2]],
+    [12, [5, 4, 3]],
+    [13, [6, 4, 3]],
+    [14, [6, 5, 3]],
+    [15, [6, 5, 4]],
+    [16, [7, 5, 4]],
+    [17, [7, 6, 4]],
+    [18, [7, 6, 5]],
+    [19, [7, 6, 5, 1]],
+    [22, [7, 6, 5, 4]],
+    [23, [8, 6, 5, 4]],
+  ] as const)("n=%i → %j", (n, expected) => {
+    expect(pyramidLayersForCount(n)).toEqual([...expected]);
+  });
+
+  test("layer widths always sum to n", () => {
+    for (let n = 1; n <= 40; n += 1) {
+      expect(pyramidLayersForCount(n).reduce((a, b) => a + b, 0)).toBe(n);
+    }
+  });
+
+  test("complete odd stages match [2h+1 … h+1]", () => {
+    expect(isCompleteOddPyramidStage([3])).toBe(true);
+    expect(isCompleteOddPyramidStage([5, 4])).toBe(true);
+    expect(isCompleteOddPyramidStage([7, 6, 5])).toBe(true);
+    expect(isCompleteOddPyramidStage([3, 2])).toBe(false);
+    expect(isCompleteOddPyramidStage([5, 4, 3])).toBe(false);
+  });
+});
+
+describe("pyramidCellsForLayers / partitionPyramidSubshapes", () => {
+  test("cells are centred on the base, base at r=0, apex toward −r", () => {
+    const cells = pyramidCellsForLayers([3, 2]);
+    expect(cells).toEqual([
+      { q: 0, r: 0 }, { q: 1, r: 0 }, { q: 2, r: 0 },
+      { q: 1, r: -1 }, { q: 2, r: -1 },
+    ]);
+  });
+
+  test("every cell belongs to exactly one subshape", () => {
+    for (const n of [1, 2, 3, 5, 9, 12, 15, 22]) {
+      const layers = pyramidLayersForCount(n);
+      const cells = pyramidCellsForLayers(layers);
+      const parts = partitionPyramidSubshapes(layers);
+      const seen = new Set<string>();
+      for (const part of parts) {
+        expect(part.kind === "triangle" || part.kind === "pill").toBe(true);
+        if (part.kind === "triangle") expect(part.cells).toHaveLength(3);
+        for (const cell of part.cells) {
+          const key = axialKey(cell);
+          expect(seen.has(key)).toBe(false);
+          seen.add(key);
+        }
+      }
+      expect(seen.size).toBe(cells.length);
+    }
+  });
+
+  test("a flat 3-base (no height) is a pill — unit triangles need an apex", () => {
+    const parts = partitionPyramidSubshapes([3]);
+    expect(parts).toHaveLength(1);
+    expect(parts[0]!.kind).toBe("pill");
+    expect(parts[0]!.cells).toHaveLength(3);
+  });
+
+  test("3:2 yields one triangle plus a pill of the remaining pair", () => {
+    const parts = partitionPyramidSubshapes([3, 2]);
+    const triangles = parts.filter((p) => p.kind === "triangle");
+    const pills = parts.filter((p) => p.kind === "pill");
+    expect(triangles).toHaveLength(1);
+    expect(pills).toHaveLength(1);
+    expect(pills[0]!.cells).toHaveLength(2);
+  });
+});
+
+describe("outerRingSlotsForPyramids", () => {
+  test("sums bases and intercalates one gap per attractor", () => {
+    expect(outerRingSlotsForPyramids([3, 5, 3], 1)).toBe(3 + 5 + 3 + 3);
+    expect(outerRadiusForRingSlots(12, 60)).toBeCloseTo((12 * 60) / (2 * Math.PI), 5);
+  });
+});
+
+describe("axialToRadialPixel", () => {
+  const proj = {
+    origin: { x: 0, y: 0 },
+    spacing: TRI_LATTICE_SPACING,
+    innerRadius: 120,
+    outerRadius: 240,
+  };
+
+  test("same-ring points are equidistant from the origin", () => {
+    const ring = axialRing({ q: 0, r: 0 }, 2);
+    const radii = ring.map((cell) => {
+      const p = axialToRadialPixel(cell, proj);
+      return Math.hypot(p.x, p.y);
+    });
+    for (const radius of radii) {
+      expect(radius).toBeCloseTo(radii[0]!, 5);
+    }
+  });
+
+  test("angular spacing on a ring is uniform", () => {
+    const ring = axialRing({ q: 0, r: 0 }, 2);
+    const angles = ring.map((cell) => {
+      const p = axialToRadialPixel(cell, proj);
+      return Math.atan2(p.y, p.x);
+    }).sort((a, b) => a - b);
+    const gaps: number[] = [];
+    for (let i = 0; i < angles.length; i += 1) {
+      const next = angles[(i + 1) % angles.length]!;
+      let gap = next - angles[i]!;
+      if (gap < 0) gap += 2 * Math.PI;
+      gaps.push(gap);
+    }
+    for (const gap of gaps) {
+      expect(gap).toBeCloseTo(gaps[0]!, 5);
+    }
+  });
+
+  test("outerRadiusForPyramidPacking grows with attractor bases", () => {
+    const small = outerRadiusForPyramidPacking([3], TRI_LATTICE_SPACING, 1);
+    const large = outerRadiusForPyramidPacking([3, 5, 7, 5], TRI_LATTICE_SPACING, 1);
+    expect(large.outerRadius).toBeGreaterThan(small.outerRadius);
+    expect(large.slotCount).toBe(outerRingSlotsForPyramids([3, 5, 7, 5], 1));
+  });
+});
 
 describe("shapePatternForSize", () => {
   test("singleton (1): a single lattice cell", () => {
@@ -266,29 +415,26 @@ describe("layoutAttractorForceShapes", () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  test("a composite (5+) group's own sub-shapes touch (min distance exactly 1) without overlapping", () => {
+  test("a pyramid group's sub-shapes are vertex-disjoint and cover every force", () => {
     const groups: ForceShapeGroup[] = [
       { attractorId: "A1", forces: makeForces("A1", 14), anchor: { q: 0, r: 0 } },
     ];
     const { targets, subShapesByAttractor } = layoutAttractorForceShapes(groups);
-    const subShapeSizes = decomposeAttractorSize(14);
-    expect(subShapeSizes).toEqual([4, 3, 3, 3, 1]);
+    expect(pyramidLayersForCount(14)).toEqual([6, 5, 3]);
     const bins = subShapesByAttractor.get("A1");
-    expect(bins).toHaveLength(5);
-    expect(bins?.map((bin) => bin.length).sort((a, b) => a - b)).toEqual([1, 3, 3, 3, 4]);
-    let minCross = Infinity;
+    expect(bins).toBeDefined();
+    const covered = bins!.flat();
+    expect(covered).toHaveLength(14);
+    expect(new Set(covered).size).toBe(14);
     for (let i = 0; i < bins!.length; i += 1) {
       for (let j = i + 1; j < bins!.length; j += 1) {
         for (const idA of bins![i]!) {
           for (const idB of bins![j]!) {
-            const distance = axialDistance(targets.get(idA)!, targets.get(idB)!);
-            expect(distance).toBeGreaterThan(0);
-            minCross = Math.min(minCross, distance);
+            expect(axialDistance(targets.get(idA)!, targets.get(idB)!)).toBeGreaterThan(0);
           }
         }
       }
     }
-    expect(minCross).toBe(1);
   });
 
   test("groups with different anchors far apart do not collide", () => {
@@ -309,6 +455,33 @@ describe("layoutAttractorForceShapes", () => {
     const { targets } = layoutAttractorForceShapes(groups);
     const keys = [...targets.values()].map(axialKey);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe("layoutAttractorPyramidsOnRing", () => {
+  function makeForces(attractorId: string, count: number): SimilarityForce[] {
+    return Array.from({ length: count }, (_, i) => ({
+      id: `${attractorId}-f${i}`,
+      components: [`${attractorId}-c${i % 3}`],
+      kind: i % 2 === 0 ? "stressor" as const : "purpose" as const,
+    }));
+  }
+
+  test("places distinct attractors on the outer ring without shared cells", () => {
+    const groups: ForceShapeGroup[] = [
+      { attractorId: "A", forces: makeForces("A", 3), anchor: { q: 0, r: 0 } },
+      { attractorId: "B", forces: makeForces("B", 5), anchor: { q: 0, r: 0 } },
+      { attractorId: "C", forces: makeForces("C", 2), anchor: { q: 0, r: 0 } },
+    ];
+    const pack = outerRadiusForPyramidPacking(
+      groups.map((g) => pyramidLayersForCount(g.forces.length)[0] ?? 1),
+    );
+    const { targets, subShapesByAttractor } = layoutAttractorPyramidsOnRing(groups, pack.ringAxialRadius);
+    expect(targets.size).toBe(3 + 5 + 2);
+    const keys = [...targets.values()].map(axialKey);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(subShapesByAttractor.get("A")?.length).toBeGreaterThanOrEqual(1);
+    expect(subShapesByAttractor.get("B")?.length).toBeGreaterThanOrEqual(1);
   });
 });
 

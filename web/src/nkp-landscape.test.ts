@@ -236,6 +236,8 @@ describe("rendered-page integration", () => {
   test("the regions toolbar exposes attractor-region locking", async () => {
     const shell = await Bun.file("../src/view/shell.html").text();
     expect(shell).toContain("data-regions-lock-toggle");
+    expect(shell).toContain("data-regions-lattice-toggle");
+    expect(shell).toMatch(/data-regions-lock-toggle[^>]*checked|checked[^>]*data-regions-lock-toggle/);
     expect(shell).toContain("data-regions-lock-components-toggle");
     expect(shell).toContain("lock components");
   });

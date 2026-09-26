@@ -361,6 +361,9 @@
       .nkp-hyper-core-boundary,
       .nkp-hyper-component-boundary,
       .nkp-hyper-core-boundary-divider { stroke: var(--muted); fill: none; }
+      .nkp-hyper-lattice { pointer-events: none; }
+      .nkp-hyper-lattice-edge { stroke: var(--muted); stroke-width: 0.5px; opacity: 0.18; fill: none; }
+      .nkp-hyper-lattice-point { fill: var(--muted); opacity: 0.22; }
       .nkp-hyper-snap-preview { stroke: var(--accent); stroke-width: 1.5px; stroke-dasharray: 3 3; fill: none; pointer-events: none; opacity: 0.7; }
       .nkp-hyper-component.selected .nkp-node-dot,
       .nkp-hyper-force.selected .nkp-hyper-force-dot { stroke: var(--accent); stroke-width: 2.5px; }
@@ -711,11 +714,14 @@
               <select data-regions-focus><option value="">all components</option></select>
             </label>
             <label data-landscape-for="regions" hidden><input type="checkbox" data-regions-names-toggle /> attractor names</label>
-            <label data-landscape-for="regions" hidden title="Keep each attractor region's force nodes in their current arrangement">
-              <input type="checkbox" data-regions-lock-toggle aria-label="Lock attractor regions" /> lock attractor regions
+            <label data-landscape-for="regions" hidden title="Static canonical pyramid placement; drag snaps subshapes back home. Unlock to reposition (still lattice-snapped).">
+              <input type="checkbox" data-regions-lock-toggle aria-label="Lock attractor regions" checked /> lock attractor regions
             </label>
             <label data-landscape-for="regions" hidden title="Pin component nodes in place; when unlocked they respond to forces and links">
               <input type="checkbox" data-regions-lock-components-toggle aria-label="Lock components" /> lock components
+            </label>
+            <label data-landscape-for="regions" hidden title="Draw the triangular lattice faintly behind everything (annulus gap excluded)">
+              <input type="checkbox" data-regions-lattice-toggle aria-label="Show lattice" /> show lattice
             </label>
             <label data-landscape-for="regions" hidden>
               <input type="checkbox" data-regions-keep-simulating-toggle /> keep simulating physics

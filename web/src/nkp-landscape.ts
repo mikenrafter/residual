@@ -143,6 +143,7 @@ const CONTROL_SELECTOR = [
   "[data-regions-names-toggle]",
   "[data-regions-lock-toggle]",
   "[data-regions-lock-components-toggle]",
+  "[data-regions-lattice-toggle]",
   "[data-regions-keep-simulating-toggle]",
 ].join(", ");
 
@@ -175,7 +176,7 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
   let viewHandle: BundleViewHandle | undefined;
   let selected = new Set<EntityKey>();
   let activeKey: EntityKey | undefined;
-  const regionsLockState: RegionsLockState = { enabled: false, locks: new Map() };
+  const regionsLockState: RegionsLockState = { enabled: true, locks: new Map() };
 
   const panelIsHidden = (): boolean => Boolean(card?.closest("[hidden]"));
 
@@ -280,10 +281,11 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
     if (view === "regions") {
       const focusComponent = syncFocusOptions(container.querySelector<HTMLSelectElement>("[data-regions-focus]"), state);
       const showNames = container.querySelector<HTMLInputElement>("[data-regions-names-toggle]")?.checked ?? true;
-      const lockRegions = container.querySelector<HTMLInputElement>("[data-regions-lock-toggle]")?.checked ?? false;
+      const lockRegions = container.querySelector<HTMLInputElement>("[data-regions-lock-toggle]")?.checked ?? true;
       const lockComponents = container.querySelector<HTMLInputElement>("[data-regions-lock-components-toggle]")?.checked ?? false;
+      const showLattice = container.querySelector<HTMLInputElement>("[data-regions-lattice-toggle]")?.checked ?? false;
       const keepSimulating = container.querySelector<HTMLInputElement>("[data-regions-keep-simulating-toggle]")?.checked ?? false;
-      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, lockComponents, keepSimulating, ...(focusComponent ? { focusComponent } : {}) });
+      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, lockComponents, showLattice, keepSimulating, ...(focusComponent ? { focusComponent } : {}) });
     } else {
       const minCouplingStrength = syncMinCouplingStrength(container, state, filters);
       if (view === "heatmap") {
