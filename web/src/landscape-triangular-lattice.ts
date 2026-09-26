@@ -18,10 +18,17 @@ export const AXIAL_NEIGHBORS: readonly AxialPoint[] = [
   { q: 0, r: 1 },
 ];
 
-export function axialToPixel(point: AxialPoint, spacing = TRI_LATTICE_SPACING): Point {
-  const x = spacing * (Math.sqrt(3) * point.q + (Math.sqrt(3) / 2) * point.r);
-  const y = spacing * ((3 / 2) * point.r);
-  return { x, y };
+export function axialToPixel(
+  point: AxialPoint,
+  spacing = TRI_LATTICE_SPACING,
+  origin: Point = { x: 0, y: 0 },
+): Point {
+  // Pointy-top triangular lattice; `spacing` is the centre-to-centre distance
+  // between adjacent points (not the hex "size"/centre-to-vertex).
+  return {
+    x: origin.x + spacing * (point.q + point.r / 2),
+    y: origin.y + spacing * ((Math.sqrt(3) / 2) * point.r),
+  };
 }
 
 function axialRound(frac: { q: number; r: number }): AxialPoint {
@@ -40,10 +47,56 @@ function axialRound(frac: { q: number; r: number }): AxialPoint {
   return { q: rx, r: rz };
 }
 
-export function pixelToAxial(point: Point, spacing = TRI_LATTICE_SPACING): AxialPoint {
-  const q = ((Math.sqrt(3) / 3) * point.x - point.y / 3) / spacing;
-  const r = ((2 / 3) * point.y) / spacing;
-  return axialRound({ q, r });
+export function pixelToAxial(
+  point: Point,
+  spacing = TRI_LATTICE_SPACING,
+  origin: Point = { x: 0, y: 0 },
+): AxialPoint {
+  return axialRound(pixelToFractionalAxial(point, spacing, origin));
+}
+
+/** Unrounded axial coordinates — used for hop-threshold comparisons. */
+export function pixelToFractionalAxial(
+  point: Point,
+  spacing = TRI_LATTICE_SPACING,
+  origin: Point = { x: 0, y: 0 },
+): AxialPoint {
+  const x = point.x - origin.x;
+  const y = point.y - origin.y;
+  const r = ((2 / Math.sqrt(3)) * y) / spacing;
+  const q = x / spacing - r / 2;
+  return { q, r };
+}
+
+/**
+ * Cube Chebyshev distance that accepts fractional axial coords (same formula
+ * as axialDistance; exported separately so hop callers stay explicit).
+ */
+export function axialFracDistance(a: AxialPoint, b: AxialPoint): number {
+  return axialDistance(a, b);
+}
+
+/** Fraction of a cell a node must drift before it hops (0.5 = halfway). */
+export const LATTICE_HOP_THRESHOLD = 0.55;
+
+/**
+ * Unit axial step from integer cell `from` toward fractional `toward`.
+ * Picks the neighbor of `from` closest to `toward`, or null when `toward`
+ * is already nearest to `from` (no productive hop).
+ */
+export function axialHopStep(from: AxialPoint, toward: AxialPoint): AxialPoint | null {
+  const stayDist = axialFracDistance(from, toward);
+  let best: AxialPoint | null = null;
+  let bestDist = stayDist;
+  for (const neighbor of AXIAL_NEIGHBORS) {
+    const candidate = { q: from.q + neighbor.q, r: from.r + neighbor.r };
+    const distance = axialFracDistance(candidate, toward);
+    if (distance + 1e-9 < bestDist) {
+      bestDist = distance;
+      best = { ...neighbor };
+    }
+  }
+  return best;
 }
 
 /** Cube-coordinate Chebyshev distance between two axial points. */
@@ -161,20 +214,27 @@ export function decomposeAttractorSize(n: number): number[] {
   throw new Error(`decomposeAttractorSize: no valid decomposition for n=${n}`);
 }
 
-function isValidPlacement(placed: readonly AxialPoint[], occupied: readonly AxialPoint[]): boolean {
-  for (const point of placed) {
+/** True when `attempt` shares no cells with `occupied` and at least one pair is edge-adjacent. */
+function isTouchingNonOverlappingPlacement(
+  attempt: readonly AxialPoint[],
+  occupied: readonly AxialPoint[],
+): boolean {
+  let touches = false;
+  for (const point of attempt) {
     for (const other of occupied) {
-      if (axialDistance(point, other) < 2) return false;
+      const distance = axialDistance(point, other);
+      if (distance === 0) return false;
+      if (distance === 1) touches = true;
     }
   }
-  return true;
+  return touches;
 }
 
 /**
  * Places each sub-shape's pattern on the shared lattice, largest first at the
- * origin, each subsequent shape ring-searched outward until every cross-shape
- * point pair is at least 2 axial steps apart (adjacent-but-one — "1 extra
- * snap away").
+ * origin, each subsequent shape ring-searched outward until it touches the
+ * already-placed set (min cross-shape axial distance exactly 1) without
+ * overlapping any cell.
  */
 export function placeCompositeShapes(sizes: readonly number[]): AxialPoint[][] {
   const order = [...sizes].sort((a, b) => b - a);
@@ -191,7 +251,7 @@ export function placeCompositeShapes(sizes: readonly number[]): AxialPoint[][] {
     for (let radius = 1; placed === undefined; radius += 1) {
       for (const candidate of axialRing({ q: 0, r: 0 }, radius)) {
         const attempt = pattern.map((point) => ({ q: point.q + candidate.q, r: point.r + candidate.r }));
-        if (isValidPlacement(attempt, occupied)) {
+        if (isTouchingNonOverlappingPlacement(attempt, occupied)) {
           placed = attempt;
           break;
         }
@@ -368,8 +428,9 @@ export function nearestFreeAxialPoint(
   point: Point,
   occupiedKeys: ReadonlySet<string>,
   spacing = TRI_LATTICE_SPACING,
+  origin: Point = { x: 0, y: 0 },
 ): AxialPoint {
-  const base = pixelToAxial(point, spacing);
+  const base = pixelToAxial(point, spacing, origin);
   if (!occupiedKeys.has(axialKey(base))) return base;
   for (let radius = 1; ; radius += 1) {
     for (const candidate of axialRing(base, radius)) {
@@ -383,8 +444,9 @@ export function previewNearestFreeAxialPoint(
   point: Point,
   occupiedKeys: ReadonlySet<string>,
   spacing = TRI_LATTICE_SPACING,
+  origin: Point = { x: 0, y: 0 },
 ): AxialPoint {
-  return nearestFreeAxialPoint(point, occupiedKeys, spacing);
+  return nearestFreeAxialPoint(point, occupiedKeys, spacing, origin);
 }
 
 export interface ForceShapeGroup {
@@ -431,7 +493,7 @@ export interface AttractorForceShapeLayout {
 
 /**
  * Lays out every attractor group's member forces onto one shared global
- * triangular lattice: each group becomes a shape (or set of non-adjacent
+ * triangular lattice: each group becomes a shape (or set of edge-adjacent
  * sub-shapes for 8+ forces) anchored near its current force centroid,
  * ring-searched outward only far enough to avoid colliding with an
  * already-placed group. Groups are processed in attractorGroupPickOrder so

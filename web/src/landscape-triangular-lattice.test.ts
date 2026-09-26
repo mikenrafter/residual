@@ -3,8 +3,10 @@ import {
   assignForcesToSubShapes,
   attractorGroupPickOrder,
   axialDistance,
+  axialHopStep,
   axialKey,
   decomposeAttractorSize,
+  LATTICE_HOP_THRESHOLD,
   layoutAttractorForceShapes,
   nearestFreeAxialPoint,
   placeCompositeShapes,
@@ -103,7 +105,7 @@ describe("decomposeAttractorSize", () => {
 });
 
 describe("placeCompositeShapes", () => {
-  test.each([8, 14, 22])("minimum cross-shape axial distance is exactly 2 for N=%i", (n) => {
+  test.each([8, 14, 22])("minimum cross-shape axial distance is exactly 1 for N=%i", (n) => {
     const sizes = decomposeAttractorSize(n);
     const shapes = placeCompositeShapes(sizes);
     expect(shapes).toHaveLength(sizes.length);
@@ -117,7 +119,7 @@ describe("placeCompositeShapes", () => {
         }
       }
     }
-    expect(minCrossDistance).toBe(2);
+    expect(minCrossDistance).toBe(1);
   });
 
   test("no two placed points (even within the same shape) collide", () => {
@@ -217,7 +219,7 @@ describe("layoutAttractorForceShapes", () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  test("a composite (8+) group's own sub-shapes stay at least 2 axial steps apart", () => {
+  test("a composite (8+) group's own sub-shapes touch (min distance exactly 1) without overlapping", () => {
     const groups: ForceShapeGroup[] = [
       { attractorId: "A1", forces: makeForces("A1", 14), anchor: { q: 0, r: 0 } },
     ];
@@ -227,15 +229,19 @@ describe("layoutAttractorForceShapes", () => {
     const bins = subShapesByAttractor.get("A1");
     expect(bins).toHaveLength(2);
     expect(bins?.map((bin) => bin.length).sort()).toEqual([7, 7]);
+    let minCross = Infinity;
     for (let i = 0; i < bins!.length; i += 1) {
       for (let j = i + 1; j < bins!.length; j += 1) {
         for (const idA of bins![i]!) {
           for (const idB of bins![j]!) {
-            expect(axialDistance(targets.get(idA)!, targets.get(idB)!)).toBeGreaterThanOrEqual(2);
+            const distance = axialDistance(targets.get(idA)!, targets.get(idB)!);
+            expect(distance).toBeGreaterThan(0);
+            minCross = Math.min(minCross, distance);
           }
         }
       }
     }
+    expect(minCross).toBe(1);
   });
 
   test("groups with different anchors far apart do not collide", () => {
@@ -270,5 +276,20 @@ describe("previewNearestFreeAxialPoint", () => {
     const occupied = new Set(["0:0"]);
     previewNearestFreeAxialPoint({ x: 0, y: 0 }, occupied);
     expect(occupied).toEqual(new Set(["0:0"]));
+  });
+});
+
+describe("axialHopStep / hop threshold helpers", () => {
+  test("returns null when the fractional target is nearest to the current cell", () => {
+    expect(axialHopStep({ q: 0, r: 0 }, { q: 0.2, r: -0.1 })).toBeNull();
+  });
+
+  test("steps toward a far fractional target", () => {
+    expect(axialHopStep({ q: 0, r: 0 }, { q: 2.4, r: 0 })).toEqual({ q: 1, r: 0 });
+  });
+
+  test("LATTICE_HOP_THRESHOLD is past halfway", () => {
+    expect(LATTICE_HOP_THRESHOLD).toBeGreaterThan(0.5);
+    expect(LATTICE_HOP_THRESHOLD).toBeLessThan(1);
   });
 });

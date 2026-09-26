@@ -7,6 +7,7 @@ import {
   buildNkpHypergraphModel,
   centroid,
   convexHull,
+  partitionMembershipBundles,
   regionCorePath,
 } from "./nkp-hypergraph";
 
@@ -394,6 +395,47 @@ describe("model.forceBranchBundles (bidirectional bundling)", () => {
     expect(s01?.focused).toBe(false);
     const p01 = model.forceBranchBundles.find((b) => b.forceId === "force:P-01");
     expect(p01?.focused).toBe(true);
+  });
+});
+
+describe("partitionMembershipBundles (no double-drawn edges)", () => {
+  test("each membership edge appears in exactly one render bundle", () => {
+    const model = buildNkpHypergraphModel(state());
+    const partitioned = partitionMembershipBundles(model.branchBundles, model.forceBranchBundles);
+    const edgeKeys = new Set<string>();
+    for (const bundle of partitioned.forceBranchBundles) {
+      for (const componentId of bundle.componentIds) {
+        const key = `${bundle.forceId}|${componentId}`;
+        expect(edgeKeys.has(key)).toBe(false);
+        edgeKeys.add(key);
+      }
+    }
+    for (const bundle of partitioned.branchBundles) {
+      for (const forceKey of bundle.forceIds) {
+        const key = `force:${forceKey}|${bundle.componentId}`;
+        expect(edgeKeys.has(key)).toBe(false);
+        edgeKeys.add(key);
+      }
+    }
+    // Every model membership is covered exactly once.
+    expect(edgeKeys.size).toBe(model.edges.length);
+    for (const edge of model.edges) {
+      expect(edgeKeys.has(`${edge.source}|${edge.target}`)).toBe(true);
+    }
+  });
+
+  test("prefers true fans over duplicating 1:1 strokes in both directions", () => {
+    const model = buildNkpHypergraphModel(state());
+    const partitioned = partitionMembershipBundles(model.branchBundles, model.forceBranchBundles);
+    // Raw model would draw both directions (more strokes than memberships).
+    const rawStrokeEstimate = model.branchBundles.length + model.forceBranchBundles.length
+      + model.branchBundles.reduce((n, b) => n + Math.max(0, b.forceIds.length - 1), 0)
+      + model.forceBranchBundles.reduce((n, b) => n + Math.max(0, b.componentIds.length - 1), 0);
+    const partitionedStrokeEstimate = partitioned.branchBundles.length + partitioned.forceBranchBundles.length
+      + partitioned.branchBundles.reduce((n, b) => n + Math.max(0, b.forceIds.length - 1), 0)
+      + partitioned.forceBranchBundles.reduce((n, b) => n + Math.max(0, b.componentIds.length - 1), 0);
+    expect(partitionedStrokeEstimate).toBeLessThan(rawStrokeEstimate);
+    expect(partitionedStrokeEstimate).toBe(model.edges.length);
   });
 });
 
@@ -1163,7 +1205,7 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
 
   // --- composite (8+ force) attractor shape rendering (Requirement 6) ---
 
-  test("a composite attractor (8+ forces) renders one region blob per sub-shape, not a single merged hull", () => {
+  test("a composite attractor (8+ forces) renders one merged region blob for the whole group", () => {
     const { ctx, host } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     const componentNames = ["auth", "cache", "database", "queue", "orphan", "billing", "search", "reporting"];
@@ -1176,8 +1218,59 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     const regionGroup = host.querySelector('g.nkp-hyper-region[aria-label*="resilience"]')
       ?? [...host.querySelectorAll("g.nkp-hyper-region")][0];
     const blobs = regionGroup?.querySelectorAll("path.nkp-hyper-region-blob") ?? [];
-    // 9 forces -> decomposeAttractorSize(9) = [4,5], i.e. 2 sub-shapes.
-    expect(blobs.length).toBe(2);
+    // 9 forces still decompose into sub-shapes for placement, but render as one hull.
+    expect(blobs.length).toBe(1);
+  });
+
+  test("after settle, every free node rests on a triangular-lattice point and attractor forces stay rigid", () => {
+    const { ctx } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const spacing = 60;
+    const origin = { x: 400, y: 300 };
+    const toFrac = (x: number, y: number) => {
+      const px = x - origin.x;
+      const py = y - origin.y;
+      const r = ((2 / Math.sqrt(3)) * py) / spacing;
+      const q = px / spacing - r / 2;
+      return { q, r };
+    };
+    const roundAxial = (frac: { q: number; r: number }) => {
+      const x = frac.q;
+      const z = frac.r;
+      const y = -x - z;
+      let rx = Math.round(x);
+      let ry = Math.round(y);
+      let rz = Math.round(z);
+      const xDiff = Math.abs(rx - x);
+      const yDiff = Math.abs(ry - y);
+      const zDiff = Math.abs(rz - z);
+      if (xDiff > yDiff && xDiff > zDiff) rx = -ry - rz;
+      else if (yDiff > zDiff) ry = -rx - rz;
+      else rz = -rx - ry;
+      return { q: rx, r: rz };
+    };
+    const all = handle?.simulation?.nodes() ?? [];
+    for (const node of all) {
+      const frac = toFrac(node.x ?? 0, node.y ?? 0);
+      const cell = roundAxial(frac);
+      expect(Math.abs(frac.q - cell.q)).toBeLessThan(1e-6);
+      expect(Math.abs(frac.r - cell.r)).toBeLessThan(1e-6);
+    }
+    const a01 = all.filter((n: any) => n.type === "force" && n.attractorId === "A-01");
+    expect(a01.length).toBeGreaterThanOrEqual(2);
+    const cells = a01.map((n: any) => roundAxial(toFrac(n.x ?? 0, n.y ?? 0)));
+    if (cells.length >= 2) {
+      const dist = (a: { q: number; r: number }, b: { q: number; r: number }) => {
+        const as = -a.q - a.r;
+        const bs = -b.q - b.r;
+        return Math.max(Math.abs(a.q - b.q), Math.abs(a.r - b.r), Math.abs(as - bs));
+      };
+      for (const cell of cells) {
+        const near = cells.filter((other) => other !== cell && dist(cell, other) <= 2).length;
+        expect(near).toBeGreaterThan(0);
+      }
+    }
   });
 
   // --- live drag-snap tessellation preview (Requirement 3) ---
@@ -1225,15 +1318,18 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
   // never does. That keeps both trees at identical node positions, so any
   // difference in the drawn trunk path can only come from `tension`.
   test("the tension option changes how tightly bundle trunks converge", () => {
+    const trunk = (host: HTMLElement) =>
+      host.querySelector("path.nkp-hyper-force-bundle-trunk, path.nkp-hyper-bundle-trunk")
+        ?.getAttribute("d");
     const tight = makeCtx();
     const tightHandle = regionsModule.createRegionsView?.(tight.ctx);
     tightHandle?.update(state(), { ...options, tension: 1 });
-    const tightPath = tight.host.querySelector("path.nkp-hyper-bundle-trunk")?.getAttribute("d");
+    const tightPath = trunk(tight.host);
 
     const loose = makeCtx();
     const looseHandle = regionsModule.createRegionsView?.(loose.ctx);
     looseHandle?.update(state(), { ...options, tension: 0 });
-    const loosePath = loose.host.querySelector("path.nkp-hyper-bundle-trunk")?.getAttribute("d");
+    const loosePath = trunk(loose.host);
 
     expect(tightPath).toBeTruthy();
     expect(loosePath).toBeTruthy();

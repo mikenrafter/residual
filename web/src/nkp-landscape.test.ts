@@ -169,7 +169,9 @@ describe("landscape controls", () => {
     await pickView("regions");
     handle.sync();
     const host = document.querySelector("[data-landscape]")!;
-    const trunkPath = () => host.querySelector("path.nkp-hyper-bundle-trunk")?.getAttribute("d");
+    const trunkPath = () =>
+      host.querySelector("path.nkp-hyper-force-bundle-trunk, path.nkp-hyper-bundle-trunk")
+        ?.getAttribute("d");
     const tensionInput = document.querySelector<HTMLInputElement>("[data-bundle-tension-input]");
     expect(tensionInput).not.toBeNull();
     if (tensionInput) tensionInput.value = "100";

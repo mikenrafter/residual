@@ -12,11 +12,16 @@ import { appendZoomableSvg, createTooltip, placeTooltip, renderEmpty } from "./l
 import { highlightConnectedKeys, highlightSemiConnectedKeys, type EntityKey } from "./landscape-selection";
 import { branchGeometry, nudgeLabels, projectLabelAnchor } from "./landscape-geometry";
 import {
+  axialFracDistance,
+  axialHopStep,
   axialKey,
+  axialRing,
   axialToPixel,
+  LATTICE_HOP_THRESHOLD,
   layoutAttractorForceShapes,
   nearestFreeAxialPoint,
   pixelToAxial,
+  pixelToFractionalAxial,
   previewNearestFreeAxialPoint,
   TRI_LATTICE_SPACING,
   type AxialPoint,
@@ -100,6 +105,87 @@ export interface ForceBranchBundle {
   attractorId: string;
   componentIds: string[];
   focused: boolean;
+}
+
+/**
+ * Assigns each membership edge to exactly one render bundle so dual-direction
+ * bundling does not draw the same force↔component link twice.
+ *
+ * Prefer true fans (2+ leaves): larger force→component fans first, then
+ * larger component→attractor fans. Leftover 1:1 links become single-target
+ * force bundles (one stroke via the trunk path).
+ */
+export function partitionMembershipBundles(
+  branchBundles: readonly BranchBundle[],
+  forceBranchBundles: readonly ForceBranchBundle[],
+): { branchBundles: BranchBundle[]; forceBranchBundles: ForceBranchBundle[] } {
+  const claimed = new Set<string>();
+  const edgeKey = (forceNodeId: string, componentId: string): string => {
+    const forceId = forceNodeId.startsWith("force:") ? forceNodeId : `force:${forceNodeId}`;
+    return `${forceId}\0${componentId}`;
+  };
+
+  const outForce: ForceBranchBundle[] = [];
+  const forceFans = [...forceBranchBundles]
+    .map((bundle) => ({
+      ...bundle,
+      componentIds: [...new Set(bundle.componentIds)].sort(),
+    }))
+    .filter((bundle) => bundle.componentIds.length > 1)
+    .sort((a, b) => b.componentIds.length - a.componentIds.length || a.forceId.localeCompare(b.forceId));
+  for (const bundle of forceFans) {
+    const kept = bundle.componentIds.filter((componentId) => {
+      const key = edgeKey(bundle.forceId, componentId);
+      if (claimed.has(key)) return false;
+      claimed.add(key);
+      return true;
+    });
+    if (kept.length >= 2) {
+      outForce.push({ ...bundle, componentIds: kept });
+    } else {
+      for (const componentId of kept) claimed.delete(edgeKey(bundle.forceId, componentId));
+    }
+  }
+
+  const outComponent: BranchBundle[] = [];
+  const componentFans = [...branchBundles]
+    .map((bundle) => ({
+      ...bundle,
+      forceIds: [...new Set(bundle.forceIds)].sort(),
+    }))
+    .filter((bundle) => bundle.forceIds.length > 1)
+    .sort((a, b) => b.forceIds.length - a.forceIds.length || a.id.localeCompare(b.id));
+  for (const bundle of componentFans) {
+    const kept = bundle.forceIds.filter((forceKey) => {
+      const key = edgeKey(forceKey, bundle.componentId);
+      if (claimed.has(key)) return false;
+      claimed.add(key);
+      return true;
+    });
+    if (kept.length >= 2) {
+      outComponent.push({ ...bundle, forceIds: kept });
+    } else {
+      for (const forceKey of kept) claimed.delete(edgeKey(forceKey, bundle.componentId));
+    }
+  }
+
+  // Remaining 1:1 memberships: one stroke each, as a single-target force bundle.
+  for (const bundle of forceBranchBundles) {
+    for (const componentId of new Set(bundle.componentIds)) {
+      const key = edgeKey(bundle.forceId, componentId);
+      if (claimed.has(key)) continue;
+      claimed.add(key);
+      outForce.push({
+        id: `force-bundle:${bundle.forceId}:${componentId}`,
+        forceId: bundle.forceId,
+        attractorId: bundle.attractorId,
+        componentIds: [componentId],
+        focused: bundle.focused,
+      });
+    }
+  }
+
+  return { branchBundles: outComponent, forceBranchBundles: outForce };
 }
 
 export interface NkpHypergraphOptions {
@@ -697,7 +783,9 @@ function createRegionCollisionForce(padding = REGION_PADDING) {
         const safeDistance = distance || 0.01;
         const ux = dx / safeDistance;
         const uy = dy / safeDistance;
-        const push = overlap * 0.5 * alpha;
+        // Floor alpha so a cooled simulation can still resolve overlaps (manual
+        // repositioning / settle cool-down otherwise leaves groups stuck).
+        const push = overlap * 0.5 * Math.max(alpha, 0.15);
         for (const node of collideNodes) {
           if (node.type !== "force" || node.fx != null) continue;
           if (node.attractorId === a.attractorId) {
@@ -894,7 +982,6 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
    * viewport actually on screen instead of the pre-zoom/pre-pan viewport. */
   let currentTransform: { invertX: (x: number) => number; invertY: (y: number) => number } = d3.zoomIdentity;
   let regionSel: any;
-  let regionBlobSel: any;
   let fusionSel: any;
   let bundleGroupSel: any;
   let bundleTrunkSel: any;
@@ -922,6 +1009,20 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   let labelShiftByKey = new Map<string, number>();
   let groupColorById = new Map<string, string>();
   let latticeTargets = new Map<string, Point>();
+  /** Component nodes' current lattice cells (hop-to-hop). */
+  let componentCells = new Map<string, AxialPoint>();
+  /**
+   * Per-sub-shape rigid bodies within an attractor. Forces inside one sub-shape
+   * keep fixed relative offsets; sub-shapes hop independently so composites
+   * can flex while each pill/triangle/… stays rigid.
+   */
+  let rigidAttractors = new Map<string, {
+    subShapes: Array<{
+      forceIds: string[];
+      offsets: Map<string, AxialPoint>;
+      translation: AxialPoint;
+    }>;
+  }>();
   /** Each attractor's member forces, partitioned by sub-shape (composite 8+ groups have 2+ entries), recomputed by refreshLatticeTargets. */
   let subShapesByAttractor = new Map<string, string[][]>();
   const regionPinnedIds = new Set<string>();
@@ -936,22 +1037,190 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   let coreCenter: Point = { x: DEFAULT_CANVAS_WIDTH / 2, y: DEFAULT_CANVAS_HEIGHT / 2 };
   let currentTension = 1;
 
-  const latticeForce = (alpha: number): void => {
-    for (const node of nodes) {
-      if (node.fx != null || node.fy != null) continue;
-      const target = latticeTargets.get(node.id);
-      if (!target) continue;
-      // Components: soft lattice only — charge/collision dominate so they do
-      // not collapse into a packed hex in the core centre. Forces keep a
-      // firmer lattice so attractor clusters stay readable.
-      const strength = node.type === "component"
-        ? Math.min(0.08, 0.04 + alpha * 0.05)
-        : Math.min(0.35, 0.18 + alpha * 0.2);
-      node.vx = (node.vx ?? 0) + (target.x - (node.x ?? 0)) * strength * alpha;
-      node.vy = (node.vy ?? 0) + (target.y - (node.y ?? 0)) * strength * alpha;
-    }
-  };
+  /**
+   * Soft lattice pull removed: nodes hop cell-to-cell. Kept as a named no-op
+   * force so the simulation graph still has a "lattice" slot if anything
+   * rotates forces by name.
+   */
+  const latticeForce = (_alpha: number): void => {};
   latticeForce.initialize = (): void => {};
+
+  function absoluteCellsForSubShape(
+    subShape: { offsets: Map<string, AxialPoint>; translation: AxialPoint },
+    translation: AxialPoint = subShape.translation,
+  ): AxialPoint[] {
+    return [...subShape.offsets.values()].map((offset) => ({
+      q: offset.q + translation.q,
+      r: offset.r + translation.r,
+    }));
+  }
+
+  function occupiedKeysExcluding(opts: {
+    attractorId?: string;
+    subShapeIndex?: number;
+    componentId?: string;
+  } = {}): Set<string> {
+    const keys = new Set<string>();
+    for (const [id, cell] of componentCells) {
+      if (id === opts.componentId) continue;
+      keys.add(axialKey(cell));
+    }
+    for (const [id, shape] of rigidAttractors) {
+      shape.subShapes.forEach((subShape, index) => {
+        if (id === opts.attractorId && index === opts.subShapeIndex) return;
+        for (const cell of absoluteCellsForSubShape(subShape)) keys.add(axialKey(cell));
+      });
+    }
+    return keys;
+  }
+
+  function translationClear(
+    subShape: { offsets: Map<string, AxialPoint> },
+    translation: AxialPoint,
+    occupied: ReadonlySet<string>,
+  ): boolean {
+    return [...subShape.offsets.values()].every((offset) =>
+      !occupied.has(axialKey({ q: offset.q + translation.q, r: offset.r + translation.r })));
+  }
+
+  /**
+   * After physics integration, hop nodes whose continuous position drifted
+   * past LATTICE_HOP_THRESHOLD from their lattice cell, then hard-snap every
+   * free node onto a lattice point. Each composite sub-shape hops on its own
+   * translation so sub-shapes can move relative to each other while forces
+   * inside one sub-shape stay rigid.
+   */
+  function applyLatticeHops(): void {
+    const componentCount = nodes.filter((node) => node.type === "component").length;
+    const outerRadius = coreZoneRadius(componentCount);
+    const innerRadius = componentZoneRadius(componentCount);
+    const cellInComponentZone = (cell: AxialPoint): boolean => {
+      const point = axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+      return Math.hypot(point.x - coreCenter.x, point.y - coreCenter.y) <= innerRadius + 0.5;
+    };
+    const cellOutsideCore = (cell: AxialPoint): boolean => {
+      const point = axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+      return Math.hypot(point.x - coreCenter.x, point.y - coreCenter.y) >= outerRadius - 0.5;
+    };
+
+    // --- components ---
+    for (const node of nodes) {
+      if (node.type !== "component") continue;
+      if (node.fx != null || draggingNodeIds.has(node.id)) continue;
+      let cell = componentCells.get(node.id);
+      if (!cell) {
+        cell = pixelToAxial({ x: node.x ?? 0, y: node.y ?? 0 }, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+        componentCells.set(node.id, cell);
+      }
+      const frac = pixelToFractionalAxial({ x: node.x ?? 0, y: node.y ?? 0 }, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+      if (axialFracDistance(frac, cell) >= LATTICE_HOP_THRESHOLD) {
+        const step = axialHopStep(cell, frac);
+        if (step) {
+          const candidate = { q: cell.q + step.q, r: cell.r + step.r };
+          const occupied = occupiedKeysExcluding({ componentId: node.id });
+          if (!occupied.has(axialKey(candidate)) && cellInComponentZone(candidate)) {
+            cell = candidate;
+            componentCells.set(node.id, cell);
+          }
+        }
+      }
+      if (!cellInComponentZone(cell)) {
+        const occupied = occupiedKeysExcluding({ componentId: node.id });
+        const base = pixelToAxial(coreCenter, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+        let found: AxialPoint | undefined;
+        for (let radius = 0; !found && radius <= 40; radius += 1) {
+          for (const candidate of radius === 0 ? [base] : axialRing(base, radius)) {
+            if (!occupied.has(axialKey(candidate)) && cellInComponentZone(candidate)) {
+              found = candidate;
+              break;
+            }
+          }
+        }
+        if (found) {
+          cell = found;
+          componentCells.set(node.id, cell);
+        }
+      }
+      const point = axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+      node.x = point.x;
+      node.y = point.y;
+      latticeTargets.set(node.id, point);
+    }
+
+    // --- attractor sub-shapes (rigid within, independent across) ---
+    const attractorIds = [...new Set(
+      nodes.filter((node): node is SimForceNode => node.type === "force").map((node) => node.attractorId),
+    )];
+    for (const attractorId of attractorIds) {
+      if (draggingRegionIds.has(attractorId)) continue;
+      const shape = rigidAttractors.get(attractorId);
+      if (!shape) continue;
+      for (let subShapeIndex = 0; subShapeIndex < shape.subShapes.length; subShapeIndex += 1) {
+        const current = rigidAttractors.get(attractorId);
+        if (!current) break;
+        const subShape = current.subShapes[subShapeIndex]!;
+        const members = nodes.filter((node): node is SimForceNode =>
+          node.type === "force"
+          && node.attractorId === attractorId
+          && subShape.forceIds.includes(node.id));
+        if (members.length === 0) continue;
+        if (members.some((member) => draggingNodeIds.has(member.id))) continue;
+
+        const continuous = centroid(members.map((member) => ({ x: member.x ?? 0, y: member.y ?? 0 })));
+        if (!continuous) continue;
+        const shapeCentroid = centroid(
+          absoluteCellsForSubShape(subShape).map((cell) =>
+            axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter)),
+        );
+        if (!shapeCentroid) continue;
+
+        let translation = subShape.translation;
+        const fracCentroid = pixelToFractionalAxial(continuous, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+        const shapeCentroidAxial = pixelToFractionalAxial(shapeCentroid, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+        const desiredTranslation = {
+          q: translation.q + (fracCentroid.q - shapeCentroidAxial.q),
+          r: translation.r + (fracCentroid.r - shapeCentroidAxial.r),
+        };
+        if (axialFracDistance(desiredTranslation, translation) >= LATTICE_HOP_THRESHOLD) {
+          const step = axialHopStep(translation, desiredTranslation);
+          if (step) {
+            const candidate = { q: translation.q + step.q, r: translation.r + step.r };
+            const occupied = occupiedKeysExcluding({ attractorId, subShapeIndex });
+            const cellsOk = translationClear(subShape, candidate, occupied)
+              && absoluteCellsForSubShape(subShape, candidate).every(cellOutsideCore);
+            if (cellsOk) translation = candidate;
+          }
+        }
+
+        const next = {
+          forceIds: subShape.forceIds,
+          offsets: subShape.offsets,
+          translation,
+        };
+        const nextSubShapes = current.subShapes.map((item, index) =>
+          index === subShapeIndex ? next : item);
+        rigidAttractors.set(attractorId, { subShapes: nextSubShapes });
+
+        for (const member of members) {
+          if (draggingNodeIds.has(member.id)) continue;
+          const offset = next.offsets.get(member.id);
+          if (!offset) continue;
+          const absolute = {
+            q: offset.q + next.translation.q,
+            r: offset.r + next.translation.r,
+          };
+          const point = axialToPixel(absolute, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+          member.x = point.x;
+          member.y = point.y;
+          latticeTargets.set(member.id, point);
+          if (coreExclusionPinnedIds.has(member.id) || regionPinnedIds.has(member.id)) {
+            member.fx = point.x;
+            member.fy = point.y;
+          }
+        }
+      }
+    }
+  }
 
   /**
    * Keeps every component node inside the core zone: any component found
@@ -1079,10 +1348,12 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         { x: node.x ?? 0, y: node.y ?? 0 },
         componentOccupied,
         REGIONS_TRI_LATTICE_SPACING,
+        coreCenter,
       );
       componentOccupied.add(axialKey(axial));
       componentAxialById.set(node.id, axial);
     }
+    componentCells = componentAxialById;
 
     // --- forces: shape-driven layout per attractor group, anchored at each
     // group's current force centroid. ---
@@ -1098,15 +1369,56 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       return {
         attractorId,
         forces: members.map((member) => ({ id: member.id, components: member.componentIds, kind: member.kind })),
-        anchor: pixelToAxial(anchorPixel, REGIONS_TRI_LATTICE_SPACING),
+        anchor: pixelToAxial(anchorPixel, REGIONS_TRI_LATTICE_SPACING, coreCenter),
       };
     });
     const { targets: forceAxialById, subShapesByAttractor: nextSubShapes } = layoutAttractorForceShapes(shapeGroups);
     subShapesByAttractor = nextSubShapes;
 
+    // Capture per-sub-shape rigid offsets + translation from the absolute layout.
+    const nextRigid = new Map<string, {
+      subShapes: Array<{
+        forceIds: string[];
+        offsets: Map<string, AxialPoint>;
+        translation: AxialPoint;
+      }>;
+    }>();
+    for (const [attractorId, members] of forceNodesByAttractor) {
+      const bins = subShapesByAttractor.get(attractorId)
+        ?? [members.map((member) => member.id)];
+      const subShapes = bins.map((forceIds) => {
+        const absolutes = forceIds
+          .map((id) => {
+            const axial = forceAxialById.get(id);
+            return axial ? { id, axial } : undefined;
+          })
+          .filter((item): item is { id: string; axial: AxialPoint } => item !== undefined);
+        if (absolutes.length === 0) {
+          return {
+            forceIds: [...forceIds],
+            offsets: new Map<string, AxialPoint>(),
+            translation: { q: 0, r: 0 },
+          };
+        }
+        const translation = [...absolutes]
+          .map((item) => item.axial)
+          .sort((a, b) => a.q - b.q || a.r - b.r)[0]!;
+        const offsets = new Map<string, AxialPoint>();
+        for (const item of absolutes) {
+          offsets.set(item.id, {
+            q: item.axial.q - translation.q,
+            r: item.axial.r - translation.r,
+          });
+        }
+        return { forceIds: [...forceIds], offsets, translation };
+      });
+      nextRigid.set(attractorId, { subShapes });
+    }
+    rigidAttractors = nextRigid;
+
     const nextTargets = new Map<string, Point>();
-    for (const [id, axial] of componentAxialById) nextTargets.set(id, axialToPixel(axial, REGIONS_TRI_LATTICE_SPACING));
-    for (const [id, axial] of forceAxialById) nextTargets.set(id, axialToPixel(axial, REGIONS_TRI_LATTICE_SPACING));
+    for (const [id, axial] of componentAxialById) nextTargets.set(id, axialToPixel(axial, REGIONS_TRI_LATTICE_SPACING, coreCenter));
+    for (const [id, axial] of forceAxialById) nextTargets.set(id, axialToPixel(axial, REGIONS_TRI_LATTICE_SPACING, coreCenter));
     latticeTargets = nextTargets;
 
     for (const node of nodes) {
@@ -1230,12 +1542,8 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   // --- per-tick drawing, split out so Phase 5 can swap edges/labels cleanly ---
 
   function positionRegions(): void {
-    regionBlobSel?.attr("d", (d: { forceIds: string[] }) => regionCorePath(
-      d.forceIds
-        .map((id) => byId.get(id))
-        .filter((item): item is SimNode => item !== undefined)
-        .map((item) => ({ x: item.x ?? 0, y: item.y ?? 0 })),
-    ));
+    regionSel?.select("path.nkp-hyper-region-blob").attr("d", (group: AttractorGroup) =>
+      regionCorePath(pointsOfGroup(group)));
   }
 
   function positionFusionHulls(): void {
@@ -1442,6 +1750,11 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     }
   }
 
+  function simTick(): void {
+    applyLatticeHops();
+    tick();
+  }
+
   function clampAllNodesToCoreZones(): void {
     const componentCount = nodes.filter((node) => node.type === "component").length;
     const outerRadius = coreZoneRadius(componentCount);
@@ -1528,7 +1841,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       .force("coreContainment", coreContainmentForce)
       .force("coreExclusion", coreExclusionForce)
       .force("regionCollision", createRegionCollisionForce())
-      .on("tick", tick)
+      .on("tick", simTick)
       .on("end", () => {
         recomputeLabelNudges(true);
         positionLabels();
@@ -1619,8 +1932,9 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     if (built) {
       const previewPoint = node.type === "component"
         ? axialToPixel(
-          previewNearestFreeAxialPoint({ x: node.x ?? 0, y: node.y ?? 0 }, dragComponentOccupied ?? new Set(), REGIONS_TRI_LATTICE_SPACING),
+          previewNearestFreeAxialPoint({ x: node.x ?? 0, y: node.y ?? 0 }, dragComponentOccupied ?? new Set(), REGIONS_TRI_LATTICE_SPACING, coreCenter),
           REGIONS_TRI_LATTICE_SPACING,
+          coreCenter,
         )
         : latticeTargets.get(node.id);
       if (previewPoint) {
@@ -1730,6 +2044,8 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       bundles = [];
       forceBundles = [];
       subShapesByAttractor = new Map();
+      componentCells = new Map();
+      rigidAttractors = new Map();
       { const { width, height } = canvasSize(); coreCenter = { x: width / 2, y: height / 2 }; }
       {
         const emptyOuter = coreZoneRadius(0);
@@ -1746,7 +2062,6 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       (b.sim.force("link") as any).links([]);
       syncRegionLocks([], options.lockRegions === true);
       regionSel = b.regionsG.selectAll("g.nkp-hyper-region").data([]).join("g");
-      regionBlobSel = regionSel.selectAll("path.nkp-hyper-region-blob").data([]).join("path");
       fusionSel = b.fusionG.selectAll("path.nkp-hyper-fusion-hull").data([]).join("path");
       bundleGroupSel = b.edgesG.selectAll("g.nkp-hyper-bundle").data([]).join("g");
       bundleTrunkSel = bundleGroupSel.selectAll("path.nkp-hyper-bundle-trunk");
@@ -1811,8 +2126,9 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     });
     byId = nextById;
     links = model.edges.map((edge) => ({ ...edge }));
-    bundles = model.branchBundles.map((bundle) => ({ ...bundle }));
-    forceBundles = model.forceBranchBundles.map((bundle) => ({ ...bundle }));
+    const partitioned = partitionMembershipBundles(model.branchBundles, model.forceBranchBundles);
+    bundles = partitioned.branchBundles.map((bundle) => ({ ...bundle }));
+    forceBundles = partitioned.forceBranchBundles.map((bundle) => ({ ...bundle }));
 
     refreshLatticeTargets(newcomerIds);
 
@@ -1823,26 +2139,22 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     b.sim.alpha(0.3).restart();
 
     // --- regions: filled + wide-stroked core (inflates into a blob), draggable to move their forces.
-    // Composite (8+ force) attractors render one blob per sub-shape instead
-    // of a single hull spanning the whole group, so the non-adjacent
-    // sub-shapes read as visually distinct regions. ---
+    // Composite (8+) attractors still assign forces onto touching sub-shape
+    // slots, but the region renders as one merged hull over every member. ---
     regionSel = b.regionsG.selectAll("g.nkp-hyper-region")
       .data(model.groups, (group: AttractorGroup) => group.attractorId)
-      .join((enter: any) => enter.append("g").attr("class", "nkp-hyper-region"));
+      .join((enter: any) => {
+        const g = enter.append("g").attr("class", "nkp-hyper-region");
+        g.append("path").attr("class", "nkp-hyper-region-blob");
+        return g;
+      });
     regionSel
       .attr("opacity", (group: AttractorGroup) => group.focused ? 0.16 : 0.07)
       .attr("aria-label", (group: AttractorGroup) => group.tooltip)
       .attr("tabindex", 0);
-    interface RegionBlobDatum { group: AttractorGroup; forceIds: string[]; key: string }
-    const regionBlobData = (group: AttractorGroup): RegionBlobDatum[] =>
-      (subShapesByAttractor.get(group.attractorId) ?? [group.forceNodeIds])
-        .map((forceIds, index) => ({ group, forceIds, key: `${group.attractorId}:${index}` }));
-    regionBlobSel = regionSel.selectAll("path.nkp-hyper-region-blob")
-      .data(regionBlobData, (d: RegionBlobDatum) => d.key)
-      .join("path")
-      .attr("class", "nkp-hyper-region-blob")
-      .attr("fill", (d: RegionBlobDatum) => d.group.color)
-      .attr("stroke", (d: RegionBlobDatum) => d.group.color)
+    regionSel.select("path.nkp-hyper-region-blob")
+      .attr("fill", (group: AttractorGroup) => group.color)
+      .attr("stroke", (group: AttractorGroup) => group.color)
       .attr("stroke-width", REGION_PADDING * 2)
       .attr("stroke-linejoin", "round")
       .attr("stroke-linecap", "round");
@@ -2032,7 +2344,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
           dragComponentOccupied = new Set(
             nodes
               .filter((other) => other.type === "component" && other.id !== node.id)
-              .map((other) => axialKey(pixelToAxial({ x: other.x ?? 0, y: other.y ?? 0 }, REGIONS_TRI_LATTICE_SPACING))),
+              .map((other) => axialKey(pixelToAxial({ x: other.x ?? 0, y: other.y ?? 0 }, REGIONS_TRI_LATTICE_SPACING, coreCenter))),
           );
         }
       })
@@ -2191,8 +2503,14 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     // updates keep exact x/y (and so a second sync does not yank locked layout).
     const needsSettle = !b.didFit || newcomerIds.size > 0;
     if (needsSettle) {
-      b.sim.tick(INITIAL_SETTLE_TICKS);
+      // Hop after each integrate step so settle stays on-lattice (sim.tick does
+      // not fire the "tick" event that normally runs applyLatticeHops).
+      for (let i = 0; i < INITIAL_SETTLE_TICKS; i += 1) {
+        b.sim.tick(1);
+        applyLatticeHops();
+      }
       clampAllNodesToCoreZones();
+      applyLatticeHops();
     }
     tick();
     if (!b.didFit) {

@@ -4086,10 +4086,11 @@ var AXIAL_NEIGHBORS = [
   { q: -1, r: 1 },
   { q: 0, r: 1 }
 ];
-function axialToPixel(point, spacing = TRI_LATTICE_SPACING) {
-  const x = spacing * (Math.sqrt(3) * point.q + Math.sqrt(3) / 2 * point.r);
-  const y = spacing * (3 / 2 * point.r);
-  return { x, y };
+function axialToPixel(point, spacing = TRI_LATTICE_SPACING, origin = { x: 0, y: 0 }) {
+  return {
+    x: origin.x + spacing * (point.q + point.r / 2),
+    y: origin.y + spacing * (Math.sqrt(3) / 2 * point.r)
+  };
 }
 function axialRound(frac) {
   const x = frac.q;
@@ -4109,10 +4110,33 @@ function axialRound(frac) {
     rz = -rx - ry;
   return { q: rx, r: rz };
 }
-function pixelToAxial(point, spacing = TRI_LATTICE_SPACING) {
-  const q = (Math.sqrt(3) / 3 * point.x - point.y / 3) / spacing;
-  const r = 2 / 3 * point.y / spacing;
-  return axialRound({ q, r });
+function pixelToAxial(point, spacing = TRI_LATTICE_SPACING, origin = { x: 0, y: 0 }) {
+  return axialRound(pixelToFractionalAxial(point, spacing, origin));
+}
+function pixelToFractionalAxial(point, spacing = TRI_LATTICE_SPACING, origin = { x: 0, y: 0 }) {
+  const x = point.x - origin.x;
+  const y = point.y - origin.y;
+  const r = 2 / Math.sqrt(3) * y / spacing;
+  const q = x / spacing - r / 2;
+  return { q, r };
+}
+function axialFracDistance(a, b) {
+  return axialDistance(a, b);
+}
+var LATTICE_HOP_THRESHOLD = 0.55;
+function axialHopStep(from, toward) {
+  const stayDist = axialFracDistance(from, toward);
+  let best = null;
+  let bestDist = stayDist;
+  for (const neighbor of AXIAL_NEIGHBORS) {
+    const candidate = { q: from.q + neighbor.q, r: from.r + neighbor.r };
+    const distance = axialFracDistance(candidate, toward);
+    if (distance + 0.000000001 < bestDist) {
+      bestDist = distance;
+      best = { ...neighbor };
+    }
+  }
+  return best;
 }
 function axialDistance(a, b) {
   const aq = a.q;
@@ -4215,14 +4239,18 @@ function decomposeAttractorSize(n) {
   }
   throw new Error(`decomposeAttractorSize: no valid decomposition for n=${n}`);
 }
-function isValidPlacement(placed, occupied) {
-  for (const point of placed) {
+function isTouchingNonOverlappingPlacement(attempt, occupied) {
+  let touches = false;
+  for (const point of attempt) {
     for (const other of occupied) {
-      if (axialDistance(point, other) < 2)
+      const distance = axialDistance(point, other);
+      if (distance === 0)
         return false;
+      if (distance === 1)
+        touches = true;
     }
   }
-  return true;
+  return touches;
 }
 function placeCompositeShapes(sizes) {
   const order = [...sizes].sort((a, b) => b - a);
@@ -4239,7 +4267,7 @@ function placeCompositeShapes(sizes) {
     for (let radius = 1;placed === undefined; radius += 1) {
       for (const candidate of axialRing({ q: 0, r: 0 }, radius)) {
         const attempt = pattern.map((point) => ({ q: point.q + candidate.q, r: point.r + candidate.r }));
-        if (isValidPlacement(attempt, occupied)) {
+        if (isTouchingNonOverlappingPlacement(attempt, occupied)) {
           placed = attempt;
           break;
         }
@@ -4371,8 +4399,8 @@ function attractorGroupPickOrder(sizes) {
   }
   return result;
 }
-function nearestFreeAxialPoint(point, occupiedKeys, spacing = TRI_LATTICE_SPACING) {
-  const base = pixelToAxial(point, spacing);
+function nearestFreeAxialPoint(point, occupiedKeys, spacing = TRI_LATTICE_SPACING, origin = { x: 0, y: 0 }) {
+  const base = pixelToAxial(point, spacing, origin);
   if (!occupiedKeys.has(axialKey(base)))
     return base;
   for (let radius = 1;; radius += 1) {
@@ -4382,8 +4410,8 @@ function nearestFreeAxialPoint(point, occupiedKeys, spacing = TRI_LATTICE_SPACIN
     }
   }
 }
-function previewNearestFreeAxialPoint(point, occupiedKeys, spacing = TRI_LATTICE_SPACING) {
-  return nearestFreeAxialPoint(point, occupiedKeys, spacing);
+function previewNearestFreeAxialPoint(point, occupiedKeys, spacing = TRI_LATTICE_SPACING, origin = { x: 0, y: 0 }) {
+  return nearestFreeAxialPoint(point, occupiedKeys, spacing, origin);
 }
 function orderGroupsByPickOrder(groups) {
   const order = attractorGroupPickOrder(groups.map((group) => group.forces.length));
@@ -4457,6 +4485,69 @@ function layoutAttractorForceShapes(groups) {
 }
 
 // src/nkp-hypergraph.ts
+function partitionMembershipBundles(branchBundles, forceBranchBundles) {
+  const claimed = new Set;
+  const edgeKey = (forceNodeId, componentId) => {
+    const forceId = forceNodeId.startsWith("force:") ? forceNodeId : `force:${forceNodeId}`;
+    return `${forceId}\x00${componentId}`;
+  };
+  const outForce = [];
+  const forceFans = [...forceBranchBundles].map((bundle) => ({
+    ...bundle,
+    componentIds: [...new Set(bundle.componentIds)].sort()
+  })).filter((bundle) => bundle.componentIds.length > 1).sort((a, b) => b.componentIds.length - a.componentIds.length || a.forceId.localeCompare(b.forceId));
+  for (const bundle of forceFans) {
+    const kept = bundle.componentIds.filter((componentId) => {
+      const key = edgeKey(bundle.forceId, componentId);
+      if (claimed.has(key))
+        return false;
+      claimed.add(key);
+      return true;
+    });
+    if (kept.length >= 2) {
+      outForce.push({ ...bundle, componentIds: kept });
+    } else {
+      for (const componentId of kept)
+        claimed.delete(edgeKey(bundle.forceId, componentId));
+    }
+  }
+  const outComponent = [];
+  const componentFans = [...branchBundles].map((bundle) => ({
+    ...bundle,
+    forceIds: [...new Set(bundle.forceIds)].sort()
+  })).filter((bundle) => bundle.forceIds.length > 1).sort((a, b) => b.forceIds.length - a.forceIds.length || a.id.localeCompare(b.id));
+  for (const bundle of componentFans) {
+    const kept = bundle.forceIds.filter((forceKey) => {
+      const key = edgeKey(forceKey, bundle.componentId);
+      if (claimed.has(key))
+        return false;
+      claimed.add(key);
+      return true;
+    });
+    if (kept.length >= 2) {
+      outComponent.push({ ...bundle, forceIds: kept });
+    } else {
+      for (const forceKey of kept)
+        claimed.delete(edgeKey(forceKey, bundle.componentId));
+    }
+  }
+  for (const bundle of forceBranchBundles) {
+    for (const componentId of new Set(bundle.componentIds)) {
+      const key = edgeKey(bundle.forceId, componentId);
+      if (claimed.has(key))
+        continue;
+      claimed.add(key);
+      outForce.push({
+        id: `force-bundle:${bundle.forceId}:${componentId}`,
+        forceId: bundle.forceId,
+        attractorId: bundle.attractorId,
+        componentIds: [componentId],
+        focused: bundle.focused
+      });
+    }
+  }
+  return { branchBundles: outComponent, forceBranchBundles: outForce };
+}
 function forceNodeId(force) {
   return `force:${force.key}`;
 }
@@ -4855,7 +4946,7 @@ function createRegionCollisionForce(padding = REGION_PADDING) {
         const safeDistance = distance || 0.01;
         const ux = dx / safeDistance;
         const uy = dy / safeDistance;
-        const push = overlap * 0.5 * alpha;
+        const push = overlap * 0.5 * Math.max(alpha, 0.15);
         for (const node of collideNodes) {
           if (node.type !== "force" || node.fx != null)
             continue;
@@ -4929,7 +5020,6 @@ function createRegionsView(ctx) {
   let forceBundles = [];
   let currentTransform = d3.zoomIdentity;
   let regionSel;
-  let regionBlobSel;
   let fusionSel;
   let bundleGroupSel;
   let bundleTrunkSel;
@@ -4954,6 +5044,8 @@ function createRegionsView(ctx) {
   let labelShiftByKey = new Map;
   let groupColorById = new Map;
   let latticeTargets = new Map;
+  let componentCells = new Map;
+  let rigidAttractors = new Map;
   let subShapesByAttractor = new Map;
   const regionPinnedIds = new Set;
   const draggingNodeIds = new Set;
@@ -4961,19 +5053,159 @@ function createRegionsView(ctx) {
   const coreExclusionPinnedIds = new Set;
   let coreCenter = { x: DEFAULT_CANVAS_WIDTH / 2, y: DEFAULT_CANVAS_HEIGHT / 2 };
   let currentTension = 1;
-  const latticeForce = (alpha) => {
-    for (const node of nodes) {
-      if (node.fx != null || node.fy != null)
-        continue;
-      const target = latticeTargets.get(node.id);
-      if (!target)
-        continue;
-      const strength = node.type === "component" ? Math.min(0.08, 0.04 + alpha * 0.05) : Math.min(0.35, 0.18 + alpha * 0.2);
-      node.vx = (node.vx ?? 0) + (target.x - (node.x ?? 0)) * strength * alpha;
-      node.vy = (node.vy ?? 0) + (target.y - (node.y ?? 0)) * strength * alpha;
-    }
-  };
+  const latticeForce = (_alpha) => {};
   latticeForce.initialize = () => {};
+  function absoluteCellsForSubShape(subShape, translation = subShape.translation) {
+    return [...subShape.offsets.values()].map((offset) => ({
+      q: offset.q + translation.q,
+      r: offset.r + translation.r
+    }));
+  }
+  function occupiedKeysExcluding(opts = {}) {
+    const keys = new Set;
+    for (const [id, cell] of componentCells) {
+      if (id === opts.componentId)
+        continue;
+      keys.add(axialKey(cell));
+    }
+    for (const [id, shape] of rigidAttractors) {
+      shape.subShapes.forEach((subShape, index) => {
+        if (id === opts.attractorId && index === opts.subShapeIndex)
+          return;
+        for (const cell of absoluteCellsForSubShape(subShape))
+          keys.add(axialKey(cell));
+      });
+    }
+    return keys;
+  }
+  function translationClear(subShape, translation, occupied) {
+    return [...subShape.offsets.values()].every((offset) => !occupied.has(axialKey({ q: offset.q + translation.q, r: offset.r + translation.r })));
+  }
+  function applyLatticeHops() {
+    const componentCount = nodes.filter((node) => node.type === "component").length;
+    const outerRadius = coreZoneRadius(componentCount);
+    const innerRadius = componentZoneRadius(componentCount);
+    const cellInComponentZone = (cell) => {
+      const point = axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+      return Math.hypot(point.x - coreCenter.x, point.y - coreCenter.y) <= innerRadius + 0.5;
+    };
+    const cellOutsideCore = (cell) => {
+      const point = axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+      return Math.hypot(point.x - coreCenter.x, point.y - coreCenter.y) >= outerRadius - 0.5;
+    };
+    for (const node of nodes) {
+      if (node.type !== "component")
+        continue;
+      if (node.fx != null || draggingNodeIds.has(node.id))
+        continue;
+      let cell = componentCells.get(node.id);
+      if (!cell) {
+        cell = pixelToAxial({ x: node.x ?? 0, y: node.y ?? 0 }, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+        componentCells.set(node.id, cell);
+      }
+      const frac = pixelToFractionalAxial({ x: node.x ?? 0, y: node.y ?? 0 }, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+      if (axialFracDistance(frac, cell) >= LATTICE_HOP_THRESHOLD) {
+        const step = axialHopStep(cell, frac);
+        if (step) {
+          const candidate = { q: cell.q + step.q, r: cell.r + step.r };
+          const occupied = occupiedKeysExcluding({ componentId: node.id });
+          if (!occupied.has(axialKey(candidate)) && cellInComponentZone(candidate)) {
+            cell = candidate;
+            componentCells.set(node.id, cell);
+          }
+        }
+      }
+      if (!cellInComponentZone(cell)) {
+        const occupied = occupiedKeysExcluding({ componentId: node.id });
+        const base = pixelToAxial(coreCenter, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+        let found;
+        for (let radius = 0;!found && radius <= 40; radius += 1) {
+          for (const candidate of radius === 0 ? [base] : axialRing(base, radius)) {
+            if (!occupied.has(axialKey(candidate)) && cellInComponentZone(candidate)) {
+              found = candidate;
+              break;
+            }
+          }
+        }
+        if (found) {
+          cell = found;
+          componentCells.set(node.id, cell);
+        }
+      }
+      const point = axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+      node.x = point.x;
+      node.y = point.y;
+      latticeTargets.set(node.id, point);
+    }
+    const attractorIds = [...new Set(nodes.filter((node) => node.type === "force").map((node) => node.attractorId))];
+    for (const attractorId of attractorIds) {
+      if (draggingRegionIds.has(attractorId))
+        continue;
+      const shape = rigidAttractors.get(attractorId);
+      if (!shape)
+        continue;
+      for (let subShapeIndex = 0;subShapeIndex < shape.subShapes.length; subShapeIndex += 1) {
+        const current = rigidAttractors.get(attractorId);
+        if (!current)
+          break;
+        const subShape = current.subShapes[subShapeIndex];
+        const members = nodes.filter((node) => node.type === "force" && node.attractorId === attractorId && subShape.forceIds.includes(node.id));
+        if (members.length === 0)
+          continue;
+        if (members.some((member) => draggingNodeIds.has(member.id)))
+          continue;
+        const continuous = centroid2(members.map((member) => ({ x: member.x ?? 0, y: member.y ?? 0 })));
+        if (!continuous)
+          continue;
+        const shapeCentroid = centroid2(absoluteCellsForSubShape(subShape).map((cell) => axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter)));
+        if (!shapeCentroid)
+          continue;
+        let translation = subShape.translation;
+        const fracCentroid = pixelToFractionalAxial(continuous, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+        const shapeCentroidAxial = pixelToFractionalAxial(shapeCentroid, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+        const desiredTranslation = {
+          q: translation.q + (fracCentroid.q - shapeCentroidAxial.q),
+          r: translation.r + (fracCentroid.r - shapeCentroidAxial.r)
+        };
+        if (axialFracDistance(desiredTranslation, translation) >= LATTICE_HOP_THRESHOLD) {
+          const step = axialHopStep(translation, desiredTranslation);
+          if (step) {
+            const candidate = { q: translation.q + step.q, r: translation.r + step.r };
+            const occupied = occupiedKeysExcluding({ attractorId, subShapeIndex });
+            const cellsOk = translationClear(subShape, candidate, occupied) && absoluteCellsForSubShape(subShape, candidate).every(cellOutsideCore);
+            if (cellsOk)
+              translation = candidate;
+          }
+        }
+        const next = {
+          forceIds: subShape.forceIds,
+          offsets: subShape.offsets,
+          translation
+        };
+        const nextSubShapes = current.subShapes.map((item, index) => index === subShapeIndex ? next : item);
+        rigidAttractors.set(attractorId, { subShapes: nextSubShapes });
+        for (const member of members) {
+          if (draggingNodeIds.has(member.id))
+            continue;
+          const offset = next.offsets.get(member.id);
+          if (!offset)
+            continue;
+          const absolute = {
+            q: offset.q + next.translation.q,
+            r: offset.r + next.translation.r
+          };
+          const point = axialToPixel(absolute, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+          member.x = point.x;
+          member.y = point.y;
+          latticeTargets.set(member.id, point);
+          if (coreExclusionPinnedIds.has(member.id) || regionPinnedIds.has(member.id)) {
+            member.fx = point.x;
+            member.fy = point.y;
+          }
+        }
+      }
+    }
+  }
   const coreContainmentForce = () => {
     const componentCount = nodes.filter((node) => node.type === "component").length;
     const radius = componentZoneRadius(componentCount);
@@ -5067,10 +5299,11 @@ function createRegionsView(ctx) {
       return rightStable - leftStable || left.id.localeCompare(right.id);
     });
     for (const node of orderedComponents) {
-      const axial = nearestFreeAxialPoint({ x: node.x ?? 0, y: node.y ?? 0 }, componentOccupied, REGIONS_TRI_LATTICE_SPACING);
+      const axial = nearestFreeAxialPoint({ x: node.x ?? 0, y: node.y ?? 0 }, componentOccupied, REGIONS_TRI_LATTICE_SPACING, coreCenter);
       componentOccupied.add(axialKey(axial));
       componentAxialById.set(node.id, axial);
     }
+    componentCells = componentAxialById;
     const forceNodesByAttractor = new Map;
     for (const node of nodes) {
       if (node.type !== "force")
@@ -5084,16 +5317,44 @@ function createRegionsView(ctx) {
       return {
         attractorId,
         forces: members.map((member) => ({ id: member.id, components: member.componentIds, kind: member.kind })),
-        anchor: pixelToAxial(anchorPixel, REGIONS_TRI_LATTICE_SPACING)
+        anchor: pixelToAxial(anchorPixel, REGIONS_TRI_LATTICE_SPACING, coreCenter)
       };
     });
     const { targets: forceAxialById, subShapesByAttractor: nextSubShapes } = layoutAttractorForceShapes(shapeGroups);
     subShapesByAttractor = nextSubShapes;
+    const nextRigid = new Map;
+    for (const [attractorId, members] of forceNodesByAttractor) {
+      const bins = subShapesByAttractor.get(attractorId) ?? [members.map((member) => member.id)];
+      const subShapes = bins.map((forceIds) => {
+        const absolutes = forceIds.map((id) => {
+          const axial = forceAxialById.get(id);
+          return axial ? { id, axial } : undefined;
+        }).filter((item) => item !== undefined);
+        if (absolutes.length === 0) {
+          return {
+            forceIds: [...forceIds],
+            offsets: new Map,
+            translation: { q: 0, r: 0 }
+          };
+        }
+        const translation = [...absolutes].map((item) => item.axial).sort((a, b) => a.q - b.q || a.r - b.r)[0];
+        const offsets = new Map;
+        for (const item of absolutes) {
+          offsets.set(item.id, {
+            q: item.axial.q - translation.q,
+            r: item.axial.r - translation.r
+          });
+        }
+        return { forceIds: [...forceIds], offsets, translation };
+      });
+      nextRigid.set(attractorId, { subShapes });
+    }
+    rigidAttractors = nextRigid;
     const nextTargets = new Map;
     for (const [id, axial] of componentAxialById)
-      nextTargets.set(id, axialToPixel(axial, REGIONS_TRI_LATTICE_SPACING));
+      nextTargets.set(id, axialToPixel(axial, REGIONS_TRI_LATTICE_SPACING, coreCenter));
     for (const [id, axial] of forceAxialById)
-      nextTargets.set(id, axialToPixel(axial, REGIONS_TRI_LATTICE_SPACING));
+      nextTargets.set(id, axialToPixel(axial, REGIONS_TRI_LATTICE_SPACING, coreCenter));
     latticeTargets = nextTargets;
     for (const node of nodes) {
       if (!snapIds.has(node.id))
@@ -5202,7 +5463,7 @@ function createRegionsView(ctx) {
     built.svg.transition().duration(400).call(built.zoom.transform, transform);
   }
   function positionRegions() {
-    regionBlobSel?.attr("d", (d) => regionCorePath(d.forceIds.map((id) => byId.get(id)).filter((item) => item !== undefined).map((item) => ({ x: item.x ?? 0, y: item.y ?? 0 }))));
+    regionSel?.select("path.nkp-hyper-region-blob").attr("d", (group) => regionCorePath(pointsOfGroup(group)));
   }
   function positionFusionHulls() {
     fusionSel?.attr("d", (item) => paddedRegionPath(item.ids.map((id) => {
@@ -5357,6 +5618,10 @@ function createRegionsView(ctx) {
       fitToContent();
     }
   }
+  function simTick() {
+    applyLatticeHops();
+    tick();
+  }
   function clampAllNodesToCoreZones() {
     const componentCount = nodes.filter((node) => node.type === "component").length;
     const outerRadius = coreZoneRadius(componentCount);
@@ -5403,7 +5668,7 @@ function createRegionsView(ctx) {
       labelsGroup.attr("transform", event.transform);
     });
     svg.on("dblclick", () => ctx.onClear());
-    const sim = d3.forceSimulation([]).force("link", d3.forceLink([]).id((item) => item.id).distance(80).strength(0.45)).force("charge", d3.forceManyBody().strength((item) => item.type === "component" ? -1400 : -180)).force("x", d3.forceX(width / 2).strength(0.03)).force("y", d3.forceY(height / 2).strength(0.03)).force("collision", d3.forceCollide().radius((item) => item.type === "component" ? REGIONS_COMPONENT_COLLISION_RADIUS : REGIONS_FORCE_COLLISION_RADIUS).strength(0.9)).force("lattice", latticeForce).force("cohesion", createAttractorCohesionForce(ATTRACTOR_COHESION_STRENGTH)).force("interaction", createForceInteractionForce()).force("coreContainment", coreContainmentForce).force("coreExclusion", coreExclusionForce).force("regionCollision", createRegionCollisionForce()).on("tick", tick).on("end", () => {
+    const sim = d3.forceSimulation([]).force("link", d3.forceLink([]).id((item) => item.id).distance(80).strength(0.45)).force("charge", d3.forceManyBody().strength((item) => item.type === "component" ? -1400 : -180)).force("x", d3.forceX(width / 2).strength(0.03)).force("y", d3.forceY(height / 2).strength(0.03)).force("collision", d3.forceCollide().radius((item) => item.type === "component" ? REGIONS_COMPONENT_COLLISION_RADIUS : REGIONS_FORCE_COLLISION_RADIUS).strength(0.9)).force("lattice", latticeForce).force("cohesion", createAttractorCohesionForce(ATTRACTOR_COHESION_STRENGTH)).force("interaction", createForceInteractionForce()).force("coreContainment", coreContainmentForce).force("coreExclusion", coreExclusionForce).force("regionCollision", createRegionCollisionForce()).on("tick", simTick).on("end", () => {
       recomputeLabelNudges(true);
       positionLabels();
     }).stop();
@@ -5451,7 +5716,7 @@ function createRegionsView(ctx) {
     node.y = clamped.y;
     tick();
     if (built) {
-      const previewPoint = node.type === "component" ? axialToPixel(previewNearestFreeAxialPoint({ x: node.x ?? 0, y: node.y ?? 0 }, dragComponentOccupied ?? new Set, REGIONS_TRI_LATTICE_SPACING), REGIONS_TRI_LATTICE_SPACING) : latticeTargets.get(node.id);
+      const previewPoint = node.type === "component" ? axialToPixel(previewNearestFreeAxialPoint({ x: node.x ?? 0, y: node.y ?? 0 }, dragComponentOccupied ?? new Set, REGIONS_TRI_LATTICE_SPACING, coreCenter), REGIONS_TRI_LATTICE_SPACING, coreCenter) : latticeTargets.get(node.id);
       if (previewPoint) {
         built.snapPreview.attr("cx", previewPoint.x).attr("cy", previewPoint.y).style("display", null);
       }
@@ -5541,6 +5806,8 @@ function createRegionsView(ctx) {
       bundles = [];
       forceBundles = [];
       subShapesByAttractor = new Map;
+      componentCells = new Map;
+      rigidAttractors = new Map;
       {
         const { width: width2, height: height2 } = canvasSize();
         coreCenter = { x: width2 / 2, y: height2 / 2 };
@@ -5556,7 +5823,6 @@ function createRegionsView(ctx) {
       b2.sim.force("link").links([]);
       syncRegionLocks([], options.lockRegions === true);
       regionSel = b2.regionsG.selectAll("g.nkp-hyper-region").data([]).join("g");
-      regionBlobSel = regionSel.selectAll("path.nkp-hyper-region-blob").data([]).join("path");
       fusionSel = b2.fusionG.selectAll("path.nkp-hyper-fusion-hull").data([]).join("path");
       bundleGroupSel = b2.edgesG.selectAll("g.nkp-hyper-bundle").data([]).join("g");
       bundleTrunkSel = bundleGroupSel.selectAll("path.nkp-hyper-bundle-trunk");
@@ -5604,18 +5870,22 @@ function createRegionsView(ctx) {
     });
     byId = nextById;
     links = model.edges.map((edge) => ({ ...edge }));
-    bundles = model.branchBundles.map((bundle) => ({ ...bundle }));
-    forceBundles = model.forceBranchBundles.map((bundle) => ({ ...bundle }));
+    const partitioned = partitionMembershipBundles(model.branchBundles, model.forceBranchBundles);
+    bundles = partitioned.branchBundles.map((bundle) => ({ ...bundle }));
+    forceBundles = partitioned.forceBranchBundles.map((bundle) => ({ ...bundle }));
     refreshLatticeTargets(newcomerIds);
     b.sim.nodes(nodes);
     b.sim.force("link").links(links);
     syncRegionLocks(model.groups, options.lockRegions === true);
     syncComponentLocks();
     b.sim.alpha(0.3).restart();
-    regionSel = b.regionsG.selectAll("g.nkp-hyper-region").data(model.groups, (group) => group.attractorId).join((enter) => enter.append("g").attr("class", "nkp-hyper-region"));
+    regionSel = b.regionsG.selectAll("g.nkp-hyper-region").data(model.groups, (group) => group.attractorId).join((enter) => {
+      const g = enter.append("g").attr("class", "nkp-hyper-region");
+      g.append("path").attr("class", "nkp-hyper-region-blob");
+      return g;
+    });
     regionSel.attr("opacity", (group) => group.focused ? 0.16 : 0.07).attr("aria-label", (group) => group.tooltip).attr("tabindex", 0);
-    const regionBlobData = (group) => (subShapesByAttractor.get(group.attractorId) ?? [group.forceNodeIds]).map((forceIds, index) => ({ group, forceIds, key: `${group.attractorId}:${index}` }));
-    regionBlobSel = regionSel.selectAll("path.nkp-hyper-region-blob").data(regionBlobData, (d) => d.key).join("path").attr("class", "nkp-hyper-region-blob").attr("fill", (d) => d.group.color).attr("stroke", (d) => d.group.color).attr("stroke-width", REGION_PADDING * 2).attr("stroke-linejoin", "round").attr("stroke-linecap", "round");
+    regionSel.select("path.nkp-hyper-region-blob").attr("fill", (group) => group.color).attr("stroke", (group) => group.color).attr("stroke-width", REGION_PADDING * 2).attr("stroke-linejoin", "round").attr("stroke-linecap", "round");
     regionSel.on("click", (_event, group) => ctx.onToggle(`attractor:${group.attractorId}`));
     regionSel.call(d3.drag().on("start", (event, group) => {
       if (!event.active)
@@ -5726,7 +5996,7 @@ function createRegionsView(ctx) {
       node.fx = node.x;
       node.fy = node.y;
       if (node.type === "component") {
-        dragComponentOccupied = new Set(nodes.filter((other) => other.type === "component" && other.id !== node.id).map((other) => axialKey(pixelToAxial({ x: other.x ?? 0, y: other.y ?? 0 }, REGIONS_TRI_LATTICE_SPACING))));
+        dragComponentOccupied = new Set(nodes.filter((other) => other.type === "component" && other.id !== node.id).map((other) => axialKey(pixelToAxial({ x: other.x ?? 0, y: other.y ?? 0 }, REGIONS_TRI_LATTICE_SPACING, coreCenter))));
       }
     }).on("drag", (event, node) => {
       applyNodeDrag(node, { x: event.x, y: event.y });
@@ -5838,8 +6108,12 @@ function createRegionsView(ctx) {
     regionSel.on("mouseenter.tooltip", showRegion).on("focus.tooltip", showRegion).on("mouseleave.tooltip", clearHighlight).on("blur.tooltip", clearHighlight);
     const needsSettle = !b.didFit || newcomerIds.size > 0;
     if (needsSettle) {
-      b.sim.tick(INITIAL_SETTLE_TICKS);
+      for (let i = 0;i < INITIAL_SETTLE_TICKS; i += 1) {
+        b.sim.tick(1);
+        applyLatticeHops();
+      }
       clampAllNodesToCoreZones();
+      applyLatticeHops();
     }
     tick();
     if (!b.didFit) {
