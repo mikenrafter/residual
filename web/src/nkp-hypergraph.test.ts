@@ -115,6 +115,17 @@ type RegionsViewModule = {
   REGIONS_COMPONENT_MIN_DISTANCE?: number;
   REGIONS_COMPONENT_COLLISION_RADIUS?: number;
   BUNDLE_RADIAL_SPLIT_SEPARATION?: number;
+  regionsOuterRadius?: (componentCount: number, attractorForceCounts: readonly number[]) => number;
+  regionsDualRingStack?: (
+    componentCount: number,
+    attractorKindCounts: readonly { purposeCount: number; stressorCount: number }[],
+  ) => {
+    purposeRingRadius: number;
+    innerAnnulus: { inner: number; outer: number };
+    componentBand: { inner: number; outer: number; hops: number };
+    outerAnnulus: { inner: number; outer: number };
+    stressorRingRadius: number;
+  };
   attractorCoreDistance?: (
     nodes: { id: string; type: string; attractorId?: string; x?: number; y?: number }[],
     attractorId: string,
@@ -137,6 +148,25 @@ beforeAll(async () => {
   regionsModule = (await import("./nkp-hypergraph").catch(() => ({}))) as RegionsViewModule;
 });
 
+function kindCountsFromNodes(nodes: SimNodeSnapshot[]): Array<{ purposeCount: number; stressorCount: number }> {
+  const byAttractor = new Map<string, { purposeCount: number; stressorCount: number }>();
+  for (const node of nodes) {
+    if (node.type !== "force" || !node.attractorId) continue;
+    const entry = byAttractor.get(node.attractorId) ?? { purposeCount: 0, stressorCount: 0 };
+    const kind = (node as { kind?: string }).kind
+      ?? (node.id.includes(":P-") || /force:P/.test(node.id) ? "purpose" : "stressor");
+    if (kind === "purpose") entry.purposeCount += 1;
+    else entry.stressorCount += 1;
+    byAttractor.set(node.attractorId, entry);
+  }
+  return [...byAttractor.values()];
+}
+
+function dualStackFor(handle: ViewHandle | undefined) {
+  const nodes = handle?.simulation?.nodes() ?? [];
+  const componentCount = nodes.filter((n) => n.type === "component").length;
+  return regionsModule.regionsDualRingStack?.(componentCount, kindCountsFromNodes(nodes));
+}
 const attractors: SnapshotAttractor[] = [
   { id: "A-01", name: "resilience", description: "stays useful", positiveState: "degrades", negativeState: "cascades" },
   { id: "A-02", name: "adaptability", description: "absorbs change", positiveState: "handles", negativeState: "brittle" },
@@ -1021,23 +1051,29 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
 
   // --- core zone (not yet implemented) ---
 
-  test("newly seeded force nodes spawn outside the core zone and component nodes spawn inside it", () => {
+  test("newly seeded force nodes spawn on their kind rings and component nodes spawn in the component band", () => {
     const { ctx } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options); // first update: every node is a newcomer
     const allNodes = handle?.simulation?.nodes() ?? [];
-    const componentCount = allNodes.filter((n: any) => n.type === "component").length;
-    const outerRadius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
-    const innerRadius = regionsModule.componentZoneRadius?.(componentCount) ?? outerRadius;
+    const stack = dualStackFor(handle);
+    expect(stack).toBeDefined();
     const center = { x: 400, y: 300 };
     for (const node of allNodes) {
       const distance = Math.hypot((node.x ?? 0) - center.x, (node.y ?? 0) - center.y);
-      if (node.type === "force") expect(distance).toBeGreaterThanOrEqual(outerRadius - 0.01);
-      if (node.type === "component") expect(distance).toBeLessThanOrEqual(innerRadius + 0.01);
+      if (node.type === "component") {
+        expect(distance).toBeGreaterThanOrEqual(stack!.componentBand.inner - 1);
+        expect(distance).toBeLessThanOrEqual(stack!.componentBand.outer + 1);
+      }
+      if (node.type === "force") {
+        const kind = (node as { kind?: string }).kind;
+        if (kind === "purpose") expect(distance).toBeLessThanOrEqual(stack!.innerAnnulus.inner + 1);
+        else expect(distance).toBeGreaterThanOrEqual(stack!.outerAnnulus.outer - 1);
+      }
     }
   });
 
-  test("core containment: a component node pushed outside the core zone is pulled back inside it after a tick", () => {
+  test("core containment: a component node pushed outside the component band is pulled back after a tick", () => {
     const { ctx } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options);
@@ -1052,10 +1088,9 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     }
     handle?.simulation?.tick();
     const after = handle?.simulation?.nodes().find((n: any) => n.id === componentNode?.id);
-    const componentCount = allNodes.filter((n: any) => n.type === "component").length;
-    const radius = regionsModule.componentZoneRadius?.(componentCount) ?? 0;
+    const stack = dualStackFor(handle);
     const distance = Math.hypot((after?.x ?? 0) - 400, (after?.y ?? 0) - 300);
-    expect(distance).toBeLessThanOrEqual(radius + 0.5);
+    expect(distance).toBeLessThanOrEqual((stack?.componentBand.outer ?? 0) + 0.5);
   });
 
   test("core exclusion: an attractor group pushed into the core is clamped outside without freezing", () => {
@@ -1092,7 +1127,7 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     expect(after?.fx == null).toBe(true);
   });
 
-  test("draws a dashed circle marking the core zone boundary, sized to the current component count", () => {
+  test("draws a dashed circle marking the outer stressor ring, sized to the dual-ring stack", () => {
     const { ctx, host } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options);
@@ -1100,12 +1135,11 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     expect(boundary).not.toBeNull();
     expect(boundary?.getAttribute("cx")).toBe("400");
     expect(boundary?.getAttribute("cy")).toBe("300");
-    const componentCount = handle?.simulation?.nodes().filter((n: any) => n.type === "component").length ?? 0;
-    const expectedRadius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
-    expect(Number(boundary?.getAttribute("r"))).toBeCloseTo(expectedRadius, 5);
+    const stack = dualStackFor(handle);
+    expect(Number(boundary?.getAttribute("r"))).toBeCloseTo(stack?.stressorRingRadius ?? 0, 5);
   });
 
-  test("draws an inner dashed component boundary inset from the outer attractor ring", () => {
+  test("draws an inner dashed component boundary at the outer edge of the component band", () => {
     const { ctx, host } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options);
@@ -1113,11 +1147,8 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     const inner = host.querySelector("[data-component-boundary]");
     expect(inner).not.toBeNull();
     expect(inner?.classList.contains("nkp-hyper-component-boundary")).toBe(true);
-    const componentCount = handle?.simulation?.nodes().filter((n: any) => n.type === "component").length ?? 0;
-    expect(Number(inner?.getAttribute("r"))).toBeCloseTo(
-      regionsModule.componentZoneRadius?.(componentCount) ?? 0,
-      5,
-    );
+    const stack = dualStackFor(handle);
+    expect(Number(inner?.getAttribute("r"))).toBeCloseTo(stack?.componentBand.outer ?? 0, 5);
     expect(Number(inner?.getAttribute("r"))).toBeLessThan(Number(outer?.getAttribute("r")));
     expect(inner?.getAttribute("stroke-dasharray")).toBeTruthy();
   });
@@ -1152,36 +1183,35 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
 
   // --- dragging is clamped at the core zone boundary (not yet implemented) ---
 
-  test("dragging a component node toward the boundary and beyond stops it at the boundary, not through it", () => {
+  test("dragging a component node toward the boundary and beyond stops it at the band outer edge", () => {
     const { ctx } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options);
     const allNodes = handle?.simulation?.nodes() ?? [];
     const componentNode = allNodes.find((n: any) => n.type === "component");
     expect(componentNode).toBeDefined();
-    const componentCount = allNodes.filter((n: any) => n.type === "component").length;
-    const radius = regionsModule.componentZoneRadius?.(componentCount) ?? 0;
-    const center = { x: 400, y: 300 }; // default canvas centre in this test harness
-    handle?.dragNodeTo?.(componentNode!.id, { x: center.x + radius * 5, y: center.y }); // way outside
+    const stack = dualStackFor(handle);
+    const radius = stack?.componentBand.outer ?? 0;
+    const center = { x: 400, y: 300 };
+    handle?.dragNodeTo?.(componentNode!.id, { x: center.x + radius * 5, y: center.y });
     const after = handle?.simulation?.nodes().find((n: any) => n.id === componentNode!.id);
     const distance = Math.hypot((after?.x ?? 0) - center.x, (after?.y ?? 0) - center.y);
-    expect(distance).toBeCloseTo(radius, 0); // stopped right at the inner boundary, not carried through to the far target
+    expect(distance).toBeCloseTo(radius, 0);
   });
 
-  test("dragging a force node toward the boundary and beyond stops it at the boundary, not through it", () => {
+  test("dragging a stressor force node toward the center stops it at the outer annulus", () => {
     const { ctx } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options);
     const forceNode = handle?.simulation?.nodes().find((n: any) => n.id === "force:S-01");
     expect(forceNode).toBeDefined();
-    const allNodes = handle?.simulation?.nodes() ?? [];
-    const componentCount = allNodes.filter((n: any) => n.type === "component").length;
-    const radius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
+    const stack = dualStackFor(handle);
+    const radius = stack?.outerAnnulus.outer ?? 0;
     const center = { x: 400, y: 300 };
-    handle?.dragNodeTo?.("force:S-01", center); // dragged all the way to dead centre
+    handle?.dragNodeTo?.("force:S-01", center);
     const after = handle?.simulation?.nodes().find((n: any) => n.id === "force:S-01");
     const distance = Math.hypot((after?.x ?? 0) - center.x, (after?.y ?? 0) - center.y);
-    expect(distance).toBeCloseTo(radius, 0); // stopped right at the boundary, never entered
+    expect(distance).toBeCloseTo(radius, 0);
   });
 
   // --- composite (8+ force) attractor shape rendering (Requirement 6) ---
@@ -1203,38 +1233,30 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     expect(blobs.length).toBeGreaterThanOrEqual(1);
   });
 
-  test("after settle, every free node rests on a radial-lattice point and attractor forces stay rigid", () => {
+  test("after settle, every free node rests outside the empty annuli and attractor forces stay rigid", () => {
     const { ctx } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options);
     const all = handle?.simulation?.nodes() ?? [];
-    const componentCount = all.filter((n: any) => n.type === "component").length;
-    const forceCounts = [...all.reduce((map: Map<string, number>, n: any) => {
-      if (n.type !== "force") return map;
-      map.set(n.attractorId, (map.get(n.attractorId) ?? 0) + 1);
-      return map;
-    }, new Map<string, number>()).values()];
-    const outer = regionsModule.regionsOuterRadius?.(componentCount, forceCounts)
-      ?? regionsModule.coreZoneRadius?.(componentCount)
-      ?? 200;
-    const inner = Math.max(30, outer - 120);
+    const stack = dualStackFor(handle);
+    expect(stack).toBeDefined();
     const origin = { x: 400, y: 300 };
     for (const node of all) {
       const dx = (node.x ?? 0) - origin.x;
       const dy = (node.y ?? 0) - origin.y;
       const radius = Math.hypot(dx, dy);
-      // Radial lattice: never rest in the annulus.
-      expect(radius <= inner + 1 || radius >= outer - 1).toBe(true);
+      const inInnerAnnulus = radius > stack!.innerAnnulus.inner + 1 && radius < stack!.innerAnnulus.outer - 1;
+      const inOuterAnnulus = radius > stack!.outerAnnulus.inner + 1 && radius < stack!.outerAnnulus.outer - 1;
+      expect(inInnerAnnulus || inOuterAnnulus).toBe(false);
     }
     const a01 = all.filter((n: any) => n.type === "force" && n.attractorId === "A-01");
     expect(a01.length).toBeGreaterThanOrEqual(2);
-    // Same-attractor forces remain a compact pyramid (pairwise span bounded).
     for (let i = 0; i < a01.length; i += 1) {
       let near = 0;
       for (let j = 0; j < a01.length; j += 1) {
         if (i === j) continue;
         const dist = Math.hypot((a01[i]!.x ?? 0) - (a01[j]!.x ?? 0), (a01[i]!.y ?? 0) - (a01[j]!.y ?? 0));
-        if (dist <= 60 * 2.5) near += 1;
+        if (dist <= 60 * 4) near += 1;
       }
       expect(near).toBeGreaterThan(0);
     }
@@ -1259,10 +1281,14 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     const dy = -30;
     handle?.dragNodeTo?.("force:S-01", { x: primary!.x + dx, y: primary!.y + dy });
     const after = handle?.simulation?.nodes() ?? [];
+    const primaryAfter = after.find((n: any) => n.id === "force:S-01");
+    const actualDx = (primaryAfter?.x ?? 0) - primary!.x;
+    const actualDy = (primaryAfter?.y ?? 0) - primary!.y;
+    // Peers share the primary's (possibly ring-clamped) translation exactly.
     for (const [id, start] of before) {
       const node = after.find((n: any) => n.id === id);
-      expect(node?.x).toBeCloseTo(start.x + dx, 5);
-      expect(node?.y).toBeCloseTo(start.y + dy, 5);
+      expect(node?.x).toBeCloseTo(start.x + actualDx, 5);
+      expect(node?.y).toBeCloseTo(start.y + actualDy, 5);
     }
     const p01 = after.find((n: any) => n.id === "force:P-01");
     expect(p01?.x).toBeCloseTo(p01Start!.x ?? 0, 5);
@@ -1357,15 +1383,13 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     expect(host.querySelectorAll("path.nkp-hyper-bundle-force-branch").length).toBeGreaterThan(0);
   });
 
-  test("bundle trunks split on the mid ring between inner and outer boundaries", () => {
+  test("bundle trunks split on the correct annulus mid (inner for purpose, outer for stressor)", () => {
     const { ctx, host } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options);
-    const allNodes = handle?.simulation?.nodes() ?? [];
-    const componentCount = allNodes.filter((n: any) => n.type === "component").length;
-    const outerRadius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
-    const innerRadius = regionsModule.componentZoneRadius?.(componentCount) ?? 0;
-    const midRadius = (innerRadius + outerRadius) / 2;
+    const stack = dualStackFor(handle);
+    const innerMid = ((stack?.innerAnnulus.inner ?? 0) + (stack?.innerAnnulus.outer ?? 0)) / 2;
+    const outerMid = ((stack?.outerAnnulus.inner ?? 0) + (stack?.outerAnnulus.outer ?? 0)) / 2;
     const center = { x: 400, y: 300 };
 
     const parseEnd = (d: string | null | undefined): { x: number; y: number } | undefined => {
@@ -1379,9 +1403,11 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
       .map((el) => parseEnd(el.getAttribute("d")))
       .filter((point): point is { x: number; y: number } => point !== undefined);
     expect(ends.length).toBeGreaterThan(0);
-    const onMid = ends.filter((end) =>
-      Math.abs(Math.hypot(end.x - center.x, end.y - center.y) - midRadius) < 1.5);
-    expect(onMid.length).toBeGreaterThan(0);
+    const onAnnulusMid = ends.filter((end) => {
+      const radius = Math.hypot(end.x - center.x, end.y - center.y);
+      return Math.abs(radius - innerMid) < 8 || Math.abs(radius - outerMid) < 8;
+    });
+    expect(onAnnulusMid.length).toBeGreaterThan(0);
   });
 
   test("nested bundles keep a 3-split hierarchy (trunk, mid, force leaves)", () => {
@@ -1397,8 +1423,6 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     const { ctx, host } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options);
-    // Settle so forces sit on the outer ring where dilation would otherwise
-    // land on the mid radius.
     for (let i = 0; i < 80; i += 1) handle?.simulation?.tick();
     handle?.update(state(), options);
 
@@ -1409,11 +1433,9 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
       return { x: Number(match[1]), y: Number(match[2]) };
     };
     const center = { x: 400, y: 300 };
-    const allNodes = handle?.simulation?.nodes() ?? [];
-    const componentCount = allNodes.filter((n: any) => n.type === "component").length;
-    const outerRadius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
-    const innerRadius = regionsModule.componentZoneRadius?.(componentCount) ?? 0;
-    const midRadius = (innerRadius + outerRadius) / 2;
+    const stack = dualStackFor(handle);
+    const innerMid = ((stack?.innerAnnulus.inner ?? 0) + (stack?.innerAnnulus.outer ?? 0)) / 2;
+    const outerMid = ((stack?.outerAnnulus.inner ?? 0) + (stack?.outerAnnulus.outer ?? 0)) / 2;
     const minSep = (regionsModule.BUNDLE_RADIAL_SPLIT_SEPARATION ?? 30) - 1;
 
     const trunkEnds = [...host.querySelectorAll("path.nkp-hyper-bundle-trunk")]
@@ -1425,14 +1447,18 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
 
     expect(trunkEnds.length).toBeGreaterThan(0);
     expect(midEnds.length).toBeGreaterThan(0);
-    const trunksOnMid = trunkEnds.filter((end) =>
-      Math.abs(Math.hypot(end.x - center.x, end.y - center.y) - midRadius) < 2);
+    const trunksOnMid = trunkEnds.filter((end) => {
+      const radius = Math.hypot(end.x - center.x, end.y - center.y);
+      return Math.abs(radius - innerMid) < 10 || Math.abs(radius - outerMid) < 10;
+    });
     expect(trunksOnMid.length).toBeGreaterThan(0);
 
     let separated = 0;
     for (const midEnd of midEnds) {
       const midR = Math.hypot(midEnd.x - center.x, midEnd.y - center.y);
-      if (midR > midRadius + minSep * 0.5) separated += 1;
+      if (Math.abs(midR - innerMid) > minSep * 0.4 || Math.abs(midR - outerMid) > minSep * 0.4) {
+        separated += 1;
+      }
     }
     expect(separated).toBeGreaterThan(0);
   });

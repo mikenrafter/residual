@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import {
   assignForcesToSubShapes,
   attractorGroupPickOrder,
@@ -511,5 +511,359 @@ describe("axialHopStep / hop threshold helpers", () => {
   test("LATTICE_HOP_THRESHOLD is past halfway", () => {
     expect(LATTICE_HOP_THRESHOLD).toBeGreaterThan(0.5);
     expect(LATTICE_HOP_THRESHOLD).toBeLessThan(1);
+  });
+});
+
+/**
+ * Dual-ring mini-pyramid redesign (tall-before-wide). New exports are loaded
+ * dynamically so missing names fail as undefined assertions, not import errors.
+ */
+type DualRingLatticeModule = {
+  miniPyramidLayersForCount?: (n: number) => number[];
+  partitionMiniPyramidLayers?: (layers: readonly number[]) => Array<{
+    kind: string;
+    cells: Array<{ q: number; r: number }>;
+    layerIndex?: number;
+  }>;
+  miniPyramidCellsForLayers?: (
+    layers: readonly number[],
+    orientation?: { apexToward: "center" | "outward" },
+  ) => Array<{ q: number; r: number }>;
+  dualRingSlotsForMiniPyramids?: (
+    baseWidths: readonly number[],
+    options?: { gapNodes?: number; emptyPlaceholderSlots?: number },
+  ) => number;
+  layoutAttractorDualRingMiniPyramids?: (
+    groups: Array<{
+      attractorId: string;
+      forces: SimilarityForce[];
+      anchor: { q: number; r: number };
+    }>,
+    rings: { purposeRing: number; stressorRing: number },
+  ) => {
+    targets: Map<string, { q: number; r: number }>;
+    purposeSubShapesByAttractor: Map<string, string[][]>;
+    stressorSubShapesByAttractor: Map<string, string[][]>;
+    purposeSlotOccupancy?: boolean[];
+    stressorSlotOccupancy?: boolean[];
+  };
+  dualRingRadialStack?: (input: {
+    purposeBaseWidths: readonly number[];
+    stressorBaseWidths: readonly number[];
+    componentCount: number;
+    spacing?: number;
+    minComponentHops?: number;
+  }) => {
+    purposeRingRadius: number;
+    innerAnnulus: { inner: number; outer: number };
+    componentBand: { inner: number; outer: number; hops: number };
+    outerAnnulus: { inner: number; outer: number };
+    stressorRingRadius: number;
+  };
+  snapPyramidTopsToSharedRay?: (
+    purposeTop: { q: number; r: number } | { x: number; y: number },
+    stressorTop: { q: number; r: number } | { x: number; y: number },
+    center: { x: number; y: number },
+    spacing?: number,
+  ) => {
+    purpose: { q: number; r: number };
+    stressor: { q: number; r: number };
+    rayAngle: number;
+    purposeOffSteps: number;
+    stressorOffSteps: number;
+  };
+  assignForcesToMiniPyramidLayers?: (
+    forces: SimilarityForce[],
+    layers: readonly number[],
+  ) => string[][];
+};
+
+let dualRing: DualRingLatticeModule = {};
+
+describe("miniPyramidLayersForCount (dual-ring redesign)", () => {
+  beforeAll(async () => {
+    dualRing = (await import("./landscape-triangular-lattice").catch(() => ({}))) as DualRingLatticeModule;
+  });
+
+  test.each([
+    [1, [1]],
+    [2, [2]],
+    [3, [2, 1]],
+    [4, [3, 1]],
+    [5, [3, 2]],
+    [6, [3, 2, 1]],
+    [7, [4, 2, 1]],
+    [8, [4, 3, 1]],
+    [9, [4, 3, 2]],
+    [10, [4, 3, 2, 1]],
+    [11, [5, 3, 2, 1]],
+    [12, [5, 4, 2, 1]],
+    [13, [5, 4, 3, 1]],
+    [14, [5, 4, 3, 2]],
+    [15, [5, 4, 3, 2, 1]],
+    [16, [6, 4, 3, 2, 1]],
+  ] as const)("n=%i → %j (tall-before-wide)", (n, expected) => {
+    expect(dualRing.miniPyramidLayersForCount?.(n)).toEqual([...expected]);
+  });
+
+  test("layer widths always sum to n", () => {
+    for (let n = 1; n <= 40; n += 1) {
+      const layers = dualRing.miniPyramidLayersForCount?.(n) ?? [];
+      expect(layers.reduce((a, b) => a + b, 0)).toBe(n);
+    }
+  });
+
+  test("differs from wide-before-tall pyramidLayersForCount for n≥3", () => {
+    // n=4 is an accidental collision ([3,1] for both); exclude it.
+    for (const n of [3, 6, 7, 10, 15]) {
+      expect(dualRing.miniPyramidLayersForCount?.(n)).not.toEqual(pyramidLayersForCount(n));
+    }
+  });
+});
+
+describe("partitionMiniPyramidLayers (layers only, no triangles)", () => {
+  beforeAll(async () => {
+    dualRing = (await import("./landscape-triangular-lattice").catch(() => ({}))) as DualRingLatticeModule;
+  });
+
+  test("one subshape per layer for 3:2:1", () => {
+    const parts = dualRing.partitionMiniPyramidLayers?.([3, 2, 1]) ?? [];
+    expect(parts).toHaveLength(3);
+    expect(parts.map((p) => p.cells.length)).toEqual([3, 2, 1]);
+    expect(parts.every((p) => p.kind !== "triangle")).toBe(true);
+  });
+
+  test("never emits triangle subshapes across common sizes", () => {
+    for (const n of [1, 2, 3, 5, 6, 9, 10, 15]) {
+      const layers = dualRing.miniPyramidLayersForCount?.(n) ?? [];
+      const parts = dualRing.partitionMiniPyramidLayers?.(layers) ?? [];
+      expect(parts).toHaveLength(layers.length);
+      expect(parts.every((p) => p.kind !== "triangle")).toBe(true);
+      expect(parts.reduce((sum, p) => sum + p.cells.length, 0)).toBe(n);
+    }
+  });
+
+  test("assignForcesToMiniPyramidLayers respects layer capacities", () => {
+    const forces: SimilarityForce[] = Array.from({ length: 6 }, (_, i) => ({
+      id: `f${i}`,
+      components: [`c${i % 3}`],
+      kind: i % 2 === 0 ? "stressor" : "purpose",
+    }));
+    const layers = dualRing.miniPyramidLayersForCount?.(6) ?? [3, 2, 1];
+    const bins = dualRing.assignForcesToMiniPyramidLayers?.(forces, layers) ?? [];
+    expect(bins).toHaveLength(layers.length);
+    expect(bins.map((b) => b.length)).toEqual(layers);
+    expect(new Set(bins.flat()).size).toBe(6);
+  });
+});
+
+describe("miniPyramidCellsForLayers orientation", () => {
+  beforeAll(async () => {
+    dualRing = (await import("./landscape-triangular-lattice").catch(() => ({}))) as DualRingLatticeModule;
+  });
+
+  test("purpose orientation: apex toward center (smaller |r| / inward), base faces components", () => {
+    const cells = dualRing.miniPyramidCellsForLayers?.([3, 2], { apexToward: "center" }) ?? [];
+    expect(cells).toHaveLength(5);
+    const byR = new Map<number, number>();
+    for (const cell of cells) byR.set(cell.r, (byR.get(cell.r) ?? 0) + 1);
+    const rs = [...byR.keys()].sort((a, b) => a - b);
+    // Base (wider layer) sits on the outer side of the local frustum (higher r when apex→center).
+    expect(byR.get(rs[rs.length - 1]!)).toBe(3);
+    expect(byR.get(rs[0]!)).toBe(2);
+  });
+
+  test("stressor orientation: apex outward, base faces components (inward)", () => {
+    const cells = dualRing.miniPyramidCellsForLayers?.([3, 2], { apexToward: "outward" }) ?? [];
+    expect(cells).toHaveLength(5);
+    const byR = new Map<number, number>();
+    for (const cell of cells) byR.set(cell.r, (byR.get(cell.r) ?? 0) + 1);
+    const rs = [...byR.keys()].sort((a, b) => a - b);
+    expect(byR.get(rs[0]!)).toBe(3);
+    expect(byR.get(rs[rs.length - 1]!)).toBe(2);
+  });
+});
+
+describe("dualRingSlotsForMiniPyramids (gap 0 + empty placeholders)", () => {
+  beforeAll(async () => {
+    dualRing = (await import("./landscape-triangular-lattice").catch(() => ({}))) as DualRingLatticeModule;
+  });
+
+  test("gap 0: slot count is the sum of bases only", () => {
+    expect(dualRing.dualRingSlotsForMiniPyramids?.([3, 5, 2], { gapNodes: 0 })).toBe(3 + 5 + 2);
+  });
+
+  test("empty kind uses a 2-wide placeholder instead of a zero-width hole", () => {
+    // One attractor present (base 4) plus one attractor missing this kind → +2 placeholder.
+    expect(dualRing.dualRingSlotsForMiniPyramids?.([4], { gapNodes: 0, emptyPlaceholderSlots: 2 })).toBe(4 + 2);
+  });
+});
+
+describe("layoutAttractorDualRingMiniPyramids", () => {
+  beforeAll(async () => {
+    dualRing = (await import("./landscape-triangular-lattice").catch(() => ({}))) as DualRingLatticeModule;
+  });
+
+  function makeForces(
+    attractorId: string,
+    purposes: number,
+    stressors: number,
+  ): SimilarityForce[] {
+    return [
+      ...Array.from({ length: purposes }, (_, i) => ({
+        id: `${attractorId}-p${i}`,
+        components: [`${attractorId}-c${i % 2}`],
+        kind: "purpose" as const,
+      })),
+      ...Array.from({ length: stressors }, (_, i) => ({
+        id: `${attractorId}-s${i}`,
+        components: [`${attractorId}-c${i % 2}`],
+        kind: "stressor" as const,
+      })),
+    ];
+  }
+
+  test("places purposes on the inner ring and stressors on the outer ring", () => {
+    const groups = [
+      { attractorId: "A", forces: makeForces("A", 3, 4), anchor: { q: 0, r: 0 } },
+      { attractorId: "B", forces: makeForces("B", 2, 2), anchor: { q: 0, r: 0 } },
+    ];
+    const layout = dualRing.layoutAttractorDualRingMiniPyramids?.(groups, {
+      purposeRing: 4,
+      stressorRing: 8,
+    });
+    expect(layout).toBeDefined();
+    expect(layout!.targets.size).toBe(3 + 4 + 2 + 2);
+    for (const force of groups.flatMap((g) => g.forces)) {
+      const cell = layout!.targets.get(force.id)!;
+      const ring = Math.max(Math.abs(cell.q), Math.abs(cell.r), Math.abs(cell.q + cell.r));
+      // Cube-distance ring from origin; purpose closer than stressor.
+      if (force.kind === "purpose") expect(ring).toBeLessThanOrEqual(5);
+      else expect(ring).toBeGreaterThanOrEqual(6);
+    }
+  });
+
+  test("missing purposes leave a 2-wide empty gap on the purpose ring", () => {
+    const groups = [
+      { attractorId: "A", forces: makeForces("A", 0, 3), anchor: { q: 0, r: 0 } },
+      { attractorId: "B", forces: makeForces("B", 2, 2), anchor: { q: 0, r: 0 } },
+    ];
+    const layout = dualRing.layoutAttractorDualRingMiniPyramids?.(groups, {
+      purposeRing: 5,
+      stressorRing: 9,
+    });
+    expect(layout).toBeDefined();
+    expect(layout!.purposeSubShapesByAttractor.get("A") ?? []).toEqual([]);
+    const occupancy = layout!.purposeSlotOccupancy;
+    expect(occupancy).toBeDefined();
+    // At least one run of two consecutive free slots for the empty-purpose attractor.
+    const freeRuns: number[] = [];
+    let run = 0;
+    for (const filled of occupancy ?? []) {
+      if (!filled) run += 1;
+      else {
+        if (run > 0) freeRuns.push(run);
+        run = 0;
+      }
+    }
+    if (run > 0) freeRuns.push(run);
+    expect(freeRuns.some((r) => r >= 2)).toBe(true);
+  });
+
+  test("missing stressors leave a 2-wide empty gap on the stressor ring", () => {
+    const groups = [
+      { attractorId: "A", forces: makeForces("A", 3, 0), anchor: { q: 0, r: 0 } },
+      { attractorId: "B", forces: makeForces("B", 1, 2), anchor: { q: 0, r: 0 } },
+    ];
+    const layout = dualRing.layoutAttractorDualRingMiniPyramids?.(groups, {
+      purposeRing: 5,
+      stressorRing: 9,
+    });
+    expect(layout!.stressorSubShapesByAttractor.get("A") ?? []).toEqual([]);
+    const occupancy = layout!.stressorSlotOccupancy;
+    expect(occupancy).toBeDefined();
+    let maxFree = 0;
+    let run = 0;
+    for (const filled of occupancy ?? []) {
+      if (!filled) {
+        run += 1;
+        maxFree = Math.max(maxFree, run);
+      } else run = 0;
+    }
+    expect(maxFree).toBeGreaterThanOrEqual(2);
+  });
+
+  test("subshapes are layer partitions (one bin per layer), not triangles", () => {
+    const groups = [
+      { attractorId: "A", forces: makeForces("A", 6, 6), anchor: { q: 0, r: 0 } },
+    ];
+    const layout = dualRing.layoutAttractorDualRingMiniPyramids?.(groups, {
+      purposeRing: 5,
+      stressorRing: 10,
+    });
+    const purposeLayers = dualRing.miniPyramidLayersForCount?.(6) ?? [];
+    const stressorLayers = dualRing.miniPyramidLayersForCount?.(6) ?? [];
+    expect(layout!.purposeSubShapesByAttractor.get("A")).toHaveLength(purposeLayers.length);
+    expect(layout!.stressorSubShapesByAttractor.get("A")).toHaveLength(stressorLayers.length);
+    expect(layout!.purposeSubShapesByAttractor.get("A")!.map((b) => b.length)).toEqual(purposeLayers);
+    expect(layout!.stressorSubShapesByAttractor.get("A")!.map((b) => b.length)).toEqual(stressorLayers);
+  });
+});
+
+describe("dualRingRadialStack (center→out)", () => {
+  beforeAll(async () => {
+    dualRing = (await import("./landscape-triangular-lattice").catch(() => ({}))) as DualRingLatticeModule;
+  });
+
+  test("orders radii: purpose < inner annulus < components < outer annulus < stressors", () => {
+    const stack = dualRing.dualRingRadialStack?.({
+      purposeBaseWidths: [3, 2],
+      stressorBaseWidths: [4, 3],
+      componentCount: 5,
+      minComponentHops: 3,
+    });
+    expect(stack).toBeDefined();
+    expect(stack!.purposeRingRadius).toBeLessThan(stack!.innerAnnulus.inner);
+    expect(stack!.innerAnnulus.outer).toBeLessThanOrEqual(stack!.componentBand.inner + 1e-6);
+    expect(stack!.componentBand.outer).toBeLessThanOrEqual(stack!.outerAnnulus.inner + 1e-6);
+    expect(stack!.outerAnnulus.outer).toBeLessThanOrEqual(stack!.stressorRingRadius + 1e-6);
+  });
+
+  test("component band is at least 3 hops and outer annulus is minimized", () => {
+    const stack = dualRing.dualRingRadialStack?.({
+      purposeBaseWidths: [2],
+      stressorBaseWidths: [2],
+      componentCount: 3,
+      minComponentHops: 3,
+      spacing: TRI_LATTICE_SPACING,
+    });
+    expect(stack!.componentBand.hops).toBeGreaterThanOrEqual(3);
+    // Outer annulus thickness should stay under one component-band width when packing is tight.
+    const outerHops = (stack!.outerAnnulus.outer - stack!.outerAnnulus.inner) / TRI_LATTICE_SPACING;
+    expect(outerHops).toBeLessThanOrEqual(stack!.componentBand.hops);
+  });
+});
+
+describe("snapPyramidTopsToSharedRay", () => {
+  beforeAll(async () => {
+    dualRing = (await import("./landscape-triangular-lattice").catch(() => ({}))) as DualRingLatticeModule;
+  });
+
+  test("snaps both tops onto one center ray within ≤1 lattice step", () => {
+    const snapped = dualRing.snapPyramidTopsToSharedRay?.(
+      { q: 3, r: 0 },
+      { q: 7, r: 1 },
+      { x: 0, y: 0 },
+      TRI_LATTICE_SPACING,
+    );
+    expect(snapped).toBeDefined();
+    expect(snapped!.purposeOffSteps).toBeLessThanOrEqual(1);
+    expect(snapped!.stressorOffSteps).toBeLessThanOrEqual(1);
+    // Shared ray: angular difference of snapped tops from center is ~0 or π-aligned.
+    const p = axialToPixel(snapped!.purpose, TRI_LATTICE_SPACING);
+    const s = axialToPixel(snapped!.stressor, TRI_LATTICE_SPACING);
+    const cross = p.x * s.y - p.y * s.x;
+    const scale = Math.hypot(p.x, p.y) * Math.hypot(s.x, s.y);
+    expect(Math.abs(cross) / Math.max(scale, 1e-9)).toBeLessThan(0.35);
   });
 });

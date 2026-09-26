@@ -291,6 +291,371 @@ export function pyramidLayersForCount(n: number): number[] {
 }
 
 /**
+ * True when `layers` is a complete mini frustum `[h, h-1, …, 1]`.
+ */
+export function isCompleteMiniPyramidStage(layers: readonly number[]): boolean {
+  const h = layers[0];
+  if (h === undefined || layers.length !== h) return false;
+  for (let i = 0; i < h; i += 1) {
+    if (layers[i] !== h - i) return false;
+  }
+  return true;
+}
+
+/**
+ * Tall-before-wide / minimal-base frustum for dual-ring packing.
+ * Sequence: 1 · 2 · 2:1 · 3:1 · 3:2 · 3:2:1 · 4:2:1 · 4:3:1 · 4:3:2 · 4:3:2:1 · …
+ */
+export function miniPyramidLayersForCount(n: number): number[] {
+  if (n <= 0) return [];
+  const layers: number[] = [];
+  for (let placed = 0; placed < n; placed += 1) {
+    if (layers.length === 0) {
+      layers.push(1);
+      continue;
+    }
+    const base = layers[0]!;
+    let filled = false;
+    for (let i = 0; i < layers.length; i += 1) {
+      const max = base - i;
+      if (layers[i]! < max) {
+        layers[i] = layers[i]! + 1;
+        filled = true;
+        break;
+      }
+    }
+    if (filled) continue;
+    if (isCompleteMiniPyramidStage(layers)) {
+      layers[0] = base + 1;
+      continue;
+    }
+    layers.push(1);
+  }
+  return layers;
+}
+
+/**
+ * Local axial cells for a mini-pyramid (+r = toward components / outward in world).
+ * - apexToward "outward" (stressors): base at r=0, apex at +(h-1)
+ * - apexToward "center" (purposes): apex at r=0, base at +(h-1)
+ */
+export function miniPyramidCellsForLayers(
+  layers: readonly number[],
+  orientation: { apexToward: "center" | "outward" } = { apexToward: "outward" },
+): AxialPoint[] {
+  const cells: AxialPoint[] = [];
+  if (layers.length === 0) return cells;
+  const baseWidth = layers[0]!;
+  const last = layers.length - 1;
+  for (let i = 0; i < layers.length; i += 1) {
+    const width = layers[i]!;
+    const qStart = Math.round((baseWidth - width) / 2);
+    const r = orientation.apexToward === "outward" ? i : last - i;
+    for (let q = qStart; q < qStart + width; q += 1) {
+      cells.push({ q, r });
+    }
+  }
+  return cells;
+}
+
+export interface MiniPyramidLayerSubshape {
+  kind: "pill" | "layer";
+  cells: AxialPoint[];
+  layerIndex: number;
+}
+
+/** One subshape per layer — never triangles. */
+export function partitionMiniPyramidLayers(layers: readonly number[]): MiniPyramidLayerSubshape[] {
+  const cells = miniPyramidCellsForLayers(layers, { apexToward: "outward" });
+  const byR = new Map<number, AxialPoint[]>();
+  for (const cell of cells) {
+    const row = byR.get(cell.r) ?? [];
+    row.push(cell);
+    byR.set(cell.r, row);
+  }
+  // outward: layers[0] base at r=0, layers[i] at r=+i
+  return layers.map((width, layerIndex) => {
+    const row = (byR.get(layerIndex) ?? []).sort((a, b) => a.q - b.q);
+    return {
+      kind: "layer" as const,
+      cells: row.slice(0, width),
+      layerIndex,
+    };
+  });
+}
+
+/** Assign forces into layer bins by similarity (same heuristic as assignForcesToSubShapes). */
+export function assignForcesToMiniPyramidLayers(
+  forces: readonly SimilarityForce[],
+  layers: readonly number[],
+): string[][] {
+  return assignForcesToSubShapes(forces, layers);
+}
+
+/** Circumference slots: sum of bases + optional empty placeholders (gapNodes default 0). */
+export function dualRingSlotsForMiniPyramids(
+  baseWidths: readonly number[],
+  options: { gapNodes?: number; emptyPlaceholderSlots?: number } = {},
+): number {
+  const gapNodes = options.gapNodes ?? 0;
+  const emptyPlaceholderSlots = options.emptyPlaceholderSlots ?? 0;
+  const bases = baseWidths.reduce((sum, width) => sum + Math.max(0, width), 0);
+  return bases + gapNodes * Math.max(0, baseWidths.length) + emptyPlaceholderSlots;
+}
+
+export interface DualRingMiniPyramidLayout {
+  targets: Map<string, AxialPoint>;
+  purposeSubShapesByAttractor: Map<string, string[][]>;
+  stressorSubShapesByAttractor: Map<string, string[][]>;
+  purposeSlotOccupancy: boolean[];
+  stressorSlotOccupancy: boolean[];
+}
+
+/**
+ * Places each attractor's purpose forces on `purposeRing` and stressor forces
+ * on `stressorRing`, evenly spaced, gap 0. Missing kinds reserve 2 free slots.
+ */
+export function layoutAttractorDualRingMiniPyramids(
+  groups: readonly ForceShapeGroup[],
+  rings: { purposeRing: number; stressorRing: number },
+): DualRingMiniPyramidLayout {
+  const targets = new Map<string, AxialPoint>();
+  const purposeSubShapesByAttractor = new Map<string, string[][]>();
+  const stressorSubShapesByAttractor = new Map<string, string[][]>();
+  const purposeCount = Math.max(1, 6 * rings.purposeRing);
+  const stressorCount = Math.max(1, 6 * rings.stressorRing);
+  const purposeOcc = Array.from({ length: purposeCount }, () => false);
+  const stressorOcc = Array.from({ length: stressorCount }, () => false);
+  const n = Math.max(1, groups.length);
+  const occupiedKeys = new Set<string>();
+
+  groups.forEach((group, groupIndex) => {
+    const purposes = group.forces.filter((f) => f.kind === "purpose");
+    const stressors = group.forces.filter((f) => f.kind === "stressor");
+    const purposeSlot = Math.round((groupIndex * purposeCount) / n) % purposeCount;
+    const stressorSlot = Math.round((groupIndex * stressorCount) / n) % stressorCount;
+
+    const placeOnRing = (
+      kindForces: SimilarityForce[],
+      ring: number,
+      slotCount: number,
+      startSlot: number,
+      apexToward: "center" | "outward",
+      occupancy: boolean[],
+    ): string[][] => {
+      if (kindForces.length === 0) {
+        // 2-wide placeholder: leave consecutive slots unmarked (free).
+        return [];
+      }
+      const layers = miniPyramidLayersForCount(kindForces.length);
+      const localCells = miniPyramidCellsForLayers(layers, { apexToward });
+      const baseWidth = layers[0] ?? 1;
+      const last = Math.max(0, layers.length - 1);
+      const baseR = apexToward === "outward" ? 0 : last;
+      const baseMinQ = Math.min(...localCells.filter((c) => c.r === baseR).map((c) => c.q), 0);
+      let cursor = startSlot;
+
+      const absoluteFor = (local: AxialPoint, cursorSlot: number): AxialPoint => {
+        // outward: base at local.r=0 on `ring`, apex at +r → ring+r
+        // center:  base at local.r=last on `ring`, apex at 0 → ring-(last-r)
+        const ringIndex = apexToward === "outward"
+          ? ring + local.r
+          : Math.max(1, ring - (last - local.r));
+        const slotOffset = local.q - baseMinQ;
+        const angle = -Math.PI / 2
+          + ((((cursorSlot + slotOffset) % slotCount) + slotCount) % slotCount / slotCount) * 2 * Math.PI;
+        return axialCellOnRingAtAngle(ringIndex, angle);
+      };
+
+      let placed: AxialPoint[] | undefined;
+      for (let attempt = 0; attempt < slotCount; attempt += 1) {
+        const abs = localCells.map((local) => absoluteFor(local, cursor));
+        if (abs.every((cell) => !occupiedKeys.has(axialKey(cell)))) {
+          placed = abs;
+          break;
+        }
+        cursor = (cursor + 1) % slotCount;
+      }
+      if (!placed) placed = localCells.map((local) => absoluteFor(local, cursor));
+
+      for (let i = 0; i < baseWidth; i += 1) occupancy[(cursor + i) % slotCount] = true;
+      for (const cell of placed) occupiedKeys.add(axialKey(cell));
+
+      const bins = assignForcesToMiniPyramidLayers(kindForces, layers);
+      const localsByLayer = layers.map((_, i) => {
+        const expectedR = apexToward === "outward" ? i : last - i;
+        return localCells.filter((c) => c.r === expectedR);
+      });
+      bins.forEach((forceIds, layerIndex) => {
+        const layerLocals = localsByLayer[layerIndex] ?? [];
+        forceIds.forEach((id, fi) => {
+          const local = layerLocals[Math.min(fi, Math.max(0, layerLocals.length - 1))];
+          if (!local) return;
+          const absIndex = localCells.findIndex((c) => c.q === local.q && c.r === local.r);
+          targets.set(id, placed![absIndex] ?? placed![0]!);
+        });
+      });
+      return bins;
+    };
+
+    purposeSubShapesByAttractor.set(
+      group.attractorId,
+      placeOnRing(purposes, rings.purposeRing, purposeCount, purposeSlot, "center", purposeOcc),
+    );
+    stressorSubShapesByAttractor.set(
+      group.attractorId,
+      placeOnRing(stressors, rings.stressorRing, stressorCount, stressorSlot, "outward", stressorOcc),
+    );
+  });
+
+  return {
+    targets,
+    purposeSubShapesByAttractor,
+    stressorSubShapesByAttractor,
+    purposeSlotOccupancy: purposeOcc,
+    stressorSlotOccupancy: stressorOcc,
+  };
+}
+
+export interface DualRingRadialStack {
+  purposeRingRadius: number;
+  purposeRingAxial: number;
+  innerAnnulus: { inner: number; outer: number };
+  componentBand: { inner: number; outer: number; hops: number };
+  outerAnnulus: { inner: number; outer: number };
+  stressorRingRadius: number;
+  stressorRingAxial: number;
+}
+
+/**
+ * Pixel radii for the dual-ring stack. Component band ≥ minComponentHops;
+ * outer annulus minimized (1 hop); purpose/stressor rings sized for bases.
+ */
+export function dualRingRadialStack(input: {
+  purposeBaseWidths: readonly number[];
+  stressorBaseWidths: readonly number[];
+  componentCount: number;
+  spacing?: number;
+  minComponentHops?: number;
+}): DualRingRadialStack {
+  const spacing = input.spacing ?? TRI_LATTICE_SPACING;
+  const minCompHops = input.minComponentHops ?? 3;
+  const purposeSlots = dualRingSlotsForMiniPyramids(input.purposeBaseWidths, { gapNodes: 0 });
+  const stressorSlots = dualRingSlotsForMiniPyramids(input.stressorBaseWidths, { gapNodes: 0 });
+  const purposeRingAxial = Math.max(2, outerRingAxialRadiusForSlots(Math.max(1, purposeSlots)));
+  const stressorRingAxial = Math.max(
+    purposeRingAxial + minCompHops + 4,
+    outerRingAxialRadiusForSlots(Math.max(1, stressorSlots)),
+  );
+
+  // Build pixel radii from axial rings via equal-arc formula.
+  const purposeRingRadius = (spacing * 6 * purposeRingAxial) / (2 * Math.PI);
+  // Purpose bases face the inner annulus; annulus starts one hop outside the ring.
+  const innerAnnulusInner = purposeRingRadius + spacing;
+  const innerAnnulusOuter = innerAnnulusInner + spacing;
+  const componentInner = innerAnnulusOuter;
+  let componentHops = minCompHops;
+  // Grow component band if centered-hex capacity is insufficient.
+  const capacityForHops = (hops: number): number => {
+    // rings 0..hops-1 around a center ≈ 1 + 3*k*(k+1) for k=hops-1 roughly
+    let cap = 1;
+    for (let k = 1; k < hops; k += 1) cap += 6 * k;
+    return cap;
+  };
+  while (capacityForHops(componentHops) < Math.max(1, input.componentCount)) {
+    componentHops += 1;
+  }
+  const componentOuter = componentInner + spacing * componentHops;
+  const outerAnnulusInner = componentOuter;
+  const outerAnnulusOuter = componentOuter + spacing; // minimize: 1 hop
+  const stressorRingRadius = Math.max(
+    outerAnnulusOuter,
+    (spacing * 6 * stressorRingAxial) / (2 * Math.PI),
+  );
+
+  return {
+    purposeRingRadius,
+    purposeRingAxial,
+    innerAnnulus: { inner: innerAnnulusInner, outer: innerAnnulusOuter },
+    componentBand: { inner: componentInner, outer: componentOuter, hops: componentHops },
+    outerAnnulus: { inner: outerAnnulusInner, outer: Math.min(outerAnnulusOuter, stressorRingRadius) },
+    stressorRingRadius,
+    stressorRingAxial,
+  };
+}
+
+/**
+ * Snap purpose/stressor tops onto a shared center ray within ≤1 lattice step.
+ */
+export function snapPyramidTopsToSharedRay(
+  purposeTop: AxialPoint | Point,
+  stressorTop: AxialPoint | Point,
+  center: Point,
+  spacing = TRI_LATTICE_SPACING,
+): {
+  purpose: AxialPoint;
+  stressor: AxialPoint;
+  rayAngle: number;
+  purposeOffSteps: number;
+  stressorOffSteps: number;
+} {
+  const toAxial = (value: AxialPoint | Point): AxialPoint =>
+    "q" in value ? value : pixelToAxial(value, spacing, center);
+  const purposeOrig = toAxial(purposeTop);
+  const stressorOrig = toAxial(stressorTop);
+
+  const neighborhood = (original: AxialPoint): AxialPoint[] => [
+    original,
+    ...AXIAL_NEIGHBORS.map((n) => ({ q: original.q + n.q, r: original.r + n.r })),
+  ];
+
+  const purposeCands = neighborhood(purposeOrig);
+  const stressorCands = neighborhood(stressorOrig);
+
+  let bestPurpose = purposeOrig;
+  let bestStressor = stressorOrig;
+  let bestSin = Infinity;
+  let bestOffSum = Infinity;
+
+  for (const purpose of purposeCands) {
+    const p = axialToPixel(purpose, spacing, center);
+    const pLen = Math.hypot(p.x - center.x, p.y - center.y);
+    if (pLen < 1e-9) continue;
+    for (const stressor of stressorCands) {
+      const s = axialToPixel(stressor, spacing, center);
+      const sLen = Math.hypot(s.x - center.x, s.y - center.y);
+      if (sLen < 1e-9) continue;
+      const cross = (p.x - center.x) * (s.y - center.y) - (p.y - center.y) * (s.x - center.x);
+      const sin = Math.abs(cross) / (pLen * sLen);
+      const offSum = axialDistance(purposeOrig, purpose) + axialDistance(stressorOrig, stressor);
+      if (sin + 1e-12 < bestSin || (Math.abs(sin - bestSin) < 1e-12 && offSum < bestOffSum)) {
+        bestSin = sin;
+        bestOffSum = offSum;
+        bestPurpose = purpose;
+        bestStressor = stressor;
+      }
+    }
+  }
+
+  const purposePx = axialToPixel(bestPurpose, spacing, center);
+  const stressorPx = axialToPixel(bestStressor, spacing, center);
+  const purposeAngle = Math.atan2(purposePx.y - center.y, purposePx.x - center.x);
+  const stressorAngle = Math.atan2(stressorPx.y - center.y, stressorPx.x - center.x);
+  let delta = stressorAngle - purposeAngle;
+  while (delta > Math.PI) delta -= 2 * Math.PI;
+  while (delta < -Math.PI) delta += 2 * Math.PI;
+  const rayAngle = purposeAngle + delta / 2;
+
+  return {
+    purpose: bestPurpose,
+    stressor: bestStressor,
+    rayAngle,
+    purposeOffSteps: axialDistance(purposeOrig, bestPurpose),
+    stressorOffSteps: axialDistance(stressorOrig, bestStressor),
+  };
+}
+
+/**
  * Local axial cells for a pyramid frustum: base along +q at r=0 (ergodic
  * boundary), successive layers at r=-1,-2,… (facing away). Upper layers are
  * centred on the base so unit triangles tessellate; the topmost layer may be

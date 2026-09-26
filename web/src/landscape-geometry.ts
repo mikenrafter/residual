@@ -553,3 +553,166 @@ export function projectLabelAnchor(
     y: clamp(point.y, bounds.y, bounds.y + bounds.height),
   };
 }
+
+function radiusFromCenter(point: Point, center: Point): number {
+  return Math.hypot(point.x - center.x, point.y - center.y);
+}
+
+function pointInAnnulus(
+  point: Point,
+  center: Point,
+  annulus: { inner: number; outer: number },
+): boolean {
+  const radius = radiusFromCenter(point, center);
+  return radius >= annulus.inner - 1e-6 && radius <= annulus.outer + 1e-6;
+}
+
+/** True when the straight segment `from→to` enters `wrongAnnulus`. */
+export function shouldUseLongAnnulusArc(
+  from: Point,
+  to: Point,
+  center: Point,
+  correctAnnulus: { inner: number; outer: number },
+  wrongAnnulus: { inner: number; outer: number },
+): boolean {
+  void correctAnnulus;
+  const samples = 24;
+  for (let i = 1; i < samples; i += 1) {
+    const t = i / samples;
+    const point = {
+      x: from.x + (to.x - from.x) * t,
+      y: from.y + (to.y - from.y) * t,
+    };
+    if (pointInAnnulus(point, center, wrongAnnulus)) return true;
+  }
+  return false;
+}
+
+/**
+ * Cubic path that leaves `from` along a ±tangentDegrees tangent toward the
+ * correct annulus, then curves onto `enter` at the annulus mid-radius.
+ */
+export function longAnnulusArcPath(
+  from: Point,
+  enter: Point,
+  center: Point,
+  annulus: { inner: number; outer: number },
+  options: { tangentDegrees?: number; direction?: "cw" | "ccw" } = {},
+): string {
+  const tangentDegrees = options.tangentDegrees ?? 10;
+  const midRadius = (annulus.inner + annulus.outer) / 2;
+  const fromAngle = Math.atan2(from.y - center.y, from.x - center.x);
+  const enterAngle = Math.atan2(enter.y - center.y, enter.x - center.x);
+  let delta = enterAngle - fromAngle;
+  while (delta > Math.PI) delta -= 2 * Math.PI;
+  while (delta < -Math.PI) delta += 2 * Math.PI;
+  const direction = options.direction
+    ?? (delta >= 0 ? "ccw" : "cw");
+  const sign = direction === "ccw" ? 1 : -1;
+  const tangent = (tangentDegrees * Math.PI) / 180;
+  const leaveAngle = fromAngle + sign * tangent;
+  const fromRadius = Math.max(1e-6, radiusFromCenter(from, center));
+  const leaveDir = {
+    x: Math.cos(leaveAngle + sign * Math.PI / 2),
+    y: Math.sin(leaveAngle + sign * Math.PI / 2),
+  };
+  // Control point 1: along the tangent from `from`.
+  const lead = Math.max(20, fromRadius * 0.35);
+  const c1 = { x: from.x + leaveDir.x * lead, y: from.y + leaveDir.y * lead };
+  // Control point 2: on the annulus mid circle, approached tangentially.
+  const approachAngle = enterAngle - sign * tangent * 0.5;
+  const c2 = {
+    x: center.x + Math.cos(approachAngle) * midRadius,
+    y: center.y + Math.sin(approachAngle) * midRadius,
+  };
+  const end = {
+    x: center.x + Math.cos(enterAngle) * midRadius,
+    y: center.y + Math.sin(enterAngle) * midRadius,
+  };
+  return curveToPath(from, { c1, c2, end });
+}
+
+function annulusBandAroundMid(mid: number, halfWidth: number): { inner: number; outer: number } {
+  return {
+    inner: Math.max(0, mid - halfWidth),
+    outer: mid + halfWidth,
+  };
+}
+
+/**
+ * Component → correct-annulus mid → approach → force. Uses a long ±10° arc
+ * when the short hop would cross the wrong annulus.
+ */
+export function dualRingMembershipGeometry(input: {
+  from: Point;
+  force: Point;
+  forceKind: "purpose" | "stressor";
+  center: Point;
+  innerAnnulusMid: number;
+  outerAnnulusMid: number;
+  approach?: Point;
+  tangentDegrees?: number;
+}): {
+  trunk: string;
+  midBranch: string;
+  forceBranch: string;
+  route: "short" | "long-arc";
+  midSplit: Point;
+} {
+  const half = Math.max(
+    8,
+    Math.abs(input.outerAnnulusMid - input.innerAnnulusMid) * 0.25,
+  );
+  const correctMid = input.forceKind === "purpose" ? input.innerAnnulusMid : input.outerAnnulusMid;
+  const wrongMid = input.forceKind === "purpose" ? input.outerAnnulusMid : input.innerAnnulusMid;
+  const correctAnnulus = annulusBandAroundMid(correctMid, half);
+  const wrongAnnulus = annulusBandAroundMid(wrongMid, half);
+
+  const forceAngle = Math.atan2(input.force.y - input.center.y, input.force.x - input.center.x);
+  const radialMid: Point = {
+    x: input.center.x + Math.cos(forceAngle) * correctMid,
+    y: input.center.y + Math.sin(forceAngle) * correctMid,
+  };
+  const hit = rayCircleIntersection(input.from, input.force, input.center, correctMid);
+  const shortMid = hit ?? radialMid;
+
+  const useLong = shouldUseLongAnnulusArc(
+    input.from,
+    shortMid,
+    input.center,
+    correctAnnulus,
+    wrongAnnulus,
+  );
+
+  let midSplit = shortMid;
+  let trunk: string;
+  if (useLong) {
+    const fromAngle = Math.atan2(input.from.y - input.center.y, input.from.x - input.center.x);
+    let delta = forceAngle - fromAngle;
+    while (delta > Math.PI) delta -= 2 * Math.PI;
+    while (delta < -Math.PI) delta += 2 * Math.PI;
+    const direction = delta >= 0 ? "ccw" : "cw";
+    midSplit = radialMid;
+    trunk = longAnnulusArcPath(input.from, midSplit, input.center, correctAnnulus, {
+      tangentDegrees: input.tangentDegrees ?? 10,
+      direction,
+    });
+  } else {
+    const dir = normalize(shortMid.x - input.from.x, shortMid.y - input.from.y);
+    trunk = curveToPath(input.from, cubicBetween(input.from, shortMid, dir));
+  }
+
+  const approach = input.approach ?? pointAtDistanceFrom(input.force, midSplit, 24);
+  const midDir = normalize(approach.x - midSplit.x, approach.y - midSplit.y);
+  const midBranch = curveToPath(midSplit, cubicBetween(midSplit, approach, midDir));
+  const forceDir = normalize(input.force.x - approach.x, input.force.y - approach.y);
+  const forceBranch = curveToPath(approach, cubicBetween(approach, input.force, forceDir));
+
+  return {
+    trunk,
+    midBranch,
+    forceBranch,
+    route: useLong ? "long-arc" : "short",
+    midSplit,
+  };
+}

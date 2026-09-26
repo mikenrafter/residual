@@ -63,6 +63,37 @@ type GeometryModule = {
     bounds: Box,
     preferredRegion?: readonly Point[],
   ) => Point;
+  // --- dual-ring annulus-aware membership bundling (redesign) ---
+  shouldUseLongAnnulusArc?: (
+    from: Point,
+    to: Point,
+    center: Point,
+    correctAnnulus: { inner: number; outer: number },
+    wrongAnnulus: { inner: number; outer: number },
+  ) => boolean;
+  dualRingMembershipGeometry?: (input: {
+    from: Point;
+    force: Point;
+    forceKind: "purpose" | "stressor";
+    center: Point;
+    innerAnnulusMid: number;
+    outerAnnulusMid: number;
+    approach?: Point;
+    tangentDegrees?: number;
+  }) => {
+    trunk: string;
+    midBranch: string;
+    forceBranch: string;
+    route: "short" | "long-arc";
+    midSplit: Point;
+  };
+  longAnnulusArcPath?: (
+    from: Point,
+    enter: Point,
+    center: Point,
+    annulus: { inner: number; outer: number },
+    options?: { tangentDegrees?: number; direction?: "cw" | "ccw" },
+  ) => string;
 };
 
 let mod: GeometryModule = {};
@@ -419,5 +450,90 @@ describe("visible label anchors", () => {
     expect(projected!.x).toBeLessThanOrEqual(195);
     expect(projected!.y).toBeGreaterThanOrEqual(20);
     expect(projected!.y).toBeLessThanOrEqual(70);
+  });
+});
+
+describe("shouldUseLongAnnulusArc (dual-ring)", () => {
+  const center = { x: 0, y: 0 };
+  const inner = { inner: 80, outer: 120 };
+  const outer = { inner: 200, outer: 240 };
+
+  test("short radial hop into the correct annulus stays short", () => {
+    // Component in the band between annuli → purpose on the inner mid ray.
+    expect(mod.shouldUseLongAnnulusArc?.(
+      { x: 150, y: 0 },
+      { x: 100, y: 0 },
+      center,
+      inner,
+      outer,
+    )).toBe(false);
+  });
+
+  test("a chord that crosses the wrong annulus requests a long arc", () => {
+    // From outer-side component, targeting an inner-annulus mid across the outer band.
+    expect(mod.shouldUseLongAnnulusArc?.(
+      { x: 300, y: 0 },
+      { x: 100, y: 80 },
+      center,
+      inner,
+      outer,
+    )).toBe(true);
+  });
+});
+
+describe("dualRingMembershipGeometry (dual-ring)", () => {
+  const center = { x: 0, y: 0 };
+
+  test("purpose uses the inner annulus mid on a short route when clear", () => {
+    const result = mod.dualRingMembershipGeometry?.({
+      from: { x: 160, y: 0 },
+      force: { x: 60, y: 0 },
+      forceKind: "purpose",
+      center,
+      innerAnnulusMid: 100,
+      outerAnnulusMid: 220,
+    });
+    expect(result).toBeDefined();
+    expect(result!.route).toBe("short");
+    expect(result!.trunk).toContain("C");
+    expect(result!.midBranch).toContain("C");
+    expect(result!.forceBranch).toContain("C");
+    expect(Math.hypot(result!.midSplit.x, result!.midSplit.y)).toBeCloseTo(100, 0);
+  });
+
+  test("stressor long-arc route is selected when the short hop would hit the inner annulus", () => {
+    const result = mod.dualRingMembershipGeometry?.({
+      from: { x: 40, y: 0 },
+      force: { x: 240, y: 40 },
+      forceKind: "stressor",
+      center,
+      innerAnnulusMid: 100,
+      outerAnnulusMid: 220,
+      tangentDegrees: 10,
+    });
+    expect(result).toBeDefined();
+    expect(result!.route).toBe("long-arc");
+    expect(result!.trunk).toContain("C");
+  });
+});
+
+describe("longAnnulusArcPath (dual-ring)", () => {
+  test("emits a cubic that ends near the annulus mid radius", () => {
+    const path = mod.longAnnulusArcPath?.(
+      { x: 160, y: 0 },
+      { x: 0, y: 220 },
+      { x: 0, y: 0 },
+      { inner: 200, outer: 240 },
+      { tangentDegrees: 10, direction: "ccw" },
+    );
+    expect(path).toBeDefined();
+    expect(path).toContain("C");
+    const match = /C[\s\d.,\-]+?\s(-?[\d.]+),(-?[\d.]+)\s*$/.exec(path ?? "");
+    // End point of the cubic is the last pair after C's six numbers — parse via matchAll.
+    const nums = [...(path ?? "").matchAll(/-?\d+(?:\.\d+)?/g)].map((m) => Number(m[0]));
+    const endX = nums[nums.length - 2]!;
+    const endY = nums[nums.length - 1]!;
+    expect(Math.hypot(endX, endY)).toBeCloseTo(220, 0);
+    void match;
   });
 });
