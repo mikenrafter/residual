@@ -114,6 +114,7 @@ type RegionsViewModule = {
   // --- component min-distance / collision radius (not yet implemented) ---
   REGIONS_COMPONENT_MIN_DISTANCE?: number;
   REGIONS_COMPONENT_COLLISION_RADIUS?: number;
+  BUNDLE_RADIAL_SPLIT_SEPARATION?: number;
   attractorCoreDistance?: (
     nodes: { id: string; type: string; attractorId?: string; x?: number; y?: number }[],
     attractorId: string,
@@ -398,44 +399,28 @@ describe("model.forceBranchBundles (bidirectional bundling)", () => {
   });
 });
 
-describe("partitionMembershipBundles (no double-drawn edges)", () => {
-  test("each membership edge appears in exactly one render bundle", () => {
+describe("partitionMembershipBundles (components do not bundle)", () => {
+  test("drops every component→force fan", () => {
+    const model = buildNkpHypergraphModel(state());
+    const partitioned = partitionMembershipBundles(model.branchBundles, model.forceBranchBundles);
+    expect(partitioned.branchBundles).toEqual([]);
+    expect(partitioned.forceBranchBundles.length).toBe(model.forceBranchBundles.length);
+  });
+
+  test("preserves force→component membership coverage", () => {
     const model = buildNkpHypergraphModel(state());
     const partitioned = partitionMembershipBundles(model.branchBundles, model.forceBranchBundles);
     const edgeKeys = new Set<string>();
     for (const bundle of partitioned.forceBranchBundles) {
-      for (const componentId of bundle.componentIds) {
-        const key = `${bundle.forceId}|${componentId}`;
-        expect(edgeKeys.has(key)).toBe(false);
-        edgeKeys.add(key);
+      const members = bundle.forceIds ?? [bundle.forceId];
+      for (const forceId of members) {
+        for (const componentId of bundle.componentIds) {
+          edgeKeys.add(`${forceId}|${componentId}`);
+        }
       }
     }
-    for (const bundle of partitioned.branchBundles) {
-      for (const forceKey of bundle.forceIds) {
-        const key = `force:${forceKey}|${bundle.componentId}`;
-        expect(edgeKeys.has(key)).toBe(false);
-        edgeKeys.add(key);
-      }
-    }
-    // Every model membership is covered exactly once.
+    // Per-force model bundles still cover every membership once each.
     expect(edgeKeys.size).toBe(model.edges.length);
-    for (const edge of model.edges) {
-      expect(edgeKeys.has(`${edge.source}|${edge.target}`)).toBe(true);
-    }
-  });
-
-  test("prefers true fans over duplicating 1:1 strokes in both directions", () => {
-    const model = buildNkpHypergraphModel(state());
-    const partitioned = partitionMembershipBundles(model.branchBundles, model.forceBranchBundles);
-    // Raw model would draw both directions (more strokes than memberships).
-    const rawStrokeEstimate = model.branchBundles.length + model.forceBranchBundles.length
-      + model.branchBundles.reduce((n, b) => n + Math.max(0, b.forceIds.length - 1), 0)
-      + model.forceBranchBundles.reduce((n, b) => n + Math.max(0, b.componentIds.length - 1), 0);
-    const partitionedStrokeEstimate = partitioned.branchBundles.length + partitioned.forceBranchBundles.length
-      + partitioned.branchBundles.reduce((n, b) => n + Math.max(0, b.forceIds.length - 1), 0)
-      + partitioned.forceBranchBundles.reduce((n, b) => n + Math.max(0, b.componentIds.length - 1), 0);
-    expect(partitionedStrokeEstimate).toBeLessThan(rawStrokeEstimate);
-    expect(partitionedStrokeEstimate).toBe(model.edges.length);
   });
 });
 
@@ -1073,42 +1058,38 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     expect(distance).toBeLessThanOrEqual(radius + 0.5);
   });
 
-  test("core exclusion: an attractor group touching the core zone gets pinned instead of pulled deeper in", () => {
+  test("core exclusion: an attractor group pushed into the core is clamped outside without freezing", () => {
     const { ctx } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options); // options does not set lockRegions — must work with the manual lock toggle off
     const allNodes = handle?.simulation?.nodes() ?? [];
     const forceNode = allNodes.find((n: any) => n.id === "force:S-01");
     expect(forceNode).toBeDefined();
-    if (forceNode) { forceNode.x = 400; forceNode.y = 300; forceNode.vx = 0; forceNode.vy = 0; } // dead center
+    if (forceNode) { forceNode.x = 400; forceNode.y = 300; forceNode.vx = 0; forceNode.vy = 0; forceNode.fx = null; forceNode.fy = null; }
     handle?.simulation?.tick();
     const after = handle?.simulation?.nodes().find((n: any) => n.id === "force:S-01");
     const componentCount = allNodes.filter((n: any) => n.type === "component").length;
     const radius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
     const distance = Math.hypot((after?.x ?? 0) - 400, (after?.y ?? 0) - 300);
-    // Clamped onto/outside the boundary, then absolutely pinned (no further drift).
+    // Clamped onto/outside the outer boundary, but not pinned (can still move).
     expect(distance).toBeGreaterThanOrEqual(radius - 0.5);
-    expect(typeof after?.fx).toBe("number");
-    expect(after?.fx).toBeCloseTo(after?.x ?? 0, 5);
-    expect(after?.fy).toBeCloseTo(after?.y ?? 0, 5);
+    expect(after?.fx == null).toBe(true);
+    expect(after?.fy == null).toBe(true);
   });
 
-  test("core exclusion lock releases once the group is moved back outside the zone", () => {
+  test("core exclusion keeps forces free to slide once outside the zone", () => {
     const { ctx } = makeCtx();
     const handle = regionsModule.createRegionsView?.(ctx);
     handle?.update(state(), options);
     const forceNode = handle?.simulation?.nodes().find((n: any) => n.id === "force:S-01");
-    if (forceNode) { forceNode.x = 400; forceNode.y = 300; forceNode.vx = 0; forceNode.vy = 0; }
-    handle?.simulation?.tick(); // now pinned (per the test above)
-    const pinned = handle?.simulation?.nodes().find((n: any) => n.id === "force:S-01");
-    // Precondition, not just setup: must actually be pinned here, otherwise
-    // "unpinned" below is true vacuously (e.g. because exclusion was never
-    // implemented at all) rather than because the release logic fired.
-    expect(typeof pinned?.fx).toBe("number");
-    if (pinned) { pinned.x = 5000; pinned.y = 5000; }
+    if (forceNode) { forceNode.x = 400; forceNode.y = 300; forceNode.vx = 0; forceNode.vy = 0; forceNode.fx = null; forceNode.fy = null; }
+    handle?.simulation?.tick();
+    const afterClamp = handle?.simulation?.nodes().find((n: any) => n.id === "force:S-01");
+    expect(afterClamp?.fx == null).toBe(true);
+    if (afterClamp) { afterClamp.x = 5000; afterClamp.y = 5000; afterClamp.vx = 10; afterClamp.vy = 0; }
     handle?.simulation?.tick();
     const after = handle?.simulation?.nodes().find((n: any) => n.id === "force:S-01");
-    expect(after?.fx == null).toBe(true); // unpinned again since it's now far from the core zone
+    expect(after?.fx == null).toBe(true);
   });
 
   test("draws a dashed circle marking the core zone boundary, sized to the current component count", () => {
@@ -1273,6 +1254,78 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     }
   });
 
+  test("dragging one force moves every force in its sub-shape together", () => {
+    const { ctx } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const allBefore = handle?.simulation?.nodes() ?? [];
+    const before = new Map(
+      allBefore
+        .filter((n: any) => n.type === "force" && n.attractorId === "A-01")
+        .map((n: any) => [n.id as string, { x: n.x ?? 0, y: n.y ?? 0 }]),
+    );
+    const p01Start = allBefore.find((n: any) => n.id === "force:P-01");
+    expect(before.size).toBeGreaterThanOrEqual(2);
+    expect(p01Start).toBeDefined();
+    const primary = before.get("force:S-01");
+    expect(primary).toBeDefined();
+    const dx = 90;
+    const dy = -30;
+    handle?.dragNodeTo?.("force:S-01", { x: primary!.x + dx, y: primary!.y + dy });
+    const after = handle?.simulation?.nodes() ?? [];
+    for (const [id, start] of before) {
+      const node = after.find((n: any) => n.id === id);
+      expect(node?.x).toBeCloseTo(start.x + dx, 5);
+      expect(node?.y).toBeCloseTo(start.y + dy, 5);
+    }
+    const p01 = after.find((n: any) => n.id === "force:P-01");
+    expect(p01?.x).toBeCloseTo(p01Start!.x ?? 0, 5);
+    expect(p01?.y).toBeCloseTo(p01Start!.y ?? 0, 5);
+  });
+
+  test("dragging a force in one composite sub-shape does not move the other sub-shape", () => {
+    const { ctx } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    const componentNames = ["auth", "cache", "database", "queue", "orphan", "billing", "search", "reporting"];
+    const bigState = state({
+      baseComponents: componentNames.map((name) => component(name)),
+      baseForces: Array.from({ length: 9 }, (_, i) =>
+        force(`S-${10 + i}`, "A-01", [componentNames[i % componentNames.length]!])),
+    });
+    handle?.update(bigState, options);
+    const forces = (handle?.simulation?.nodes() ?? [])
+      .filter((n: any) => n.type === "force" && n.attractorId === "A-01");
+    expect(forces.length).toBe(9);
+    const primary = forces.find((n: any) => n.id === "force:S-10");
+    expect(primary).toBeDefined();
+    const before = new Map(forces.map((n: any) => [n.id as string, { x: n.x ?? 0, y: n.y ?? 0 }]));
+    const dx = 120;
+    handle?.dragNodeTo?.(primary!.id, { x: (primary!.x ?? 0) + dx, y: primary!.y ?? 0 });
+    const after = handle?.simulation?.nodes() ?? [];
+    const moved = after.filter((n: any) => {
+      if (n.type !== "force" || n.attractorId !== "A-01") return false;
+      const start = before.get(n.id)!;
+      return Math.hypot((n.x ?? 0) - start.x, (n.y ?? 0) - start.y) > 1;
+    });
+    // One sub-shape (3–7 forces), not the whole composite of 9.
+    expect(moved.length).toBeGreaterThanOrEqual(3);
+    expect(moved.length).toBeLessThan(9);
+    expect(moved.some((n: any) => n.id === primary!.id)).toBe(true);
+    // Relative offsets inside the moved sub-shape stay fixed.
+    const movedIds = new Set(moved.map((n: any) => n.id));
+    for (const n of moved) {
+      const start = before.get(n.id)!;
+      expect(n.x).toBeCloseTo(start.x + dx, 5);
+      expect(n.y).toBeCloseTo(start.y, 5);
+    }
+    for (const [id, start] of before) {
+      if (movedIds.has(id)) continue;
+      const node = after.find((n: any) => n.id === id)!;
+      expect(node.x).toBeCloseTo(start.x, 5);
+      expect(node.y).toBeCloseTo(start.y, 5);
+    }
+  });
+
   // --- live drag-snap tessellation preview (Requirement 3) ---
 
   test("preview marker is hidden before any drag", () => {
@@ -1306,34 +1359,112 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     expect(preview?.style.display).not.toBe("none");
   });
 
-  // --- bundling tension (Feature 2, not yet implemented) ---
+  // --- nested component→mid→sub-shape→force bundling ---
 
-  // Two independent handles (rather than one handle updated twice with ticks
-  // in between) so the comparison isolates the `tension` option itself: node
-  // seeding is deterministic (seedPosition only depends on id hashes and
-  // attractor membership, never on tension), and update() draws once from
-  // those seeded positions without ever advancing the physics clock — jsdom
-  // never fires d3's internal timer on its own, so nothing here moves unless
-  // simulation.tick() is called explicitly, which this test deliberately
-  // never does. That keeps both trees at identical node positions, so any
-  // difference in the drawn trunk path can only come from `tension`.
-  test("the tension option changes how tightly bundle trunks converge", () => {
-    const trunk = (host: HTMLElement) =>
-      host.querySelector("path.nkp-hyper-force-bundle-trunk, path.nkp-hyper-bundle-trunk")
-        ?.getAttribute("d");
-    const tight = makeCtx();
-    const tightHandle = regionsModule.createRegionsView?.(tight.ctx);
-    tightHandle?.update(state(), { ...options, tension: 1 });
-    const tightPath = trunk(tight.host);
+  test("regions draw nested component-sourced bundles (no reverse force fans)", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    expect(host.querySelectorAll("g.nkp-hyper-force-bundle").length).toBe(0);
+    expect(host.querySelectorAll("path.nkp-hyper-bundle-trunk").length).toBeGreaterThan(0);
+    expect(host.querySelectorAll("path.nkp-hyper-bundle-mid-branch").length).toBeGreaterThan(0);
+    expect(host.querySelectorAll("path.nkp-hyper-bundle-force-branch").length).toBeGreaterThan(0);
+  });
 
-    const loose = makeCtx();
-    const looseHandle = regionsModule.createRegionsView?.(loose.ctx);
-    looseHandle?.update(state(), { ...options, tension: 0 });
-    const loosePath = trunk(loose.host);
+  test("bundle trunks split on the mid ring between inner and outer boundaries", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const allNodes = handle?.simulation?.nodes() ?? [];
+    const componentCount = allNodes.filter((n: any) => n.type === "component").length;
+    const outerRadius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
+    const innerRadius = regionsModule.componentZoneRadius?.(componentCount) ?? 0;
+    const midRadius = (innerRadius + outerRadius) / 2;
+    const center = { x: 400, y: 300 };
 
-    expect(tightPath).toBeTruthy();
-    expect(loosePath).toBeTruthy();
-    expect(tightPath).not.toBe(loosePath);
+    const parseEnd = (d: string | null | undefined): { x: number; y: number } | undefined => {
+      if (!d) return undefined;
+      const match = d.trim().match(/([-\d.]+),([-\d.]+)\s*$/);
+      if (!match) return undefined;
+      return { x: Number(match[1]), y: Number(match[2]) };
+    };
+
+    const ends = [...host.querySelectorAll("path.nkp-hyper-bundle-trunk")]
+      .map((el) => parseEnd(el.getAttribute("d")))
+      .filter((point): point is { x: number; y: number } => point !== undefined);
+    expect(ends.length).toBeGreaterThan(0);
+    const onMid = ends.filter((end) =>
+      Math.abs(Math.hypot(end.x - center.x, end.y - center.y) - midRadius) < 1.5);
+    expect(onMid.length).toBeGreaterThan(0);
+  });
+
+  test("nested bundles keep a 3-split hierarchy (trunk, mid, force leaves)", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    expect(host.querySelectorAll("path.nkp-hyper-bundle-trunk").length).toBeGreaterThan(0);
+    expect(host.querySelectorAll("path.nkp-hyper-bundle-mid-branch").length).toBeGreaterThan(0);
+    expect(host.querySelectorAll("path.nkp-hyper-bundle-force-branch").length).toBeGreaterThan(0);
+  });
+
+  test("mid-ring and dilated-edge splits coexist with radial separation", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    // Settle so forces sit on the outer ring where dilation would otherwise
+    // land on the mid radius.
+    for (let i = 0; i < 80; i += 1) handle?.simulation?.tick();
+    handle?.update(state(), options);
+
+    const parseEnd = (d: string | null | undefined): { x: number; y: number } | undefined => {
+      if (!d) return undefined;
+      const match = d.trim().match(/([-\d.]+),([-\d.]+)\s*$/);
+      if (!match) return undefined;
+      return { x: Number(match[1]), y: Number(match[2]) };
+    };
+    const center = { x: 400, y: 300 };
+    const allNodes = handle?.simulation?.nodes() ?? [];
+    const componentCount = allNodes.filter((n: any) => n.type === "component").length;
+    const outerRadius = regionsModule.coreZoneRadius?.(componentCount) ?? 0;
+    const innerRadius = regionsModule.componentZoneRadius?.(componentCount) ?? 0;
+    const midRadius = (innerRadius + outerRadius) / 2;
+    const minSep = (regionsModule.BUNDLE_RADIAL_SPLIT_SEPARATION ?? 30) - 1;
+
+    const trunkEnds = [...host.querySelectorAll("path.nkp-hyper-bundle-trunk")]
+      .map((el) => parseEnd(el.getAttribute("d")))
+      .filter((point): point is { x: number; y: number } => point !== undefined);
+    const midEnds = [...host.querySelectorAll("path.nkp-hyper-bundle-mid-branch")]
+      .map((el) => parseEnd(el.getAttribute("d")))
+      .filter((point): point is { x: number; y: number } => point !== undefined);
+
+    expect(trunkEnds.length).toBeGreaterThan(0);
+    expect(midEnds.length).toBeGreaterThan(0);
+    const trunksOnMid = trunkEnds.filter((end) =>
+      Math.abs(Math.hypot(end.x - center.x, end.y - center.y) - midRadius) < 2);
+    expect(trunksOnMid.length).toBeGreaterThan(0);
+
+    let separated = 0;
+    for (const midEnd of midEnds) {
+      const midR = Math.hypot(midEnd.x - center.x, midEnd.y - center.y);
+      if (midR > midRadius + minSep * 0.5) separated += 1;
+    }
+    expect(separated).toBeGreaterThan(0);
+  });
+
+  test("selection lights only membership segments joining selected entities to their connected network", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    // Select one force with its directly connected component (and attractor).
+    handle?.setSelection(
+      new Set(["force:S-02"]),
+      new Set(["force:S-02", "component:auth", "attractor:A-01"]),
+    );
+    const litLeaves = [...host.querySelectorAll("path.nkp-hyper-bundle-force-branch.is-lit")];
+    expect(litLeaves.length).toBeGreaterThan(0);
+    expect(litLeaves.every((el) => el.getAttribute("aria-label")?.includes("force:S-02"))).toBe(true);
+    const allLeaves = [...host.querySelectorAll("path.nkp-hyper-bundle-force-branch")];
+    expect(allLeaves.some((el) => !el.classList.contains("is-lit"))).toBe(true);
   });
 
   // --- attractor-region collision (Feature 3, not yet implemented) ---

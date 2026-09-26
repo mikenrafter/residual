@@ -23,7 +23,40 @@ type GeometryModule = {
     to: Point[],
     splitFraction?: number,
     tension?: number,
+    splitAt?: Point,
   ) => { trunk: string; branches: string[]; width: number };
+  nestedBranchGeometry?: (
+    from: Point,
+    subShapes: { forces: Point[]; approach?: Point }[],
+    midSplit: Point,
+    approachDistance: number,
+    minTangential?: number,
+  ) => {
+    trunk: string;
+    midBranches: string[];
+    forceBranches: string[][];
+    approachPoints: Point[];
+    width: number;
+  };
+  pointAtDistanceFrom?: (target: Point, fromDirection: Point, distance: number) => Point;
+  rayCircleIntersection?: (
+    from: Point,
+    toward: Point,
+    center: Point,
+    radius: number,
+  ) => Point | undefined;
+  rayConvexPolygonIntersection?: (
+    from: Point,
+    toward: Point,
+    polygon: readonly Point[],
+  ) => Point | undefined;
+  convexHullPoints?: (points: readonly Point[]) => Point[];
+  ensureForwardSplitSeparation?: (
+    origin: Point,
+    target: Point,
+    toward: Point,
+    minSeparation: number,
+  ) => Point;
   nudgeLabels?: (boxes: Box[], maxShift?: number) => number[];
   projectLabelAnchor?: (
     point: Point,
@@ -145,6 +178,161 @@ describe("branchGeometry", () => {
     const from = { x: 0, y: 0 };
     const target = [{ x: 10, y: 10 }];
     expect(mod.branchGeometry?.(from, target, 0.6, 0)).toEqual(mod.branchGeometry?.(from, target, 0.6, 1));
+  });
+
+  test("splitAt pins the trunk end to an explicit point (ergodic boundary)", () => {
+    const from = { x: 0, y: 0 };
+    const targets = [{ x: 100, y: 50 }, { x: 100, y: -50 }];
+    const pinned = { x: 40, y: 0 };
+    const result = mod.branchGeometry?.(from, targets, 0.6, 1, pinned);
+    expect(result?.trunk).toContain("40,0");
+    // Without splitAt the fraction/tension point differs from the pin.
+    const unpinned = mod.branchGeometry?.(from, targets, 0.6, 1);
+    expect(result?.trunk).not.toBe(unpinned?.trunk);
+  });
+});
+
+describe("rayCircleIntersection", () => {
+  test("hits the nearer forward intersection of a ray with a circle", () => {
+    const hit = mod.rayCircleIntersection?.(
+      { x: -100, y: 0 },
+      { x: 100, y: 0 },
+      { x: 0, y: 0 },
+      50,
+    );
+    expect(hit).toEqual({ x: -50, y: 0 });
+  });
+
+  test("returns undefined when the ray misses the circle", () => {
+    expect(mod.rayCircleIntersection?.(
+      { x: -100, y: 100 },
+      { x: 100, y: 100 },
+      { x: 0, y: 0 },
+      50,
+    )).toBeUndefined();
+  });
+
+  test("returns undefined when the ray points away from the circle", () => {
+    expect(mod.rayCircleIntersection?.(
+      { x: 100, y: 0 },
+      { x: 200, y: 0 },
+      { x: 0, y: 0 },
+      50,
+    )).toBeUndefined();
+  });
+});
+
+describe("nestedBranchGeometry", () => {
+  test("trunk ends at midSplit; mid branches reach approach points; leaves reach forces", () => {
+    const from = { x: 0, y: 0 };
+    const midSplit = { x: 50, y: 0 };
+    const result = mod.nestedBranchGeometry?.(
+      from,
+      [
+        { forces: [{ x: 100, y: 10 }, { x: 100, y: -10 }] },
+        { forces: [{ x: 120, y: 40 }] },
+      ],
+      midSplit,
+      20,
+    );
+    expect(result?.trunk).toContain("50,0");
+    expect(result?.midBranches).toHaveLength(2);
+    expect(result?.forceBranches).toHaveLength(2);
+    expect(result?.forceBranches[0]).toHaveLength(2);
+    expect(result?.forceBranches[1]).toHaveLength(1);
+    expect(result?.approachPoints[0]).toBeDefined();
+    const approach0 = result!.approachPoints[0]!;
+    // Approach sits 20 away from the sub-shape force centroid (100,0).
+    expect(Math.hypot(approach0.x - 100, approach0.y - 0)).toBeCloseTo(20, 5);
+  });
+
+  test("explicit approach points override approachDistance", () => {
+    const from = { x: 0, y: 0 };
+    const midSplit = { x: 40, y: 0 };
+    const result = mod.nestedBranchGeometry?.(
+      from,
+      [{ forces: [{ x: 100, y: 0 }], approach: { x: 70, y: 5 } }],
+      midSplit,
+      20,
+    );
+    expect(result?.approachPoints[0]).toEqual({ x: 70, y: 5 });
+  });
+
+  test("minTangential spreads clustered approach points apart around the mid split", () => {
+    const from = { x: 0, y: 0 };
+    const midSplit = { x: 40, y: 0 };
+    const tight = mod.nestedBranchGeometry?.(
+      from,
+      [
+        { forces: [{ x: 100, y: 1 }] },
+        { forces: [{ x: 100, y: -1 }] },
+      ],
+      midSplit,
+      20,
+      0,
+    );
+    const spread = mod.nestedBranchGeometry?.(
+      from,
+      [
+        { forces: [{ x: 100, y: 1 }] },
+        { forces: [{ x: 100, y: -1 }] },
+      ],
+      midSplit,
+      20,
+      30,
+    );
+    expect(tight?.approachPoints).toHaveLength(2);
+    expect(spread?.approachPoints).toHaveLength(2);
+    const tightSep = Math.hypot(
+      (tight!.approachPoints[0]!.x - tight!.approachPoints[1]!.x),
+      (tight!.approachPoints[0]!.y - tight!.approachPoints[1]!.y),
+    );
+    const spreadSep = Math.hypot(
+      (spread!.approachPoints[0]!.x - spread!.approachPoints[1]!.x),
+      (spread!.approachPoints[0]!.y - spread!.approachPoints[1]!.y),
+    );
+    expect(spreadSep).toBeGreaterThan(tightSep);
+    expect(spreadSep).toBeGreaterThanOrEqual(30 - 1e-6);
+  });
+});
+
+describe("rayConvexPolygonIntersection", () => {
+  test("hits the near edge of a square on the way to its center", () => {
+    const hit = mod.rayConvexPolygonIntersection?.(
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+      [
+        { x: 8, y: -4 },
+        { x: 12, y: -4 },
+        { x: 12, y: 4 },
+        { x: 8, y: 4 },
+      ],
+    );
+    expect(hit?.x).toBeCloseTo(8, 5);
+    expect(hit?.y).toBeCloseTo(0, 5);
+  });
+});
+
+describe("ensureForwardSplitSeparation", () => {
+  test("pushes a coincident target forward along the ray by minSeparation", () => {
+    const out = mod.ensureForwardSplitSeparation?.(
+      { x: 0, y: 0 },
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+      30,
+    );
+    expect(out?.x).toBeCloseTo(30, 5);
+    expect(out?.y).toBeCloseTo(0, 5);
+  });
+
+  test("keeps a target already past minSeparation", () => {
+    const out = mod.ensureForwardSplitSeparation?.(
+      { x: 0, y: 0 },
+      { x: 50, y: 0 },
+      { x: 100, y: 0 },
+      30,
+    );
+    expect(out?.x).toBeCloseTo(50, 5);
   });
 });
 

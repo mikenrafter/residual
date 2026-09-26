@@ -3905,47 +3905,228 @@ function cubicBetween(from, to, direction) {
     end: to
   };
 }
-function branchGeometry(from, to, splitFraction = 0.6, tension = 1) {
-  const targets = to.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
-  const count = targets.length;
-  if (count === 0)
-    return { trunk: "", branches: [], width: 1 };
-  const width = 1 + Math.sqrt(Math.max(0, count - 1)) * 0.9;
-  if (count === 1) {
-    const target = targets[0];
-    const direction = normalize(target.x - from.x, target.y - from.y);
-    const curve = cubicBetween(from, target, direction);
-    const path = curveToPath(from, curve);
-    return { trunk: path, branches: [path], width };
+function rayCircleIntersection(from, toward, center, radius) {
+  const dx = toward.x - from.x;
+  const dy = toward.y - from.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 0.000000001 || radius <= 0)
+    return;
+  const ux = dx / length;
+  const uy = dy / length;
+  const fx = from.x - center.x;
+  const fy = from.y - center.y;
+  const b = 2 * (fx * ux + fy * uy);
+  const c = fx * fx + fy * fy - radius * radius;
+  const discriminant = b * b - 4 * c;
+  if (discriminant < 0)
+    return;
+  const root = Math.sqrt(discriminant);
+  const t1 = (-b - root) / 2;
+  const t2 = (-b + root) / 2;
+  let t;
+  for (const candidate of [t1, t2].sort((left, right) => left - right)) {
+    if (candidate > 0.000001) {
+      t = candidate;
+      break;
+    }
   }
-  const center = centroid(targets) ?? from;
-  const split = clamp(splitFraction, 0.05, 0.95);
-  const rawSplitPoint = {
-    x: from.x + (center.x - from.x) * split,
-    y: from.y + (center.y - from.y) * split
-  };
-  const splitPoint = {
-    x: from.x + (rawSplitPoint.x - from.x) * tension,
-    y: from.y + (rawSplitPoint.y - from.y) * tension
-  };
-  const trunkDirection = normalize(splitPoint.x - from.x, splitPoint.y - from.y);
-  const trunk = curveToPath(from, cubicBetween(from, splitPoint, trunkDirection));
-  const branches = targets.map((target) => {
-    const targetDx = target.x - splitPoint.x;
-    const targetDy = target.y - splitPoint.y;
-    const targetDistance = Math.hypot(targetDx, targetDy);
-    const cp1Distance = Math.min(Math.max(10, targetDistance * 0.35), 32);
-    const cp1 = {
-      x: splitPoint.x + trunkDirection.x * cp1Distance,
-      y: splitPoint.y + trunkDirection.y * cp1Distance
-    };
-    const cp2 = {
-      x: target.x - targetDx * 0.3,
-      y: target.y - targetDy * 0.3
-    };
-    return curveToPath(splitPoint, { c1: cp1, c2: cp2, end: target });
+  if (t === undefined)
+    return;
+  return { x: from.x + ux * t, y: from.y + uy * t };
+}
+function cross2(origin, a, b) {
+  return (a.x - origin.x) * (b.y - origin.y) - (a.y - origin.y) * (b.x - origin.x);
+}
+function convexHullPoints(points) {
+  const sorted = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+  const unique = sorted.filter((point, index) => {
+    const previous = sorted[index - 1];
+    return previous === undefined || point.x !== previous.x || point.y !== previous.y;
   });
-  return { trunk, branches, width };
+  if (unique.length <= 2)
+    return unique;
+  const turnsWrong = (chain, point) => {
+    const a = chain[chain.length - 2];
+    const b = chain[chain.length - 1];
+    return a !== undefined && b !== undefined && cross2(a, b, point) <= 0;
+  };
+  const lower = [];
+  for (const point of unique) {
+    while (turnsWrong(lower, point))
+      lower.pop();
+    lower.push(point);
+  }
+  const upper = [];
+  for (const point of [...unique].reverse()) {
+    while (turnsWrong(upper, point))
+      upper.pop();
+    upper.push(point);
+  }
+  return [...lower.slice(0, -1), ...upper.slice(0, -1)];
+}
+function rayConvexPolygonIntersection(from, toward, polygon) {
+  if (polygon.length === 0)
+    return;
+  if (polygon.length === 1) {
+    const only = polygon[0];
+    const dx2 = toward.x - from.x;
+    const dy2 = toward.y - from.y;
+    const length2 = Math.hypot(dx2, dy2);
+    if (length2 < 0.000000001)
+      return;
+    const ux2 = dx2 / length2;
+    const uy2 = dy2 / length2;
+    const tx = only.x - from.x;
+    const ty = only.y - from.y;
+    const t = tx * ux2 + ty * uy2;
+    if (t <= 0.000001)
+      return;
+    const closest = { x: from.x + ux2 * t, y: from.y + uy2 * t };
+    if (Math.hypot(closest.x - only.x, closest.y - only.y) > 0.000001)
+      return;
+    return { ...only };
+  }
+  const dx = toward.x - from.x;
+  const dy = toward.y - from.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 0.000000001)
+    return;
+  const ux = dx / length;
+  const uy = dy / length;
+  let bestT;
+  for (let i = 0;i < polygon.length; i += 1) {
+    const a = polygon[i];
+    const b = polygon[(i + 1) % polygon.length];
+    const ex = b.x - a.x;
+    const ey = b.y - a.y;
+    const denom = ux * ey - uy * ex;
+    if (Math.abs(denom) < 0.000000000001)
+      continue;
+    const fx = a.x - from.x;
+    const fy = a.y - from.y;
+    const t = (fx * ey - fy * ex) / denom;
+    const s = (fx * uy - fy * ux) / denom;
+    if (t > 0.000001 && s >= -0.000000001 && s <= 1 + 0.000000001) {
+      if (bestT === undefined || t < bestT)
+        bestT = t;
+    }
+  }
+  if (bestT === undefined)
+    return;
+  return { x: from.x + ux * bestT, y: from.y + uy * bestT };
+}
+function pointAtDistanceFrom(target, fromDirection, distance) {
+  const dx = fromDirection.x - target.x;
+  const dy = fromDirection.y - target.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 0.000000001)
+    return { x: target.x, y: target.y };
+  const scale = Math.min(Math.max(0, distance), length) / length;
+  return { x: target.x + dx * scale, y: target.y + dy * scale };
+}
+function ensureMinTangentialSeparation(origin, points, minTangential) {
+  if (points.length <= 1 || minTangential <= 0)
+    return points.map((point) => ({ ...point }));
+  const items = points.map((point, index) => {
+    const dx = point.x - origin.x;
+    const dy = point.y - origin.y;
+    return {
+      index,
+      radius: Math.hypot(dx, dy),
+      angle: Math.atan2(dy, dx),
+      point: { ...point }
+    };
+  });
+  items.sort((a, b) => a.angle - b.angle);
+  const meanRadius = items.reduce((sum, item) => sum + item.radius, 0) / items.length;
+  const radius = Math.max(meanRadius, minTangential);
+  const minAngle = 2 * Math.asin(Math.min(1, minTangential / (2 * radius)));
+  for (let pass = 0;pass < items.length * 2; pass += 1) {
+    for (let i = 0;i < items.length; i += 1) {
+      const current = items[i];
+      const next = items[(i + 1) % items.length];
+      let delta = next.angle - current.angle;
+      if (delta <= 0)
+        delta += Math.PI * 2;
+      if (delta >= minAngle)
+        continue;
+      const deficit = (minAngle - delta) / 2;
+      current.angle -= deficit;
+      next.angle += deficit;
+    }
+  }
+  const result = points.map((point) => ({ ...point }));
+  for (const item of items) {
+    result[item.index] = {
+      x: origin.x + Math.cos(item.angle) * item.radius,
+      y: origin.y + Math.sin(item.angle) * item.radius
+    };
+  }
+  return result;
+}
+function ensureForwardSplitSeparation(origin, target, toward, minSeparation) {
+  const hx = toward.x - origin.x;
+  const hy = toward.y - origin.y;
+  const hLen = Math.hypot(hx, hy);
+  if (hLen < 0.000000001)
+    return { x: target.x, y: target.y };
+  const ux = hx / hLen;
+  const uy = hy / hLen;
+  const proj = (target.x - origin.x) * ux + (target.y - origin.y) * uy;
+  const minPlace = Math.min(Math.max(0, minSeparation), hLen * 0.92);
+  const place = Math.min(hLen * 0.92, Math.max(minPlace, proj));
+  return { x: origin.x + ux * place, y: origin.y + uy * place };
+}
+function nestedBranchGeometry(from, subShapes, midSplit, approachDistance, minTangential = 0) {
+  const leafCount = subShapes.reduce((sum, sub) => sum + sub.forces.length, 0);
+  if (leafCount === 0) {
+    return { trunk: "", midBranches: [], forceBranches: [], approachPoints: [], width: 1 };
+  }
+  const width = 1 + Math.sqrt(Math.max(0, leafCount - 1)) * 0.9;
+  const trunkDirection = normalize(midSplit.x - from.x, midSplit.y - from.y);
+  const trunk = curveToPath(from, cubicBetween(from, midSplit, trunkDirection));
+  let approachPoints = subShapes.map((sub) => {
+    if (sub.approach && Number.isFinite(sub.approach.x) && Number.isFinite(sub.approach.y)) {
+      return { x: sub.approach.x, y: sub.approach.y };
+    }
+    const hub = centroid(sub.forces.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))) ?? midSplit;
+    return pointAtDistanceFrom(hub, midSplit, approachDistance);
+  });
+  approachPoints = ensureMinTangentialSeparation(midSplit, approachPoints, minTangential);
+  const midBranches = approachPoints.map((approach) => {
+    const dx = approach.x - midSplit.x;
+    const dy = approach.y - midSplit.y;
+    const distance = Math.hypot(dx, dy);
+    const cp1Distance = Math.min(Math.max(10, distance * 0.35), 32);
+    return curveToPath(midSplit, {
+      c1: {
+        x: midSplit.x + trunkDirection.x * cp1Distance,
+        y: midSplit.y + trunkDirection.y * cp1Distance
+      },
+      c2: { x: approach.x - dx * 0.3, y: approach.y - dy * 0.3 },
+      end: approach
+    });
+  });
+  const forceBranches = subShapes.map((sub, index) => {
+    const approach = approachPoints[index];
+    const forces = sub.forces.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+    const spreadTargets = ensureMinTangentialSeparation(approach, forces, minTangential);
+    return forces.map((force, forceIndex) => {
+      const spread = spreadTargets[forceIndex] ?? force;
+      const leave = {
+        x: approach.x + (spread.x - approach.x) * 0.35,
+        y: approach.y + (spread.y - approach.y) * 0.35
+      };
+      const dx = force.x - approach.x;
+      const dy = force.y - approach.y;
+      return curveToPath(approach, {
+        c1: leave,
+        c2: { x: force.x - dx * 0.3, y: force.y - dy * 0.3 },
+        end: force
+      });
+    });
+  });
+  return { trunk, midBranches, forceBranches, approachPoints, width };
 }
 function overlap1d(a0, a1, b0, b1) {
   return Math.min(a1, b1) - Math.max(a0, b0);
@@ -4150,6 +4331,83 @@ function axialDistance(a, b) {
 function axialKey(point) {
   return `${point.q}:${point.r}`;
 }
+function dilateAxialOneLayer(cells) {
+  const seen = new Set;
+  const out = [];
+  const add = (cell) => {
+    const key = axialKey(cell);
+    if (seen.has(key))
+      return;
+    seen.add(key);
+    out.push({ q: cell.q, r: cell.r });
+  };
+  for (const cell of cells) {
+    add(cell);
+    for (const neighbor of AXIAL_NEIGHBORS) {
+      add({ q: cell.q + neighbor.q, r: cell.r + neighbor.r });
+    }
+  }
+  return out;
+}
+function dilatedSubshapeApproach(forces, fromOutside, spacing = TRI_LATTICE_SPACING, origin = { x: 0, y: 0 }) {
+  const finite = forces.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+  if (finite.length === 0)
+    return { x: fromOutside.x, y: fromOutside.y };
+  const hub = {
+    x: finite.reduce((sum, point) => sum + point.x, 0) / finite.length,
+    y: finite.reduce((sum, point) => sum + point.y, 0) / finite.length
+  };
+  const cellKeys = new Set;
+  const cells = [];
+  for (const point of finite) {
+    const cell = pixelToAxial(point, spacing, origin);
+    const key = axialKey(cell);
+    if (cellKeys.has(key))
+      continue;
+    cellKeys.add(key);
+    cells.push(cell);
+  }
+  const dilated = dilateAxialOneLayer(cells);
+  const hull = convexHullPoints(dilated.map((cell) => axialToPixel(cell, spacing, origin)));
+  const hit = rayConvexPolygonIntersection(fromOutside, hub, hull);
+  if (hit)
+    return hit;
+  return pointAtDistanceFrom(hub, fromOutside, spacing);
+}
+function rotateAxial(point, steps) {
+  let q = point.q;
+  let r = point.r;
+  const turns = (steps % 6 + 6) % 6;
+  for (let i = 0;i < turns; i += 1) {
+    const nextQ = -r;
+    const nextR = q + r;
+    q = nextQ;
+    r = nextR;
+  }
+  return { q, r };
+}
+function rotateAxialOffsets(offsets, steps) {
+  if (offsets.size === 0) {
+    return { corner: { q: 0, r: 0 }, offsets: new Map };
+  }
+  const entries = [...offsets.entries()];
+  const sum = entries.reduce((acc, [, point]) => ({ q: acc.q + point.q, r: acc.r + point.r }), { q: 0, r: 0 });
+  const centroid2 = {
+    q: Math.round(sum.q / entries.length),
+    r: Math.round(sum.r / entries.length)
+  };
+  const rotatedAbs = entries.map(([id, point]) => {
+    const relative = { q: point.q - centroid2.q, r: point.r - centroid2.r };
+    const spun = rotateAxial(relative, steps);
+    return { id, axial: { q: spun.q + centroid2.q, r: spun.r + centroid2.r } };
+  });
+  const corner = [...rotatedAbs.map((item) => item.axial)].sort((a, b) => a.q - b.q || a.r - b.r)[0];
+  const next = new Map;
+  for (const item of rotatedAbs) {
+    next.set(item.id, { q: item.axial.q - corner.q, r: item.axial.r - corner.r });
+  }
+  return { corner, offsets: next };
+}
 function axialRing(center, radius) {
   if (radius === 0)
     return [center];
@@ -4169,75 +4427,60 @@ function axialRing(center, radius) {
 }
 function shapePatternForSize(size) {
   switch (size) {
+    case 1:
+      return [{ q: 0, r: 0 }];
     case 2:
       return [{ q: 0, r: 0 }, { q: 1, r: 0 }];
     case 3:
       return [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 0, r: 1 }];
     case 4:
       return [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 0, r: 1 }, { q: 1, r: 1 }];
-    case 5:
-      return [
-        { q: 0, r: 0 },
-        { q: 1, r: 0 },
-        { q: 1, r: -1 },
-        { q: -1, r: 0 },
-        { q: -1, r: 1 }
-      ];
-    case 6:
-      return AXIAL_NEIGHBORS.map((offset) => ({ ...offset }));
-    case 7:
-      return [{ q: 0, r: 0 }, ...AXIAL_NEIGHBORS.map((offset) => ({ ...offset }))];
     default:
-      throw new Error(`shapePatternForSize: no fixed pattern for size ${size} (expected 2-7)`);
+      throw new Error(`shapePatternForSize: no fixed pattern for size ${size} (expected 1-4)`);
   }
 }
-function repeatsCount(multiset) {
-  return multiset.length - new Set(multiset).size;
-}
-function spreadOf(multiset) {
-  return Math.max(...multiset) - Math.min(...multiset);
-}
-var SHAPE_SIZE_VALUES = [3, 4, 5, 6, 7];
-function multisetsOfSize(k, sum) {
-  const results = [];
-  const current = [];
-  const rec = (startIdx, remaining, remainingSum) => {
-    if (remaining === 0) {
-      if (remainingSum === 0)
-        results.push([...current]);
-      return;
-    }
-    for (let i = startIdx;i < SHAPE_SIZE_VALUES.length; i += 1) {
-      const value = SHAPE_SIZE_VALUES[i];
-      if (value * remaining > remainingSum)
-        break;
-      if (7 * remaining < remainingSum)
-        continue;
-      current.push(value);
-      rec(i, remaining - 1, remainingSum - value);
-      current.pop();
-    }
-  };
-  rec(0, k, sum);
-  return results;
+function uniqueDecomposeAtMost10(n) {
+  switch (n) {
+    case 0:
+      return [];
+    case 1:
+      return [1];
+    case 2:
+      return [2];
+    case 3:
+      return [3];
+    case 4:
+      return [4];
+    case 5:
+      return [2, 3];
+    case 6:
+      return [4, 2];
+    case 7:
+      return [4, 3];
+    case 8:
+      return [4, 3, 1];
+    case 9:
+      return [4, 3, 2];
+    case 10:
+      return [4, 3, 2, 1];
+    default:
+      throw new Error(`uniqueDecomposeAtMost10: expected 0..10, got ${n}`);
+  }
 }
 function decomposeAttractorSize(n) {
-  if (n <= 7)
-    return n > 0 ? [n] : [];
-  for (let k = 2;k <= n; k += 1) {
-    const minSum = 3 * k;
-    const maxSum = 7 * k;
-    if (n < minSum)
-      continue;
-    if (n > maxSum)
-      continue;
-    const candidates = multisetsOfSize(k, n);
-    if (candidates.length === 0)
-      continue;
-    candidates.sort((a, b) => repeatsCount(a) - repeatsCount(b) || spreadOf(a) - spreadOf(b));
-    return candidates[0];
+  if (n <= 0)
+    return [];
+  if (n <= 4)
+    return [n];
+  let remaining = n;
+  const peeled = [];
+  if (n > 10) {
+    while (remaining > 9) {
+      peeled.push(3);
+      remaining -= 3;
+    }
   }
-  throw new Error(`decomposeAttractorSize: no valid decomposition for n=${n}`);
+  return [...peeled, ...uniqueDecomposeAtMost10(remaining)].sort((a, b) => b - a);
 }
 function isTouchingNonOverlappingPlacement(attempt, occupied) {
   let touches = false;
@@ -4452,7 +4695,7 @@ function layoutAttractorForceShapes(groups) {
       subShapesByAttractor.set(group.attractorId, [[group.forces[0].id]]);
       continue;
     }
-    const rawSubShapeSizes = size <= 7 ? [size] : decomposeAttractorSize(size);
+    const rawSubShapeSizes = size <= 4 ? [size] : decomposeAttractorSize(size);
     const subShapeSizes = [...rawSubShapeSizes].sort((a, b) => b - a);
     const localShapes = subShapeSizes.length === 1 ? [shapePatternForSize(size)] : placeCompositeShapes(subShapeSizes);
     const offset = findFreeTranslation(localShapes.flat(), group.anchor, occupied);
@@ -4485,69 +4728,6 @@ function layoutAttractorForceShapes(groups) {
 }
 
 // src/nkp-hypergraph.ts
-function partitionMembershipBundles(branchBundles, forceBranchBundles) {
-  const claimed = new Set;
-  const edgeKey = (forceNodeId, componentId) => {
-    const forceId = forceNodeId.startsWith("force:") ? forceNodeId : `force:${forceNodeId}`;
-    return `${forceId}\x00${componentId}`;
-  };
-  const outForce = [];
-  const forceFans = [...forceBranchBundles].map((bundle) => ({
-    ...bundle,
-    componentIds: [...new Set(bundle.componentIds)].sort()
-  })).filter((bundle) => bundle.componentIds.length > 1).sort((a, b) => b.componentIds.length - a.componentIds.length || a.forceId.localeCompare(b.forceId));
-  for (const bundle of forceFans) {
-    const kept = bundle.componentIds.filter((componentId) => {
-      const key = edgeKey(bundle.forceId, componentId);
-      if (claimed.has(key))
-        return false;
-      claimed.add(key);
-      return true;
-    });
-    if (kept.length >= 2) {
-      outForce.push({ ...bundle, componentIds: kept });
-    } else {
-      for (const componentId of kept)
-        claimed.delete(edgeKey(bundle.forceId, componentId));
-    }
-  }
-  const outComponent = [];
-  const componentFans = [...branchBundles].map((bundle) => ({
-    ...bundle,
-    forceIds: [...new Set(bundle.forceIds)].sort()
-  })).filter((bundle) => bundle.forceIds.length > 1).sort((a, b) => b.forceIds.length - a.forceIds.length || a.id.localeCompare(b.id));
-  for (const bundle of componentFans) {
-    const kept = bundle.forceIds.filter((forceKey) => {
-      const key = edgeKey(forceKey, bundle.componentId);
-      if (claimed.has(key))
-        return false;
-      claimed.add(key);
-      return true;
-    });
-    if (kept.length >= 2) {
-      outComponent.push({ ...bundle, forceIds: kept });
-    } else {
-      for (const forceKey of kept)
-        claimed.delete(edgeKey(forceKey, bundle.componentId));
-    }
-  }
-  for (const bundle of forceBranchBundles) {
-    for (const componentId of new Set(bundle.componentIds)) {
-      const key = edgeKey(bundle.forceId, componentId);
-      if (claimed.has(key))
-        continue;
-      claimed.add(key);
-      outForce.push({
-        id: `force-bundle:${bundle.forceId}:${componentId}`,
-        forceId: bundle.forceId,
-        attractorId: bundle.attractorId,
-        componentIds: [componentId],
-        focused: bundle.focused
-      });
-    }
-  }
-  return { branchBundles: outComponent, forceBranchBundles: outForce };
-}
 function forceNodeId(force) {
   return `force:${force.key}`;
 }
@@ -4800,19 +4980,6 @@ function clampOutsideCore(point, center, radius) {
   const scale = radius / distance;
   return { x: center.x + dx * scale, y: center.y + dy * scale };
 }
-function attractorCoreDistance(nodes, attractorId, center) {
-  let min = Infinity;
-  for (const node of nodes) {
-    if (node.type !== "force" || node.attractorId !== attractorId)
-      continue;
-    const dx = (node.x ?? 0) - center.x;
-    const dy = (node.y ?? 0) - center.y;
-    const distance = Math.hypot(dx, dy);
-    if (distance < min)
-      min = distance;
-  }
-  return min;
-}
 function attractorGroupCircles(nodes, padding) {
   const byAttractor = new Map;
   for (const node of nodes) {
@@ -4868,6 +5035,8 @@ var FUSION_REGION_PADDING = 18;
 var DEFAULT_CANVAS_WIDTH = 800;
 var DEFAULT_CANVAS_HEIGHT = 600;
 var REGIONS_TRI_LATTICE_SPACING = REGIONS_COMPONENT_MIN_DISTANCE;
+var BUNDLE_MIN_TANGENTIAL_DISTANCE = REGIONS_TRI_LATTICE_SPACING * 0.75;
+var BUNDLE_RADIAL_SPLIT_SEPARATION = REGIONS_TRI_LATTICE_SPACING * 0.5;
 var REGIONS_COMPONENT_COLLISION_RADIUS = REGIONS_COMPONENT_MIN_DISTANCE / 2;
 var REGIONS_FORCE_COLLISION_RADIUS = REGIONS_COMPONENT_COLLISION_RADIUS;
 var FORCE_NODE_SCALE = 1.3;
@@ -5016,17 +5185,14 @@ function createRegionsView(ctx) {
   let nodes = [];
   let byId = new Map;
   let links = [];
-  let bundles = [];
-  let forceBundles = [];
+  let nestedBundles = [];
   let currentTransform = d3.zoomIdentity;
   let regionSel;
   let fusionSel;
   let bundleGroupSel;
   let bundleTrunkSel;
-  let bundleBranchSel;
-  let forceBundleGroupSel;
-  let forceBundleTrunkSel;
-  let forceBundleBranchSel;
+  let bundleMidBranchSel;
+  let bundleForceLeafSel;
   let nodeSel;
   let componentLabelSel;
   let forceLabelSel;
@@ -5052,7 +5218,6 @@ function createRegionsView(ctx) {
   const draggingRegionIds = new Set;
   const coreExclusionPinnedIds = new Set;
   let coreCenter = { x: DEFAULT_CANVAS_WIDTH / 2, y: DEFAULT_CANVAS_HEIGHT / 2 };
-  let currentTension = 1;
   const latticeForce = (_alpha) => {};
   latticeForce.initialize = () => {};
   function absoluteCellsForSubShape(subShape, translation = subShape.translation) {
@@ -5157,30 +5322,96 @@ function createRegionsView(ctx) {
         const continuous = centroid2(members.map((member) => ({ x: member.x ?? 0, y: member.y ?? 0 })));
         if (!continuous)
           continue;
-        const shapeCentroid = centroid2(absoluteCellsForSubShape(subShape).map((cell) => axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter)));
-        if (!shapeCentroid)
-          continue;
-        let translation = subShape.translation;
-        const fracCentroid = pixelToFractionalAxial(continuous, REGIONS_TRI_LATTICE_SPACING, coreCenter);
-        const shapeCentroidAxial = pixelToFractionalAxial(shapeCentroid, REGIONS_TRI_LATTICE_SPACING, coreCenter);
-        const desiredTranslation = {
-          q: translation.q + (fracCentroid.q - shapeCentroidAxial.q),
-          r: translation.r + (fracCentroid.r - shapeCentroidAxial.r)
-        };
-        if (axialFracDistance(desiredTranslation, translation) >= LATTICE_HOP_THRESHOLD) {
-          const step = axialHopStep(translation, desiredTranslation);
-          if (step) {
-            const candidate = { q: translation.q + step.q, r: translation.r + step.r };
-            const occupied = occupiedKeysExcluding({ attractorId, subShapeIndex });
-            const cellsOk = translationClear(subShape, candidate, occupied) && absoluteCellsForSubShape(subShape, candidate).every(cellOutsideCore);
-            if (cellsOk)
-              translation = candidate;
+        let best;
+        for (let rot = 0;rot < 6; rot += 1) {
+          const rotated = rot === 0 ? { corner: { q: 0, r: 0 }, offsets: new Map(subShape.offsets) } : rotateAxialOffsets(subShape.offsets, rot);
+          const baseTranslation = {
+            q: subShape.translation.q + rotated.corner.q,
+            r: subShape.translation.r + rotated.corner.r
+          };
+          const shapeCentroid = centroid2(absoluteCellsForSubShape({ offsets: rotated.offsets, translation: baseTranslation }).map((cell) => axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter)));
+          if (!shapeCentroid)
+            continue;
+          const fracCentroid = pixelToFractionalAxial(continuous, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+          const shapeCentroidAxial = pixelToFractionalAxial(shapeCentroid, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+          const desiredTranslation = {
+            q: baseTranslation.q + (fracCentroid.q - shapeCentroidAxial.q),
+            r: baseTranslation.r + (fracCentroid.r - shapeCentroidAxial.r)
+          };
+          let translation = baseTranslation;
+          if (axialFracDistance(desiredTranslation, baseTranslation) >= LATTICE_HOP_THRESHOLD) {
+            const step = axialHopStep(baseTranslation, desiredTranslation);
+            if (step) {
+              translation = { q: baseTranslation.q + step.q, r: baseTranslation.r + step.r };
+            }
           }
+          const occupied = occupiedKeysExcluding({ attractorId, subShapeIndex });
+          const cells = absoluteCellsForSubShape({ offsets: rotated.offsets, translation });
+          if (!translationClear({ offsets: rotated.offsets }, translation, occupied))
+            continue;
+          if (!cells.every(cellOutsideCore))
+            continue;
+          const pixels = cells.map((cell) => axialToPixel(cell, REGIONS_TRI_LATTICE_SPACING, coreCenter));
+          let matchError = 0;
+          for (const member of members) {
+            const offset = rotated.offsets.get(member.id);
+            if (!offset)
+              continue;
+            const absolute = {
+              q: offset.q + translation.q,
+              r: offset.r + translation.r
+            };
+            const point = axialToPixel(absolute, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+            matchError += Math.hypot((member.x ?? 0) - point.x, (member.y ?? 0) - point.y) ** 2;
+          }
+          const shapeCenter = centroid2(pixels);
+          let flatBonus = 0;
+          if (shapeCenter && pixels.length >= 2) {
+            const radial = normalizeVec(shapeCenter.x - coreCenter.x, shapeCenter.y - coreCenter.y);
+            const tangent = { x: -radial.y, y: radial.x };
+            let minRadial = Infinity;
+            let maxRadial = -Infinity;
+            let minTan = Infinity;
+            let maxTan = -Infinity;
+            for (const point of pixels) {
+              const dx = point.x - shapeCenter.x;
+              const dy = point.y - shapeCenter.y;
+              const alongR = dx * radial.x + dy * radial.y;
+              const alongT = dx * tangent.x + dy * tangent.y;
+              minRadial = Math.min(minRadial, alongR);
+              maxRadial = Math.max(maxRadial, alongR);
+              minTan = Math.min(minTan, alongT);
+              maxTan = Math.max(maxTan, alongT);
+            }
+            const radialSpan = maxRadial - minRadial;
+            const tanSpan = maxTan - minTan;
+            const distToCore = Math.hypot(shapeCenter.x - coreCenter.x, shapeCenter.y - coreCenter.y);
+            const nearBoundary = distToCore <= outerRadius + REGIONS_TRI_LATTICE_SPACING * 1.5;
+            if (nearBoundary) {
+              const minRadialAllowed = members.length <= 2 ? 0 : REGIONS_TRI_LATTICE_SPACING * 0.45;
+              if (radialSpan + 0.000001 >= minRadialAllowed) {
+                flatBonus = tanSpan - radialSpan;
+              } else {
+                flatBonus = -1e6;
+              }
+            }
+          }
+          const score = -matchError + flatBonus * 40;
+          if (!best || score > best.score) {
+            best = { offsets: rotated.offsets, translation, score };
+          }
+        }
+        if (!best) {
+          best = {
+            offsets: subShape.offsets,
+            translation: subShape.translation,
+            score: -Infinity
+          };
         }
         const next = {
           forceIds: subShape.forceIds,
-          offsets: subShape.offsets,
-          translation
+          offsets: best.offsets,
+          translation: best.translation
         };
         const nextSubShapes = current.subShapes.map((item, index) => index === subShapeIndex ? next : item);
         rigidAttractors.set(attractorId, { subShapes: nextSubShapes });
@@ -5194,17 +5425,24 @@ function createRegionsView(ctx) {
             q: offset.q + next.translation.q,
             r: offset.r + next.translation.r
           };
-          const point = axialToPixel(absolute, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+          let point = axialToPixel(absolute, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+          point = clampOutsideCore(point, coreCenter, outerRadius);
           member.x = point.x;
           member.y = point.y;
           latticeTargets.set(member.id, point);
-          if (coreExclusionPinnedIds.has(member.id) || regionPinnedIds.has(member.id)) {
+          if (regionPinnedIds.has(member.id)) {
             member.fx = point.x;
             member.fy = point.y;
           }
         }
       }
     }
+  }
+  function normalizeVec(dx, dy) {
+    const length = Math.hypot(dx, dy);
+    if (length < 0.000000001)
+      return { x: 1, y: 0 };
+    return { x: dx / length, y: dy / length };
   }
   const coreContainmentForce = () => {
     const componentCount = nodes.filter((node) => node.type === "component").length;
@@ -5244,37 +5482,30 @@ function createRegionsView(ctx) {
       return;
     const componentCount = nodes.filter((node) => node.type === "component").length;
     const radius = coreZoneRadius(componentCount);
-    const attractorIds = [...new Set(nodes.filter((node) => node.type === "force").map((node) => node.attractorId))];
-    const distanceByAttractor = new Map(attractorIds.map((id) => [id, attractorCoreDistance(nodes, id, coreCenter)]));
-    for (const attractorId of attractorIds) {
-      if (draggingRegionIds.has(attractorId))
+    for (const node of nodes) {
+      if (node.type !== "force")
         continue;
-      const distance = distanceByAttractor.get(attractorId) ?? Infinity;
-      const inContact = distance <= radius + 0.5;
-      const freeze = inContact;
-      for (const node of nodes) {
-        if (node.type !== "force" || node.attractorId !== attractorId)
-          continue;
-        if (draggingNodeIds.has(node.id))
-          continue;
-        if (inContact) {
-          const clamped = clampOutsideCore({ x: node.x ?? 0, y: node.y ?? 0 }, coreCenter, radius);
-          node.x = clamped.x;
-          node.y = clamped.y;
-          if (freeze) {
-            node.fx = clamped.x;
-            node.fy = clamped.y;
-            node.vx = 0;
-            node.vy = 0;
-            coreExclusionPinnedIds.add(node.id);
-          }
-        } else if (coreExclusionPinnedIds.has(node.id)) {
-          node.fx = null;
-          node.fy = null;
-          coreExclusionPinnedIds.delete(node.id);
-        }
+      if (draggingNodeIds.has(node.id))
+        continue;
+      if (draggingRegionIds.has(node.attractorId))
+        continue;
+      if (regionPinnedIds.has(node.id))
+        continue;
+      const beforeX = node.x ?? 0;
+      const beforeY = node.y ?? 0;
+      const clamped = clampOutsideCore({ x: beforeX, y: beforeY }, coreCenter, radius);
+      if (clamped.x === beforeX && clamped.y === beforeY)
+        continue;
+      node.x = clamped.x;
+      node.y = clamped.y;
+      const radial = normalizeVec(clamped.x - coreCenter.x, clamped.y - coreCenter.y);
+      const vn = (node.vx ?? 0) * radial.x + (node.vy ?? 0) * radial.y;
+      if (vn < 0) {
+        node.vx = (node.vx ?? 0) - vn * radial.x;
+        node.vy = (node.vy ?? 0) - vn * radial.y;
       }
     }
+    coreExclusionPinnedIds.clear();
   };
   coreExclusionForce.initialize = () => {};
   function deterministicOffset(id) {
@@ -5472,36 +5703,114 @@ function createRegionsView(ctx) {
     }), FUSION_REGION_PADDING));
   }
   function positionEdges() {
+    const componentCount = nodes.filter((node) => node.type === "component").length;
+    const outerRadius = coreZoneRadius(componentCount);
+    const innerRadius = componentZoneRadius(componentCount);
+    const midRadius = (innerRadius + outerRadius) / 2;
     const geometryByBundle = new Map;
-    for (const bundle of bundles) {
+    const midRingSplit = (from, toward) => {
+      const hit = rayCircleIntersection(from, toward, coreCenter, midRadius);
+      if (hit)
+        return hit;
+      const dx = toward.x - coreCenter.x;
+      const dy = toward.y - coreCenter.y;
+      const len = Math.hypot(dx, dy);
+      if (len >= 0.000000001) {
+        return {
+          x: coreCenter.x + dx / len * midRadius,
+          y: coreCenter.y + dy / len * midRadius
+        };
+      }
+      const fx = from.x - coreCenter.x;
+      const fy = from.y - coreCenter.y;
+      const fl = Math.hypot(fx, fy) || 1;
+      return {
+        x: coreCenter.x + fx / fl * midRadius,
+        y: coreCenter.y + fy / fl * midRadius
+      };
+    };
+    for (const bundle of nestedBundles) {
       const component = byId.get(bundle.componentId);
       if (!component)
         continue;
-      const placed = bundle.forceIds.map((forceId) => ({ forceId, node: byId.get(`force:${forceId}`) })).filter((item) => item.node !== undefined);
-      const geometry = branchGeometry({ x: component.x ?? 0, y: component.y ?? 0 }, placed.map(({ node }) => ({ x: node.x ?? 0, y: node.y ?? 0 })), undefined, currentTension);
+      const from = { x: component.x ?? 0, y: component.y ?? 0 };
+      const subTargets = [];
+      for (const sub of bundle.subShapes) {
+        const forces = sub.forceIds.map((id) => {
+          const node = byId.get(id);
+          return node ? { id, point: { x: node.x ?? 0, y: node.y ?? 0 } } : undefined;
+        }).filter((item) => item !== undefined);
+        if (forces.length === 0)
+          continue;
+        subTargets.push({
+          key: sub.key,
+          forceIds: forces.map((item) => item.id),
+          forces: forces.map((item) => item.point)
+        });
+      }
+      if (subTargets.length === 0)
+        continue;
+      const allForcePoints = subTargets.flatMap((sub) => sub.forces);
+      const toward = centroid2(allForcePoints) ?? from;
+      const midSplit = midRingSplit(from, toward);
+      const geometry = nestedBranchGeometry(from, subTargets.map((sub) => {
+        const hub = centroid2(sub.forces) ?? midSplit;
+        const dilated = dilatedSubshapeApproach(sub.forces, midSplit, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+        return {
+          forces: sub.forces,
+          approach: ensureForwardSplitSeparation(midSplit, dilated, hub, BUNDLE_RADIAL_SPLIT_SEPARATION)
+        };
+      }), midSplit, REGIONS_TRI_LATTICE_SPACING, BUNDLE_MIN_TANGENTIAL_DISTANCE);
+      const midByKey = new Map;
+      const forceById = new Map;
+      subTargets.forEach((sub, index) => {
+        midByKey.set(sub.key, geometry.midBranches[index] ?? "");
+        sub.forceIds.forEach((forceId, forceIndex) => {
+          forceById.set(forceId, geometry.forceBranches[index]?.[forceIndex] ?? "");
+        });
+      });
       geometryByBundle.set(bundle.id, {
         trunk: geometry.trunk,
         width: geometry.width,
-        branchByForce: new Map(placed.map(({ forceId }, index) => [`force:${forceId}`, geometry.branches[index] ?? ""]))
+        midByKey,
+        forceById
       });
     }
     bundleTrunkSel?.attr("d", (bundle) => geometryByBundle.get(bundle.id)?.trunk ?? "").attr("stroke-width", (bundle) => geometryByBundle.get(bundle.id)?.width ?? 1);
-    bundleBranchSel?.attr("d", (branch) => geometryByBundle.get(branch.bundleId)?.branchByForce.get(branch.forceId) ?? "").attr("stroke-width", (branch) => Math.max(1, (geometryByBundle.get(branch.bundleId)?.width ?? 1) * 0.62));
-    const geometryByForceBundle = new Map;
-    for (const bundle of forceBundles) {
-      const force = byId.get(bundle.forceId);
-      if (!force)
-        continue;
-      const placed = bundle.componentIds.map((componentId) => ({ componentId, node: byId.get(componentId) })).filter((item) => item.node !== undefined);
-      const geometry = branchGeometry({ x: force.x ?? 0, y: force.y ?? 0 }, placed.map(({ node }) => ({ x: node.x ?? 0, y: node.y ?? 0 })), undefined, currentTension);
-      geometryByForceBundle.set(bundle.id, {
-        trunk: geometry.trunk,
-        width: geometry.width,
-        branchByComponent: new Map(placed.map(({ componentId }, index) => [componentId, geometry.branches[index] ?? ""]))
-      });
+    bundleMidBranchSel?.attr("d", (branch) => geometryByBundle.get(branch.bundleId)?.midByKey.get(branch.subShapeKey) ?? "").attr("stroke-width", (branch) => Math.max(1, (geometryByBundle.get(branch.bundleId)?.width ?? 1) * 0.72));
+    bundleForceLeafSel?.attr("d", (leaf) => geometryByBundle.get(leaf.bundleId)?.forceById.get(leaf.forceId) ?? "").attr("stroke-width", (leaf) => Math.max(1, (geometryByBundle.get(leaf.bundleId)?.width ?? 1) * 0.5));
+  }
+  function buildNestedComponentBundles() {
+    const out = [];
+    const componentIds = [...new Set(links.map((link) => typeof link.target === "string" ? link.target : link.target.id))];
+    for (const componentId of componentIds.sort()) {
+      const linkedForceIds = new Set(links.filter((link) => (typeof link.target === "string" ? link.target : link.target.id) === componentId).map((link) => typeof link.source === "string" ? link.source : link.source.id));
+      for (const [attractorId, bins] of subShapesByAttractor) {
+        const subShapes = [];
+        let focused = false;
+        bins.forEach((forceIds, index) => {
+          const touching = forceIds.filter((id) => linkedForceIds.has(id)).sort();
+          if (touching.length === 0)
+            return;
+          for (const forceId of touching) {
+            const link = links.find((item) => (typeof item.source === "string" ? item.source : item.source.id) === forceId && (typeof item.target === "string" ? item.target : item.target.id) === componentId);
+            if (link?.focused)
+              focused = true;
+          }
+          subShapes.push({ key: `${attractorId}:${index}`, forceIds: touching });
+        });
+        if (subShapes.length === 0)
+          continue;
+        out.push({
+          id: `nested:${componentId}:${attractorId}`,
+          componentId,
+          attractorId,
+          focused,
+          subShapes
+        });
+      }
     }
-    forceBundleTrunkSel?.attr("d", (bundle) => geometryByForceBundle.get(bundle.id)?.trunk ?? "").attr("stroke-width", (bundle) => geometryByForceBundle.get(bundle.id)?.width ?? 1);
-    forceBundleBranchSel?.attr("d", (branch) => geometryByForceBundle.get(branch.bundleId)?.branchByComponent.get(branch.componentId) ?? "").attr("stroke-width", (branch) => Math.max(1, (geometryByForceBundle.get(branch.bundleId)?.width ?? 1) * 0.62));
+    return out.sort((a, b) => a.id.localeCompare(b.id));
   }
   function positionNodes() {
     nodeSel?.attr("transform", (node) => `translate(${node.x ?? 0},${node.y ?? 0})`);
@@ -5705,15 +6014,42 @@ function createRegionsView(ctx) {
     const base = focus?.x !== undefined ? { x: focus.x + offset.x, y: (focus.y ?? 0) + offset.y } : { x: coreCenter.x + offset.x, y: coreCenter.y + offset.y };
     return clampToCore(base, coreCenter, innerRadius);
   }
+  function subShapeForceIds(forceId) {
+    for (const shape of rigidAttractors.values()) {
+      for (const subShape of shape.subShapes) {
+        if (subShape.forceIds.includes(forceId))
+          return [...subShape.forceIds];
+      }
+    }
+    return [forceId];
+  }
   function applyNodeDrag(node, point) {
     const componentCount = nodes.filter((n) => n.type === "component").length;
     const outerRadius = coreZoneRadius(componentCount);
     const innerRadius = componentZoneRadius(componentCount);
-    const clamped = node.type === "component" ? clampToCore(point, coreCenter, innerRadius) : clampOutsideCore(point, coreCenter, outerRadius);
-    node.fx = clamped.x;
-    node.fy = clamped.y;
-    node.x = clamped.x;
-    node.y = clamped.y;
+    if (node.type === "force") {
+      const peerIds = subShapeForceIds(node.id);
+      const from = { x: node.x ?? 0, y: node.y ?? 0 };
+      const primary = clampOutsideCore(point, coreCenter, outerRadius);
+      const dx = primary.x - from.x;
+      const dy = primary.y - from.y;
+      for (const peerId of peerIds) {
+        const peer = byId.get(peerId);
+        if (!peer || peer.type !== "force")
+          continue;
+        const next = peerId === node.id ? primary : clampOutsideCore({ x: (peer.x ?? 0) + dx, y: (peer.y ?? 0) + dy }, coreCenter, outerRadius);
+        peer.fx = next.x;
+        peer.fy = next.y;
+        peer.x = next.x;
+        peer.y = next.y;
+      }
+    } else {
+      const clamped = clampToCore(point, coreCenter, innerRadius);
+      node.fx = clamped.x;
+      node.fy = clamped.y;
+      node.x = clamped.x;
+      node.y = clamped.y;
+    }
     tick();
     if (built) {
       const previewPoint = node.type === "component" ? axialToPixel(previewNearestFreeAxialPoint({ x: node.x ?? 0, y: node.y ?? 0 }, dragComponentOccupied ?? new Set, REGIONS_TRI_LATTICE_SPACING, coreCenter), REGIONS_TRI_LATTICE_SPACING, coreCenter) : latticeTargets.get(node.id);
@@ -5753,24 +6089,30 @@ function createRegionsView(ctx) {
         return 1;
       return 0;
     });
-    const bundleLit = (bundle) => {
+    const inNet = (key) => isSelected(key) || isConnected(key);
+    const trunkLit = (bundle) => {
       if (!hasSelection)
         return true;
-      const attractorKey = `attractor:${bundle.attractorId}`;
-      const componentIn = isSelected(bundle.componentId) || isConnected(bundle.componentId);
-      const attractorIn = isSelected(attractorKey) || isConnected(attractorKey);
-      return componentIn && attractorIn;
+      if (!inNet(bundle.componentId))
+        return false;
+      return bundle.subShapes.some((sub) => sub.forceIds.some((id) => inNet(id)));
     };
-    bundleGroupSel?.classed("is-lit", (bundle) => bundleLit(bundle));
-    const forceBundleLit = (bundle) => {
+    const midLit = (branch) => {
       if (!hasSelection)
         return true;
-      const attractorKey = `attractor:${bundle.attractorId}`;
-      const forceIn = isSelected(bundle.forceId) || isConnected(bundle.forceId);
-      const attractorIn = isSelected(attractorKey) || isConnected(attractorKey);
-      return forceIn && attractorIn;
+      if (!inNet(branch.componentId))
+        return false;
+      return branch.forceIds.some((id) => inNet(id));
     };
-    forceBundleGroupSel?.classed("is-lit", (bundle) => forceBundleLit(bundle));
+    const leafLit = (leaf) => {
+      if (!hasSelection)
+        return true;
+      return inNet(leaf.componentId) && inNet(leaf.forceId);
+    };
+    bundleTrunkSel?.classed("is-lit", (bundle) => trunkLit(bundle));
+    bundleMidBranchSel?.classed("is-lit", (branch) => midLit(branch));
+    bundleForceLeafSel?.classed("is-lit", (leaf) => leafLit(leaf));
+    bundleGroupSel?.classed("is-lit", (bundle) => trunkLit(bundle));
     const regionLit = (group) => {
       const key = `attractor:${group.attractorId}`;
       return !hasSelection || isSelected(key) || isConnected(key);
@@ -5803,8 +6145,7 @@ function createRegionsView(ctx) {
       nodes = [];
       byId = new Map;
       links = [];
-      bundles = [];
-      forceBundles = [];
+      nestedBundles = [];
       subShapesByAttractor = new Map;
       componentCells = new Map;
       rigidAttractors = new Map;
@@ -5826,10 +6167,9 @@ function createRegionsView(ctx) {
       fusionSel = b2.fusionG.selectAll("path.nkp-hyper-fusion-hull").data([]).join("path");
       bundleGroupSel = b2.edgesG.selectAll("g.nkp-hyper-bundle").data([]).join("g");
       bundleTrunkSel = bundleGroupSel.selectAll("path.nkp-hyper-bundle-trunk");
-      bundleBranchSel = bundleGroupSel.selectAll("path.nkp-hyper-bundle-branch");
-      forceBundleGroupSel = b2.forceEdgesG.selectAll("g.nkp-hyper-force-bundle").data([]).join("g");
-      forceBundleTrunkSel = forceBundleGroupSel.selectAll("path.nkp-hyper-force-bundle-trunk");
-      forceBundleBranchSel = forceBundleGroupSel.selectAll("path.nkp-hyper-force-bundle-branch");
+      bundleMidBranchSel = bundleGroupSel.selectAll("path.nkp-hyper-bundle-mid-branch");
+      bundleForceLeafSel = bundleGroupSel.selectAll("path.nkp-hyper-bundle-force-branch");
+      b2.forceEdgesG.selectAll("*").remove();
       nodeSel = b2.nodesG.selectAll("g.nkp-node").data([]).join("g");
       componentLabelSel = b2.labelsGroup.selectAll("text.nkp-hyper-component-label").data([]).join("text");
       forceLabelSel = b2.labelsGroup.selectAll("text.nkp-hyper-force-label").data([]).join("text");
@@ -5849,7 +6189,6 @@ function createRegionsView(ctx) {
     groupColorById = new Map(model.groups.map((group) => [group.attractorId, group.color]));
     const focusComponentId = options.focusComponent ? `component:${options.focusComponent}` : undefined;
     coreCenter = { x: width / 2, y: height / 2 };
-    currentTension = options.tension ?? 1;
     const componentCount = model.nodes.filter((item) => item.type === "component").length;
     const coreRadius = coreZoneRadius(componentCount);
     const componentRadius = componentZoneRadius(componentCount);
@@ -5870,10 +6209,8 @@ function createRegionsView(ctx) {
     });
     byId = nextById;
     links = model.edges.map((edge) => ({ ...edge }));
-    const partitioned = partitionMembershipBundles(model.branchBundles, model.forceBranchBundles);
-    bundles = partitioned.branchBundles.map((bundle) => ({ ...bundle }));
-    forceBundles = partitioned.forceBranchBundles.map((bundle) => ({ ...bundle }));
     refreshLatticeTargets(newcomerIds);
+    nestedBundles = buildNestedComponentBundles();
     b.sim.nodes(nodes);
     b.sim.force("link").links(links);
     syncRegionLocks(model.groups, options.lockRegions === true);
@@ -5955,26 +6292,27 @@ function createRegionsView(ctx) {
     }));
     const fusionData = model.fusionGroups.map((ids) => ({ id: [...ids].sort().join("\x00"), ids }));
     fusionSel = b.fusionG.selectAll("path.nkp-hyper-fusion-hull").data(fusionData, (item) => item.id).join("path").attr("class", "nkp-hyper-fusion-hull").attr("data-fusion-region", "true").attr("role", "img").attr("aria-label", (item) => `Fusion candidate region for ${item.ids.join(", ")}`).attr("fill", "#808080").attr("fill-opacity", 0.14).attr("stroke", "var(--warn)").attr("stroke-width", 2).attr("stroke-dasharray", "3 4").attr("stroke-linejoin", "round");
-    bundleGroupSel = b.edgesG.selectAll("g.nkp-hyper-bundle").data(bundles, (bundle) => bundle.id).join("g").attr("class", "nkp-hyper-bundle").attr("opacity", (bundle) => bundle.focused ? 0.45 : 0.15);
+    bundleGroupSel = b.edgesG.selectAll("g.nkp-hyper-bundle").data(nestedBundles, (bundle) => bundle.id).join("g").attr("class", "nkp-hyper-bundle").attr("opacity", (bundle) => bundle.focused ? 0.45 : 0.15);
     bundleTrunkSel = bundleGroupSel.selectAll("path.nkp-hyper-bundle-trunk").data((bundle) => [bundle]).join("path").attr("class", "nkp-hyper-bundle-trunk").attr("fill", "none").attr("stroke", (bundle) => colorFor(bundle.attractorId)).attr("aria-label", (bundle) => `${bundle.componentId} linked to attractor ${bundle.attractorId}`);
-    bundleBranchSel = bundleGroupSel.selectAll("path.nkp-hyper-bundle-branch").data((bundle) => bundle.forceIds.length > 1 ? bundle.forceIds.map((forceId) => ({
-      id: `${bundle.id}:${forceId}`,
+    bundleMidBranchSel = bundleGroupSel.selectAll("path.nkp-hyper-bundle-mid-branch").data((bundle) => bundle.subShapes.map((sub) => ({
+      id: `${bundle.id}:mid:${sub.key}`,
       bundleId: bundle.id,
       componentId: bundle.componentId,
-      forceId: `force:${forceId}`,
       attractorId: bundle.attractorId,
+      subShapeKey: sub.key,
+      forceIds: sub.forceIds,
       focused: bundle.focused
-    })) : []).join("path").attr("class", "nkp-hyper-bundle-branch").attr("fill", "none").attr("stroke", (branch) => colorFor(branch.attractorId)).attr("aria-label", (branch) => `${branch.componentId} linked to ${branch.forceId}`);
-    forceBundleGroupSel = b.forceEdgesG.selectAll("g.nkp-hyper-force-bundle").data(forceBundles, (bundle) => bundle.id).join("g").attr("class", "nkp-hyper-force-bundle").attr("opacity", (bundle) => bundle.focused ? 0.45 : 0.15);
-    forceBundleTrunkSel = forceBundleGroupSel.selectAll("path.nkp-hyper-force-bundle-trunk").data((bundle) => [bundle]).join("path").attr("class", "nkp-hyper-force-bundle-trunk").attr("fill", "none").attr("stroke", (bundle) => colorFor(bundle.attractorId)).attr("aria-label", (bundle) => `${bundle.forceId} linked to attractor ${bundle.attractorId}`);
-    forceBundleBranchSel = forceBundleGroupSel.selectAll("path.nkp-hyper-force-bundle-branch").data((bundle) => bundle.componentIds.length > 1 ? bundle.componentIds.map((componentId) => ({
-      id: `${bundle.id}:${componentId}`,
+    }))).join("path").attr("class", "nkp-hyper-bundle-mid-branch").attr("fill", "none").attr("stroke", (branch) => colorFor(branch.attractorId)).attr("aria-label", (branch) => `${branch.componentId} linked to sub-shape ${branch.subShapeKey}`);
+    bundleForceLeafSel = bundleGroupSel.selectAll("path.nkp-hyper-bundle-force-branch").data((bundle) => bundle.subShapes.flatMap((sub) => sub.forceIds.map((forceId) => ({
+      id: `${bundle.id}:force:${forceId}`,
       bundleId: bundle.id,
-      forceId: bundle.forceId,
-      componentId,
+      componentId: bundle.componentId,
       attractorId: bundle.attractorId,
+      subShapeKey: sub.key,
+      forceId,
       focused: bundle.focused
-    })) : []).join("path").attr("class", "nkp-hyper-force-bundle-branch").attr("fill", "none").attr("stroke", (branch) => colorFor(branch.attractorId)).attr("aria-label", (branch) => `${branch.forceId} linked to ${branch.componentId}`);
+    })))).join("path").attr("class", "nkp-hyper-bundle-force-branch").attr("fill", "none").attr("stroke", (leaf) => colorFor(leaf.attractorId)).attr("aria-label", (leaf) => `${leaf.componentId} linked to ${leaf.forceId}`);
+    b.forceEdgesG.selectAll("*").remove();
     const nodeJoin = b.nodesG.selectAll("g.nkp-node").data(nodes, (node) => node.id).join((enter) => {
       const g = enter.append("g");
       g.append("circle").attr("class", "nkp-fission-ring").attr("r", 15).attr("fill", "none").attr("stroke-dasharray", "3 4");
@@ -5992,9 +6330,15 @@ function createRegionsView(ctx) {
     nodeSel.call(d3.drag().on("start", (event, node) => {
       if (!event.active)
         b.sim.alphaTarget(0.3).restart();
-      draggingNodeIds.add(node.id);
-      node.fx = node.x;
-      node.fy = node.y;
+      const peerIds = node.type === "force" ? subShapeForceIds(node.id) : [node.id];
+      for (const id of peerIds) {
+        draggingNodeIds.add(id);
+        const peer = byId.get(id);
+        if (peer) {
+          peer.fx = peer.x;
+          peer.fy = peer.y;
+        }
+      }
       if (node.type === "component") {
         dragComponentOccupied = new Set(nodes.filter((other) => other.type === "component" && other.id !== node.id).map((other) => axialKey(pixelToAxial({ x: other.x ?? 0, y: other.y ?? 0 }, REGIONS_TRI_LATTICE_SPACING, coreCenter))));
       }
@@ -6003,18 +6347,31 @@ function createRegionsView(ctx) {
     }).on("end", (event, node) => {
       if (!event.active)
         applyKeepSimulatingTarget(b.sim);
-      draggingNodeIds.delete(node.id);
+      const peerIds = node.type === "force" ? subShapeForceIds(node.id) : [node.id];
+      for (const id of peerIds)
+        draggingNodeIds.delete(id);
       dragComponentOccupied = undefined;
       built?.snapPreview.style("display", "none");
-      refreshLatticeTargets(new Set([node.id]));
+      refreshLatticeTargets(new Set(peerIds));
       if (lockState.enabled && node.type === "force") {
         const lock = lockState.locks.get(node.attractorId);
         if (lock) {
-          const edited = editRegionForceOffset(lock, node.id, { x: node.x ?? 0, y: node.y ?? 0 });
+          let edited = lock;
+          for (const id of peerIds) {
+            const peer = byId.get(id);
+            if (!peer)
+              continue;
+            edited = editRegionForceOffset(edited, id, { x: peer.x ?? 0, y: peer.y ?? 0 });
+          }
           lockState.locks.set(node.attractorId, edited);
-          node.fx = node.x;
-          node.fy = node.y;
-          regionPinnedIds.add(node.id);
+          for (const id of peerIds) {
+            const peer = byId.get(id);
+            if (!peer)
+              continue;
+            peer.fx = peer.x;
+            peer.fy = peer.y;
+            regionPinnedIds.add(id);
+          }
           return;
         }
       }
@@ -6023,8 +6380,13 @@ function createRegionsView(ctx) {
         node.fy = node.y;
         return;
       }
-      node.fx = null;
-      node.fy = null;
+      for (const id of peerIds) {
+        const peer = byId.get(id);
+        if (peer) {
+          peer.fx = null;
+          peer.fy = null;
+        }
+      }
     }));
     const componentNodes = nodes.filter((node) => node.type === "component");
     componentLabelSel = b.labelsGroup.selectAll("text.nkp-hyper-component-label").data(componentNodes, (node) => node.id).join("text").attr("class", (node) => `nkp-hyper-component nkp-node-label nkp-hyper-component-label${node.type === "component" && node.fissionCandidate ? " fission" : ""}`).attr("text-anchor", "middle").text((node) => node.label);
@@ -6039,7 +6401,9 @@ function createRegionsView(ctx) {
       b.svg.classed("nkp-hyper-hovering", false);
       nodeSel.classed("is-lit", false).classed("is-semi", false);
       bundleGroupSel.classed("is-lit", false);
-      forceBundleGroupSel.classed("is-lit", false);
+      bundleTrunkSel?.classed("is-lit", false);
+      bundleMidBranchSel?.classed("is-lit", false);
+      bundleForceLeafSel?.classed("is-lit", false);
       regionSel.classed("is-lit", false).classed("is-semi", false);
       regionLabelSel.classed("is-lit", false).classed("is-semi", false);
       b.tip.hidden = true;
@@ -6053,19 +6417,19 @@ function createRegionsView(ctx) {
       }
       return ids;
     };
+    const applyBundleSegmentLit = (lit) => {
+      const inLit = (key) => lit.has(key);
+      bundleTrunkSel?.classed("is-lit", (bundle) => inLit(bundle.componentId) && bundle.subShapes.some((sub) => sub.forceIds.some((id) => inLit(id))));
+      bundleMidBranchSel?.classed("is-lit", (branch) => inLit(branch.componentId) && branch.forceIds.some((id) => inLit(id)));
+      bundleForceLeafSel?.classed("is-lit", (leaf) => inLit(leaf.componentId) && inLit(leaf.forceId));
+      bundleGroupSel?.classed("is-lit", (bundle) => inLit(bundle.componentId) && bundle.subShapes.some((sub) => sub.forceIds.some((id) => inLit(id))));
+    };
     const applyHoverLit = (lit, semi) => {
       const litAttractors = litAttractorsFrom(lit);
       const semiAttractors = litAttractorsFrom(semi);
       b.svg.classed("nkp-hyper-hovering", true);
       nodeSel.classed("is-lit", (other) => lit.has(other.id)).classed("is-semi", (other) => semi.has(other.id));
-      bundleGroupSel.classed("is-lit", (bundle) => {
-        const attractorKey = `attractor:${bundle.attractorId}`;
-        return lit.has(bundle.componentId) && lit.has(attractorKey);
-      });
-      forceBundleGroupSel.classed("is-lit", (bundle) => {
-        const attractorKey = `attractor:${bundle.attractorId}`;
-        return lit.has(bundle.forceId) && lit.has(attractorKey);
-      });
+      applyBundleSegmentLit(lit);
       regionSel.classed("is-lit", (group) => litAttractors.has(group.attractorId)).classed("is-semi", (group) => semiAttractors.has(group.attractorId));
       regionLabelSel.classed("is-lit", (group) => litAttractors.has(group.attractorId)).classed("is-semi", (group) => semiAttractors.has(group.attractorId));
       componentLabelSel.attr("opacity", (other) => {
@@ -6136,14 +6500,11 @@ function createRegionsView(ctx) {
         return;
       built.svg.classed("nkp-hyper-hovering", true);
       nodeSel?.classed("is-lit", (other) => lit.has(other.id)).classed("is-semi", (other) => hoverSemi.has(other.id));
-      bundleGroupSel?.classed("is-lit", (bundle) => {
-        const attractorKey = `attractor:${bundle.attractorId}`;
-        return lit.has(bundle.componentId) && lit.has(attractorKey);
-      });
-      forceBundleGroupSel?.classed("is-lit", (bundle) => {
-        const attractorKey = `attractor:${bundle.attractorId}`;
-        return lit.has(bundle.forceId) && lit.has(attractorKey);
-      });
+      const inLit = (key) => lit.has(key);
+      bundleTrunkSel?.classed("is-lit", (bundle) => inLit(bundle.componentId) && bundle.subShapes.some((sub) => sub.forceIds.some((id) => inLit(id))));
+      bundleMidBranchSel?.classed("is-lit", (branch) => inLit(branch.componentId) && branch.forceIds.some((id) => inLit(id)));
+      bundleForceLeafSel?.classed("is-lit", (leaf) => inLit(leaf.componentId) && inLit(leaf.forceId));
+      bundleGroupSel?.classed("is-lit", (bundle) => inLit(bundle.componentId) && bundle.subShapes.some((sub) => sub.forceIds.some((id) => inLit(id))));
       const litAttractors = new Set;
       const semiAttractors = new Set;
       for (const key of lit) {
@@ -6174,14 +6535,11 @@ function createRegionsView(ctx) {
         return;
       built.svg.classed("nkp-hyper-hovering", true);
       nodeSel?.classed("is-lit", (other) => lit.has(other.id)).classed("is-semi", (other) => hoverSemi.has(other.id));
-      bundleGroupSel?.classed("is-lit", (bundle) => {
-        const key = `attractor:${bundle.attractorId}`;
-        return lit.has(bundle.componentId) && lit.has(key);
-      });
-      forceBundleGroupSel?.classed("is-lit", (bundle) => {
-        const key = `attractor:${bundle.attractorId}`;
-        return lit.has(bundle.forceId) && lit.has(key);
-      });
+      const inLit = (key) => lit.has(key);
+      bundleTrunkSel?.classed("is-lit", (bundle) => inLit(bundle.componentId) && bundle.subShapes.some((sub) => sub.forceIds.some((id) => inLit(id))));
+      bundleMidBranchSel?.classed("is-lit", (branch) => inLit(branch.componentId) && branch.forceIds.some((id) => inLit(id)));
+      bundleForceLeafSel?.classed("is-lit", (leaf) => inLit(leaf.componentId) && inLit(leaf.forceId));
+      bundleGroupSel?.classed("is-lit", (bundle) => inLit(bundle.componentId) && bundle.subShapes.some((sub) => sub.forceIds.some((id) => inLit(id))));
       const litAttractors = new Set;
       const semiAttractors = new Set;
       for (const key of lit) {
@@ -6518,9 +6876,7 @@ function mountLandscape(container, getState, d3) {
       const lockRegions = container.querySelector("[data-regions-lock-toggle]")?.checked ?? false;
       const lockComponents = container.querySelector("[data-regions-lock-components-toggle]")?.checked ?? false;
       const keepSimulating = container.querySelector("[data-regions-keep-simulating-toggle]")?.checked ?? false;
-      const tensionInput = container.querySelector("[data-bundle-tension-input]");
-      const tension = tensionInput ? Number(tensionInput.value) / 100 : DEFAULT_BUNDLE_TENSION;
-      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, lockComponents, keepSimulating, tension, ...focusComponent ? { focusComponent } : {} });
+      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, lockComponents, keepSimulating, ...focusComponent ? { focusComponent } : {} });
     } else {
       const minCouplingStrength = syncMinCouplingStrength(container, state, filters);
       if (view === "heatmap") {

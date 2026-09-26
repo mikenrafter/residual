@@ -5,18 +5,28 @@ import {
   axialDistance,
   axialHopStep,
   axialKey,
+  axialToPixel,
   decomposeAttractorSize,
+  dilateAxialOneLayer,
+  dilatedSubshapeApproach,
   LATTICE_HOP_THRESHOLD,
   layoutAttractorForceShapes,
   nearestFreeAxialPoint,
   placeCompositeShapes,
   previewNearestFreeAxialPoint,
+  rotateAxial,
+  rotateAxialOffsets,
   shapePatternForSize,
+  TRI_LATTICE_SPACING,
   type ForceShapeGroup,
   type SimilarityForce,
 } from "./landscape-triangular-lattice";
 
 describe("shapePatternForSize", () => {
+  test("singleton (1): a single lattice cell", () => {
+    expect(shapePatternForSize(1)).toEqual([{ q: 0, r: 0 }]);
+  });
+
   test("pill (2): its two points are adjacent", () => {
     const pattern = shapePatternForSize(2);
     expect(pattern).toHaveLength(2);
@@ -42,64 +52,101 @@ describe("shapePatternForSize", () => {
     }
   });
 
-  test("dice-5: center is adjacent to all 4 ring points", () => {
-    const pattern = shapePatternForSize(5);
-    expect(pattern).toHaveLength(5);
-    const center = pattern[0]!;
-    for (const point of pattern.slice(1)) {
-      expect(axialDistance(center, point)).toBe(1);
-    }
-  });
-
-  test("hexagon (6): every point is adjacent to exactly two other ring points", () => {
-    const pattern = shapePatternForSize(6);
-    expect(pattern).toHaveLength(6);
-    for (let i = 0; i < pattern.length; i += 1) {
-      const adjacentCount = pattern.filter((_, j) => j !== i && axialDistance(pattern[i]!, pattern[j]!) === 1).length;
-      expect(adjacentCount).toBe(2);
-    }
-  });
-
-  test("hexagon+dot (7): center is adjacent to all 6 ring points", () => {
-    const pattern = shapePatternForSize(7);
-    expect(pattern).toHaveLength(7);
-    const center = pattern[0]!;
-    for (const point of pattern.slice(1)) {
-      expect(axialDistance(center, point)).toBe(1);
-    }
-  });
-
-  test("throws for sizes outside the fixed 2-7 range", () => {
-    expect(() => shapePatternForSize(1)).toThrow();
+  test("throws for sizes outside the fixed 1-4 range (5/6/7 are decomposed)", () => {
+    expect(() => shapePatternForSize(0)).toThrow();
+    expect(() => shapePatternForSize(5)).toThrow();
+    expect(() => shapePatternForSize(6)).toThrow();
+    expect(() => shapePatternForSize(7)).toThrow();
     expect(() => shapePatternForSize(8)).toThrow();
+  });
+});
+
+describe("rotateAxial / rotateAxialOffsets", () => {
+  test("six 60° steps return to the start", () => {
+    const start = { q: 2, r: -1 };
+    let point = start;
+    for (let i = 0; i < 6; i += 1) point = rotateAxial(point, 1);
+    expect(point).toEqual(start);
+  });
+
+  test("rotateAxialOffsets preserves pairwise distances", () => {
+    const offsets = new Map([
+      ["a", { q: 0, r: 0 }],
+      ["b", { q: 1, r: 0 }],
+      ["c", { q: 0, r: 1 }],
+    ]);
+    const { offsets: rotated } = rotateAxialOffsets(offsets, 2);
+    expect(axialDistance(rotated.get("a")!, rotated.get("b")!)).toBe(1);
+    expect(axialDistance(rotated.get("a")!, rotated.get("c")!)).toBe(1);
+    expect(axialDistance(rotated.get("b")!, rotated.get("c")!)).toBe(1);
+  });
+});
+
+describe("dilateAxialOneLayer / dilatedSubshapeApproach", () => {
+  test("singleton dilates to itself plus six neighbors", () => {
+    const dilated = dilateAxialOneLayer([{ q: 0, r: 0 }]);
+    expect(dilated).toHaveLength(7);
+    expect(dilated).toContainEqual({ q: 0, r: 0 });
+    expect(dilated).toContainEqual({ q: 1, r: 0 });
+  });
+
+  test("approach sits on the dilated hull, one lattice layer outside a singleton", () => {
+    const origin = { x: 0, y: 0 };
+    const force = axialToPixel({ q: 3, r: 0 }, TRI_LATTICE_SPACING, origin);
+    const fromOutside = { x: 0, y: 0 };
+    const approach = dilatedSubshapeApproach([force], fromOutside, TRI_LATTICE_SPACING, origin);
+    // Neighbor ring around the force is at spacing from the hub.
+    expect(Math.hypot(approach.x - force.x, approach.y - force.y)).toBeCloseTo(TRI_LATTICE_SPACING, 5);
+    // And it lies on the ray from outside through the force.
+    const cross = approach.x * force.y - approach.y * force.x;
+    expect(Math.abs(cross)).toBeLessThan(1e-6);
+    expect(Math.hypot(approach.x, approach.y)).toBeLessThan(Math.hypot(force.x, force.y));
+  });
+
+  test("pill approach is farther from the near tip than a centroid hop would be", () => {
+    const origin = { x: 0, y: 0 };
+    const a = axialToPixel({ q: 4, r: 0 }, TRI_LATTICE_SPACING, origin);
+    const b = axialToPixel({ q: 5, r: 0 }, TRI_LATTICE_SPACING, origin);
+    const fromOutside = { x: 0, y: 0 };
+    const approach = dilatedSubshapeApproach([a, b], fromOutside, TRI_LATTICE_SPACING, origin);
+    const hub = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    // Dilated outer edge is outside the nearer force cell, not merely one hop from hub.
+    expect(Math.hypot(approach.x - hub.x, approach.y - hub.y)).toBeGreaterThan(TRI_LATTICE_SPACING * 0.5);
+    expect(Math.hypot(approach.x, approach.y)).toBeLessThan(Math.hypot(a.x, a.y) + 1e-6);
   });
 });
 
 describe("decomposeAttractorSize", () => {
   test.each([
-    [8, [3, 5]],
-    [9, [4, 5]],
-    [10, [4, 6]],
-    [11, [5, 6]],
-    [12, [5, 7]],
-    [13, [6, 7]],
-    [14, [7, 7]],
-    [18, [5, 6, 7]],
-    [19, [6, 6, 7]],
-    [21, [7, 7, 7]],
-    [22, [4, 5, 6, 7]],
+    [5, [3, 2]],
+    [6, [4, 2]],
+    [7, [4, 3]],
+    [8, [4, 3, 1]],
+    [9, [4, 3, 2]],
+    [10, [4, 3, 2, 1]],
+    [11, [4, 3, 3, 1]],
+    [12, [4, 3, 3, 2]],
+    [13, [4, 3, 3, 3]],
+    [14, [4, 3, 3, 3, 1]],
   ])("decomposeAttractorSize(%i) === %j", (n, expected) => {
     expect(decomposeAttractorSize(n)).toEqual(expected);
   });
 
-  test("parts always sum back to n and each part is in [3,7]", () => {
-    for (const n of [8, 9, 10, 11, 15, 17, 20, 25, 30]) {
+  test("parts always sum back to n and each part is in [1,4]", () => {
+    for (const n of [5, 6, 7, 8, 9, 10, 11, 15, 17, 20, 25, 30]) {
       const parts = decomposeAttractorSize(n);
       expect(parts.reduce((a, b) => a + b, 0)).toBe(n);
       for (const part of parts) {
-        expect(part).toBeGreaterThanOrEqual(3);
-        expect(part).toBeLessThanOrEqual(7);
+        expect(part).toBeGreaterThanOrEqual(1);
+        expect(part).toBeLessThanOrEqual(4);
       }
+    }
+  });
+
+  test("until 10, all part sizes are unique", () => {
+    for (const n of [5, 6, 7, 8, 9, 10]) {
+      const parts = decomposeAttractorSize(n);
+      expect(new Set(parts).size).toBe(parts.length);
     }
   });
 });
@@ -219,16 +266,16 @@ describe("layoutAttractorForceShapes", () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  test("a composite (8+) group's own sub-shapes touch (min distance exactly 1) without overlapping", () => {
+  test("a composite (5+) group's own sub-shapes touch (min distance exactly 1) without overlapping", () => {
     const groups: ForceShapeGroup[] = [
       { attractorId: "A1", forces: makeForces("A1", 14), anchor: { q: 0, r: 0 } },
     ];
     const { targets, subShapesByAttractor } = layoutAttractorForceShapes(groups);
-    const subShapeSizes = decomposeAttractorSize(14); // [7,7]
-    expect(subShapeSizes).toEqual([7, 7]);
+    const subShapeSizes = decomposeAttractorSize(14);
+    expect(subShapeSizes).toEqual([4, 3, 3, 3, 1]);
     const bins = subShapesByAttractor.get("A1");
-    expect(bins).toHaveLength(2);
-    expect(bins?.map((bin) => bin.length).sort()).toEqual([7, 7]);
+    expect(bins).toHaveLength(5);
+    expect(bins?.map((bin) => bin.length).sort((a, b) => a - b)).toEqual([1, 3, 3, 3, 4]);
     let minCross = Infinity;
     for (let i = 0; i < bins!.length; i += 1) {
       for (let j = i + 1; j < bins!.length; j += 1) {

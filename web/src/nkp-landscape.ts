@@ -283,9 +283,7 @@ export function mountLandscape(container: HTMLElement, getState: () => PendingSt
       const lockRegions = container.querySelector<HTMLInputElement>("[data-regions-lock-toggle]")?.checked ?? false;
       const lockComponents = container.querySelector<HTMLInputElement>("[data-regions-lock-components-toggle]")?.checked ?? false;
       const keepSimulating = container.querySelector<HTMLInputElement>("[data-regions-keep-simulating-toggle]")?.checked ?? false;
-      const tensionInput = container.querySelector<HTMLInputElement>("[data-bundle-tension-input]");
-      const tension = tensionInput ? Number(tensionInput.value) / 100 : DEFAULT_BUNDLE_TENSION;
-      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, lockComponents, keepSimulating, tension, ...(focusComponent ? { focusComponent } : {}) });
+      handle.update(state, { ...filters, hideFiltered, showNames, lockRegions, lockComponents, keepSimulating, ...(focusComponent ? { focusComponent } : {}) });
     } else {
       const minCouplingStrength = syncMinCouplingStrength(container, state, filters);
       if (view === "heatmap") {

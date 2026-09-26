@@ -55,11 +55,132 @@ function cubicBetween(from: Point, to: Point, direction: Point): CubicCurve {
   };
 }
 
+/**
+ * First intersection of the ray `from → toward` with the circle
+ * (`center`, `radius`), or undefined when the ray misses.
+ */
+export function rayCircleIntersection(
+  from: Point,
+  toward: Point,
+  center: Point,
+  radius: number,
+): Point | undefined {
+  const dx = toward.x - from.x;
+  const dy = toward.y - from.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 1e-9 || radius <= 0) return undefined;
+  const ux = dx / length;
+  const uy = dy / length;
+  const fx = from.x - center.x;
+  const fy = from.y - center.y;
+  // |f + t·u|² = r²  →  t² + 2(f·u)t + (|f|² − r²) = 0
+  const b = 2 * (fx * ux + fy * uy);
+  const c = fx * fx + fy * fy - radius * radius;
+  const discriminant = b * b - 4 * c;
+  if (discriminant < 0) return undefined;
+  const root = Math.sqrt(discriminant);
+  const t1 = (-b - root) / 2;
+  const t2 = (-b + root) / 2;
+  let t: number | undefined;
+  for (const candidate of [t1, t2].sort((left, right) => left - right)) {
+    if (candidate > 1e-6) {
+      t = candidate;
+      break;
+    }
+  }
+  if (t === undefined) return undefined;
+  return { x: from.x + ux * t, y: from.y + uy * t };
+}
+
+function cross2(origin: Point, a: Point, b: Point): number {
+  return (a.x - origin.x) * (b.y - origin.y) - (a.y - origin.y) * (b.x - origin.x);
+}
+
+/** Andrew's monotone-chain convex hull; collinear points collapse to their extremes. */
+export function convexHullPoints(points: readonly Point[]): Point[] {
+  const sorted = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+  const unique = sorted.filter((point, index) => {
+    const previous = sorted[index - 1];
+    return previous === undefined || point.x !== previous.x || point.y !== previous.y;
+  });
+  if (unique.length <= 2) return unique;
+  const turnsWrong = (chain: Point[], point: Point): boolean => {
+    const a = chain[chain.length - 2];
+    const b = chain[chain.length - 1];
+    return a !== undefined && b !== undefined && cross2(a, b, point) <= 0;
+  };
+  const lower: Point[] = [];
+  for (const point of unique) {
+    while (turnsWrong(lower, point)) lower.pop();
+    lower.push(point);
+  }
+  const upper: Point[] = [];
+  for (const point of [...unique].reverse()) {
+    while (turnsWrong(upper, point)) upper.pop();
+    upper.push(point);
+  }
+  return [...lower.slice(0, -1), ...upper.slice(0, -1)];
+}
+
+/**
+ * First intersection of the ray `from → toward` with the boundary of a convex
+ * `polygon` (ordered vertices), or undefined when the ray misses.
+ */
+export function rayConvexPolygonIntersection(
+  from: Point,
+  toward: Point,
+  polygon: readonly Point[],
+): Point | undefined {
+  if (polygon.length === 0) return undefined;
+  if (polygon.length === 1) {
+    const only = polygon[0]!;
+    const dx = toward.x - from.x;
+    const dy = toward.y - from.y;
+    const length = Math.hypot(dx, dy);
+    if (length < 1e-9) return undefined;
+    const ux = dx / length;
+    const uy = dy / length;
+    const tx = only.x - from.x;
+    const ty = only.y - from.y;
+    const t = tx * ux + ty * uy;
+    if (t <= 1e-6) return undefined;
+    const closest = { x: from.x + ux * t, y: from.y + uy * t };
+    if (Math.hypot(closest.x - only.x, closest.y - only.y) > 1e-6) return undefined;
+    return { ...only };
+  }
+  const dx = toward.x - from.x;
+  const dy = toward.y - from.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 1e-9) return undefined;
+  const ux = dx / length;
+  const uy = dy / length;
+  let bestT: number | undefined;
+  for (let i = 0; i < polygon.length; i += 1) {
+    const a = polygon[i]!;
+    const b = polygon[(i + 1) % polygon.length]!;
+    const ex = b.x - a.x;
+    const ey = b.y - a.y;
+    const denom = ux * ey - uy * ex;
+    if (Math.abs(denom) < 1e-12) continue;
+    const fx = a.x - from.x;
+    const fy = a.y - from.y;
+    const t = (fx * ey - fy * ex) / denom;
+    const s = (fx * uy - fy * ux) / denom;
+    if (t > 1e-6 && s >= -1e-9 && s <= 1 + 1e-9) {
+      if (bestT === undefined || t < bestT) bestT = t;
+    }
+  }
+  if (bestT === undefined) return undefined;
+  return { x: from.x + ux * bestT, y: from.y + uy * bestT };
+}
+
 export function branchGeometry(
   from: Point,
   to: Point[],
   splitFraction = 0.6,
   tension = 1,
+  /** When set, the trunk ends here instead of at the fraction/tension point. */
+  splitAt?: Point,
 ): { trunk: string; branches: string[]; width: number } {
   const targets = to.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
   const count = targets.length;
@@ -75,18 +196,23 @@ export function branchGeometry(
   }
 
   const center = centroid(targets) ?? from;
-  const split = clamp(splitFraction, 0.05, 0.95);
-  const rawSplitPoint: Point = {
-    x: from.x + (center.x - from.x) * split,
-    y: from.y + (center.y - from.y) * split,
-  };
-  // tension blends the raw (fully bundled) split point back toward `from`:
-  // tension=1 reproduces the raw split point exactly; tension=0 collapses
-  // the trunk to a zero-length stub at the source.
-  const splitPoint: Point = {
-    x: from.x + (rawSplitPoint.x - from.x) * tension,
-    y: from.y + (rawSplitPoint.y - from.y) * tension,
-  };
+  let splitPoint: Point;
+  if (splitAt && Number.isFinite(splitAt.x) && Number.isFinite(splitAt.y)) {
+    splitPoint = splitAt;
+  } else {
+    const split = clamp(splitFraction, 0.05, 0.95);
+    const rawSplitPoint: Point = {
+      x: from.x + (center.x - from.x) * split,
+      y: from.y + (center.y - from.y) * split,
+    };
+    // tension blends the raw (fully bundled) split point back toward `from`:
+    // tension=1 reproduces the raw split point exactly; tension=0 collapses
+    // the trunk to a zero-length stub at the source.
+    splitPoint = {
+      x: from.x + (rawSplitPoint.x - from.x) * tension,
+      y: from.y + (rawSplitPoint.y - from.y) * tension,
+    };
+  }
   const trunkDirection = normalize(splitPoint.x - from.x, splitPoint.y - from.y);
   const trunk = curveToPath(from, cubicBetween(from, splitPoint, trunkDirection));
 
@@ -109,6 +235,186 @@ export function branchGeometry(
   });
 
   return { trunk, branches, width };
+}
+
+/**
+ * Point on the segment `fromDirection → target` that sits `distance` away
+ * from `target` (clamped when the segment is shorter).
+ */
+export function pointAtDistanceFrom(
+  target: Point,
+  fromDirection: Point,
+  distance: number,
+): Point {
+  const dx = fromDirection.x - target.x;
+  const dy = fromDirection.y - target.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 1e-9) return { x: target.x, y: target.y };
+  const scale = Math.min(Math.max(0, distance), length) / length;
+  return { x: target.x + dx * scale, y: target.y + dy * scale };
+}
+
+/**
+ * Push `points` apart around `origin` so consecutive angular neighbors have
+ * at least `minTangential` separation measured along the average radius.
+ * Returns a new array; single/empty inputs are unchanged.
+ */
+export function ensureMinTangentialSeparation(
+  origin: Point,
+  points: readonly Point[],
+  minTangential: number,
+): Point[] {
+  if (points.length <= 1 || minTangential <= 0) return points.map((point) => ({ ...point }));
+  const items = points.map((point, index) => {
+    const dx = point.x - origin.x;
+    const dy = point.y - origin.y;
+    return {
+      index,
+      radius: Math.hypot(dx, dy),
+      angle: Math.atan2(dy, dx),
+      point: { ...point },
+    };
+  });
+  items.sort((a, b) => a.angle - b.angle);
+  const meanRadius = items.reduce((sum, item) => sum + item.radius, 0) / items.length;
+  const radius = Math.max(meanRadius, minTangential);
+  // Chord length c at radius r needs central angle 2·asin(c/(2r)).
+  const minAngle = 2 * Math.asin(Math.min(1, minTangential / (2 * radius)));
+  // Expand gaps iteratively so consecutive (and wrap-around) pairs clear minAngle.
+  for (let pass = 0; pass < items.length * 2; pass += 1) {
+    for (let i = 0; i < items.length; i += 1) {
+      const current = items[i]!;
+      const next = items[(i + 1) % items.length]!;
+      let delta = next.angle - current.angle;
+      if (delta <= 0) delta += Math.PI * 2;
+      if (delta >= minAngle) continue;
+      const deficit = (minAngle - delta) / 2;
+      current.angle -= deficit;
+      next.angle += deficit;
+    }
+  }
+  const result = points.map((point) => ({ ...point }));
+  for (const item of items) {
+    result[item.index] = {
+      x: origin.x + Math.cos(item.angle) * item.radius,
+      y: origin.y + Math.sin(item.angle) * item.radius,
+    };
+  }
+  return result;
+}
+
+/**
+ * Slide `target` along the ray `origin → toward` so it sits at least
+ * `minSeparation` past `origin` toward `toward` (and still before `toward`).
+ * Keeps nested bundle splits from collapsing onto the same point.
+ */
+export function ensureForwardSplitSeparation(
+  origin: Point,
+  target: Point,
+  toward: Point,
+  minSeparation: number,
+): Point {
+  const hx = toward.x - origin.x;
+  const hy = toward.y - origin.y;
+  const hLen = Math.hypot(hx, hy);
+  if (hLen < 1e-9) return { x: target.x, y: target.y };
+  const ux = hx / hLen;
+  const uy = hy / hLen;
+  const proj = (target.x - origin.x) * ux + (target.y - origin.y) * uy;
+  const minPlace = Math.min(Math.max(0, minSeparation), hLen * 0.92);
+  const place = Math.min(hLen * 0.92, Math.max(minPlace, proj));
+  return { x: origin.x + ux * place, y: origin.y + uy * place };
+}
+
+export interface NestedSubShapeTargets {
+  /** Leaf force positions this sub-shape branch ends at. */
+  forces: readonly Point[];
+  /**
+   * When set, the mid→force fan splits here (e.g. intersection with a one-layer
+   * dilated hull around the sub-shape). Otherwise falls back to
+   * `approachDistance` from the force centroid toward `midSplit`.
+   */
+  approach?: Point;
+}
+
+/**
+ * Two-level nested fan: `from` → `midSplit` trunk, then mid→approach branches
+ * (one per sub-shape), then approach→force leaves. Prefer per-sub-shape
+ * `approach` points (dilated outer edge); `approachDistance` is the fallback
+ * hop from each centroid. `minTangential` keeps sibling branches apart.
+ */
+export function nestedBranchGeometry(
+  from: Point,
+  subShapes: readonly NestedSubShapeTargets[],
+  midSplit: Point,
+  approachDistance: number,
+  minTangential = 0,
+): {
+  trunk: string;
+  midBranches: string[];
+  forceBranches: string[][];
+  approachPoints: Point[];
+  width: number;
+} {
+  const leafCount = subShapes.reduce((sum, sub) => sum + sub.forces.length, 0);
+  if (leafCount === 0) {
+    return { trunk: "", midBranches: [], forceBranches: [], approachPoints: [], width: 1 };
+  }
+  const width = 1 + Math.sqrt(Math.max(0, leafCount - 1)) * 0.9;
+  const trunkDirection = normalize(midSplit.x - from.x, midSplit.y - from.y);
+  const trunk = curveToPath(from, cubicBetween(from, midSplit, trunkDirection));
+
+  let approachPoints = subShapes.map((sub) => {
+    if (
+      sub.approach
+      && Number.isFinite(sub.approach.x)
+      && Number.isFinite(sub.approach.y)
+    ) {
+      return { x: sub.approach.x, y: sub.approach.y };
+    }
+    const hub = centroid(sub.forces.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))) ?? midSplit;
+    return pointAtDistanceFrom(hub, midSplit, approachDistance);
+  });
+  approachPoints = ensureMinTangentialSeparation(midSplit, approachPoints, minTangential);
+
+  const midBranches = approachPoints.map((approach) => {
+    const dx = approach.x - midSplit.x;
+    const dy = approach.y - midSplit.y;
+    const distance = Math.hypot(dx, dy);
+    const cp1Distance = Math.min(Math.max(10, distance * 0.35), 32);
+    return curveToPath(midSplit, {
+      c1: {
+        x: midSplit.x + trunkDirection.x * cp1Distance,
+        y: midSplit.y + trunkDirection.y * cp1Distance,
+      },
+      c2: { x: approach.x - dx * 0.3, y: approach.y - dy * 0.3 },
+      end: approach,
+    });
+  });
+
+  const forceBranches = subShapes.map((sub, index) => {
+    const approach = approachPoints[index]!;
+    const forces = sub.forces.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+    // Fan leaf departure angles around the approach so close forces still
+    // split with a readable tangential gap; endpoints stay on the forces.
+    const spreadTargets = ensureMinTangentialSeparation(approach, forces, minTangential);
+    return forces.map((force, forceIndex) => {
+      const spread = spreadTargets[forceIndex] ?? force;
+      const leave = {
+        x: approach.x + (spread.x - approach.x) * 0.35,
+        y: approach.y + (spread.y - approach.y) * 0.35,
+      };
+      const dx = force.x - approach.x;
+      const dy = force.y - approach.y;
+      return curveToPath(approach, {
+        c1: leave,
+        c2: { x: force.x - dx * 0.3, y: force.y - dy * 0.3 },
+        end: force,
+      });
+    });
+  });
+
+  return { trunk, midBranches, forceBranches, approachPoints, width };
 }
 
 function overlap1d(a0: number, a1: number, b0: number, b1: number): number {

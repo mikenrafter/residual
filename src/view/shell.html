@@ -306,9 +306,11 @@
       .nkp-fission-ring { stroke: var(--warn); stroke-width: 1.5px; }
       .nkp-node-label { fill: var(--ink); font: 11px var(--mono); pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
       .nkp-hyper-bundle-trunk,
+      .nkp-hyper-bundle-mid-branch,
+      .nkp-hyper-bundle-force-branch,
       .nkp-hyper-bundle-branch,
       .nkp-hyper-force-bundle-trunk,
-      .nkp-hyper-force-bundle-branch { fill: none; stroke-linecap: round; }
+      .nkp-hyper-force-bundle-branch { fill: none; stroke-linecap: round; transition: opacity 120ms; }
       .nkp-hyper-bundle,
       .nkp-hyper-force-bundle { isolation: isolate; transition: opacity 120ms; }
       .nkp-hyper-force-dot { stroke: var(--bg); stroke-width: 1px; }
@@ -321,12 +323,24 @@
       .nkp-hyper.names-hidden .nkp-hyper-force-label { opacity: 0 !important; }
       .nkp-hyper-hovering .nkp-hyper-node:not(.is-lit):not(.is-semi) { opacity: var(--selection-dim-opacity); }
       .nkp-hyper-hovering .nkp-hyper-node.is-semi:not(.is-lit) { opacity: var(--selection-semi-opacity); }
-      .nkp-hyper-hovering .nkp-hyper-bundle:not(.is-lit),
-      .nkp-hyper-selecting .nkp-hyper-bundle:not(.is-lit),
+      /* Nested membership fans: dim non-connecting segments; light paths that
+         join a selected entity to its direct connected network. */
+      .nkp-hyper-hovering .nkp-hyper-bundle,
+      .nkp-hyper-selecting .nkp-hyper-bundle { opacity: 1; }
+      .nkp-hyper-hovering .nkp-hyper-bundle-trunk:not(.is-lit),
+      .nkp-hyper-selecting .nkp-hyper-bundle-trunk:not(.is-lit),
+      .nkp-hyper-hovering .nkp-hyper-bundle-mid-branch:not(.is-lit),
+      .nkp-hyper-selecting .nkp-hyper-bundle-mid-branch:not(.is-lit),
+      .nkp-hyper-hovering .nkp-hyper-bundle-force-branch:not(.is-lit),
+      .nkp-hyper-selecting .nkp-hyper-bundle-force-branch:not(.is-lit) { opacity: 0.04; }
+      .nkp-hyper-hovering .nkp-hyper-bundle-trunk.is-lit,
+      .nkp-hyper-selecting .nkp-hyper-bundle-trunk.is-lit,
+      .nkp-hyper-hovering .nkp-hyper-bundle-mid-branch.is-lit,
+      .nkp-hyper-selecting .nkp-hyper-bundle-mid-branch.is-lit,
+      .nkp-hyper-hovering .nkp-hyper-bundle-force-branch.is-lit,
+      .nkp-hyper-selecting .nkp-hyper-bundle-force-branch.is-lit { opacity: 0.9; }
       .nkp-hyper-hovering .nkp-hyper-force-bundle:not(.is-lit),
       .nkp-hyper-selecting .nkp-hyper-force-bundle:not(.is-lit) { opacity: 0.04; }
-      .nkp-hyper-hovering .nkp-hyper-bundle.is-lit,
-      .nkp-hyper-selecting .nkp-hyper-bundle.is-lit,
       .nkp-hyper-hovering .nkp-hyper-force-bundle.is-lit,
       .nkp-hyper-selecting .nkp-hyper-force-bundle.is-lit { opacity: 0.9; }
       .nkp-hyper-hovering .nkp-hyper-region:not(.is-lit):not(.is-semi),
@@ -689,7 +703,7 @@
               <output data-top-n-couplings-value>all</output> tiers
             </label>
             <label data-landscape-for="bundle"><input type="checkbox" data-top-n-weakest-toggle /> weakest first</label>
-            <label data-landscape-for="bundle regions">bundling
+            <label data-landscape-for="bundle">bundling
               <input type="range" data-bundle-tension-input min="0" max="100" value="85" />
             </label>
             <label data-landscape-for="heatmap" hidden><input type="checkbox" data-heatmap-counts-toggle checked /> show counts</label>

@@ -1,4 +1,9 @@
 import type { Point } from "./landscape-geometry";
+import {
+  convexHullPoints,
+  pointAtDistanceFrom,
+  rayConvexPolygonIntersection,
+} from "./landscape-geometry";
 
 export interface AxialPoint {
   q: number;
@@ -114,6 +119,109 @@ export function axialKey(point: AxialPoint): string {
   return `${point.q}:${point.r}`;
 }
 
+/** Cells of `cells` plus every axial neighbor — one lattice layer out. */
+export function dilateAxialOneLayer(cells: readonly AxialPoint[]): AxialPoint[] {
+  const seen = new Set<string>();
+  const out: AxialPoint[] = [];
+  const add = (cell: AxialPoint): void => {
+    const key = axialKey(cell);
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ q: cell.q, r: cell.r });
+  };
+  for (const cell of cells) {
+    add(cell);
+    for (const neighbor of AXIAL_NEIGHBORS) {
+      add({ q: cell.q + neighbor.q, r: cell.r + neighbor.r });
+    }
+  }
+  return out;
+}
+
+/**
+ * Split point for the final nested-bundle fan: intersection of the ray from
+ * `fromOutside` toward the sub-shape centroid with the convex hull of the
+ * sub-shape dilated by one lattice layer. Falls back to one spacing hop from
+ * the centroid when the ray misses (degenerate/coincident cases).
+ */
+export function dilatedSubshapeApproach(
+  forces: readonly Point[],
+  fromOutside: Point,
+  spacing = TRI_LATTICE_SPACING,
+  origin: Point = { x: 0, y: 0 },
+): Point {
+  const finite = forces.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+  if (finite.length === 0) return { x: fromOutside.x, y: fromOutside.y };
+  const hub = {
+    x: finite.reduce((sum, point) => sum + point.x, 0) / finite.length,
+    y: finite.reduce((sum, point) => sum + point.y, 0) / finite.length,
+  };
+  const cellKeys = new Set<string>();
+  const cells: AxialPoint[] = [];
+  for (const point of finite) {
+    const cell = pixelToAxial(point, spacing, origin);
+    const key = axialKey(cell);
+    if (cellKeys.has(key)) continue;
+    cellKeys.add(key);
+    cells.push(cell);
+  }
+  const dilated = dilateAxialOneLayer(cells);
+  const hull = convexHullPoints(dilated.map((cell) => axialToPixel(cell, spacing, origin)));
+  const hit = rayConvexPolygonIntersection(fromOutside, hub, hull);
+  if (hit) return hit;
+  return pointAtDistanceFrom(hub, fromOutside, spacing);
+}
+
+/** Rotate `point` by `steps` × 60° clockwise around the axial origin. */
+export function rotateAxial(point: AxialPoint, steps: number): AxialPoint {
+  let q = point.q;
+  let r = point.r;
+  const turns = ((steps % 6) + 6) % 6;
+  for (let i = 0; i < turns; i += 1) {
+    const nextQ = -r;
+    const nextR = q + r;
+    q = nextQ;
+    r = nextR;
+  }
+  return { q, r };
+}
+
+/**
+ * Rotate every offset around the integer centroid of the offset set by
+ * `steps` × 60°, then re-base so the lexicographically least cell is at
+ * (0,0) relative to a new translation corner. Returns the corner delta
+ * relative to the old offset space (add to the old translation).
+ */
+export function rotateAxialOffsets(
+  offsets: ReadonlyMap<string, AxialPoint>,
+  steps: number,
+): { corner: AxialPoint; offsets: Map<string, AxialPoint> } {
+  if (offsets.size === 0) {
+    return { corner: { q: 0, r: 0 }, offsets: new Map() };
+  }
+  const entries = [...offsets.entries()];
+  const sum = entries.reduce(
+    (acc, [, point]) => ({ q: acc.q + point.q, r: acc.r + point.r }),
+    { q: 0, r: 0 },
+  );
+  const centroid = {
+    q: Math.round(sum.q / entries.length),
+    r: Math.round(sum.r / entries.length),
+  };
+  const rotatedAbs = entries.map(([id, point]) => {
+    const relative = { q: point.q - centroid.q, r: point.r - centroid.r };
+    const spun = rotateAxial(relative, steps);
+    return { id, axial: { q: spun.q + centroid.q, r: spun.r + centroid.r } };
+  });
+  const corner = [...rotatedAbs.map((item) => item.axial)]
+    .sort((a, b) => a.q - b.q || a.r - b.r)[0]!;
+  const next = new Map<string, AxialPoint>();
+  for (const item of rotatedAbs) {
+    next.set(item.id, { q: item.axial.q - corner.q, r: item.axial.r - corner.r });
+  }
+  return { corner, offsets: next };
+}
+
 /** All axial points at exactly `radius` hex-steps from `center` (empty for radius 0 excluded — returns [center]). */
 export function axialRing(center: AxialPoint, radius: number): AxialPoint[] {
   if (radius === 0) return [center];
@@ -133,85 +241,64 @@ export function axialRing(center: AxialPoint, radius: number): AxialPoint[] {
 }
 
 /**
- * Fixed point-patterns for single-shape attractors (2-7 member forces).
- * Every pattern has a max pairwise axialDistance of ≤2 (relied on by composite placement).
+ * Fixed point-patterns for atomic sub-shapes (1-4 member forces).
+ * Sizes 5+ always decompose; every multi-point pattern has max pairwise
+ * axialDistance ≤2 (relied on by composite placement).
  */
 export function shapePatternForSize(size: number): AxialPoint[] {
   switch (size) {
+    case 1: // singleton
+      return [{ q: 0, r: 0 }];
     case 2: // pill
       return [{ q: 0, r: 0 }, { q: 1, r: 0 }];
     case 3: // triangle
       return [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 0, r: 1 }];
     case 4: // parallelogram (two glued unit triangles)
       return [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 0, r: 1 }, { q: 1, r: 1 }];
-    case 5: // dice-5: center + 4 of 6 ring points (opposite diagonal pairs, vertical pair dropped)
-      return [
-        { q: 0, r: 0 },
-        { q: 1, r: 0 },
-        { q: 1, r: -1 },
-        { q: -1, r: 0 },
-        { q: -1, r: 1 },
-      ];
-    case 6: // hexagon: full ring, no center
-      return AXIAL_NEIGHBORS.map((offset) => ({ ...offset }));
-    case 7: // hexagon + center dot
-      return [{ q: 0, r: 0 }, ...AXIAL_NEIGHBORS.map((offset) => ({ ...offset }))];
     default:
-      throw new Error(`shapePatternForSize: no fixed pattern for size ${size} (expected 2-7)`);
+      throw new Error(`shapePatternForSize: no fixed pattern for size ${size} (expected 1-4)`);
   }
-}
-
-function repeatsCount(multiset: readonly number[]): number {
-  return multiset.length - new Set(multiset).size;
-}
-
-function spreadOf(multiset: readonly number[]): number {
-  return Math.max(...multiset) - Math.min(...multiset);
-}
-
-const SHAPE_SIZE_VALUES = [3, 4, 5, 6, 7] as const;
-
-/** All non-decreasing k-length sequences over [3..7] summing to `sum`. */
-function multisetsOfSize(k: number, sum: number): number[][] {
-  const results: number[][] = [];
-  const current: number[] = [];
-  const rec = (startIdx: number, remaining: number, remainingSum: number): void => {
-    if (remaining === 0) {
-      if (remainingSum === 0) results.push([...current]);
-      return;
-    }
-    for (let i = startIdx; i < SHAPE_SIZE_VALUES.length; i += 1) {
-      const value = SHAPE_SIZE_VALUES[i]!;
-      if (value * remaining > remainingSum) break; // values ascending: no smaller value left to try
-      if (7 * remaining < remainingSum) continue;
-      current.push(value);
-      rec(i, remaining - 1, remainingSum - value);
-      current.pop();
-    }
-  };
-  rec(0, k, sum);
-  return results;
 }
 
 /**
- * Decomposes an attractor's force count (8+) into 2 or more sub-shape sizes,
- * each in [3,7] (the composite-eligible single-shape range). Picks the
- * smallest feasible sub-shape count, then within that count prefers all-distinct
- * sizes, then the most balanced (smallest spread) combination.
+ * Unique-size decomposition for remainders of at most 10.
+ * Atomic parts are 1/2/3/4 — 5→2+3, 6→4+2, 8→1+3+4, 9→2+3+4, 10→1+2+3+4.
+ */
+function uniqueDecomposeAtMost10(n: number): number[] {
+  switch (n) {
+    case 0: return [];
+    case 1: return [1];
+    case 2: return [2];
+    case 3: return [3];
+    case 4: return [4];
+    case 5: return [2, 3];
+    case 6: return [4, 2];
+    case 7: return [4, 3];
+    case 8: return [4, 3, 1];
+    case 9: return [4, 3, 2];
+    case 10: return [4, 3, 2, 1];
+    default:
+      throw new Error(`uniqueDecomposeAtMost10: expected 0..10, got ${n}`);
+  }
+}
+
+/**
+ * Decomposes an attractor's force count into atomic sub-shape sizes in [1,4].
+ * Counts ≤4 stay whole; 5–10 use the unique-size rule; past 10, peel 3s until
+ * the remainder is ≤9, then apply the unique rule.
  */
 export function decomposeAttractorSize(n: number): number[] {
-  if (n <= 7) return n > 0 ? [n] : [];
-  for (let k = 2; k <= n; k += 1) {
-    const minSum = 3 * k;
-    const maxSum = 7 * k;
-    if (n < minSum) continue;
-    if (n > maxSum) continue;
-    const candidates = multisetsOfSize(k, n);
-    if (candidates.length === 0) continue;
-    candidates.sort((a, b) => repeatsCount(a) - repeatsCount(b) || spreadOf(a) - spreadOf(b));
-    return candidates[0]!;
+  if (n <= 0) return [];
+  if (n <= 4) return [n];
+  let remaining = n;
+  const peeled: number[] = [];
+  if (n > 10) {
+    while (remaining > 9) {
+      peeled.push(3);
+      remaining -= 3;
+    }
   }
-  throw new Error(`decomposeAttractorSize: no valid decomposition for n=${n}`);
+  return [...peeled, ...uniqueDecomposeAtMost10(remaining)].sort((a, b) => b - a);
 }
 
 /** True when `attempt` shares no cells with `occupied` and at least one pair is edge-adjacent. */
@@ -494,7 +581,7 @@ export interface AttractorForceShapeLayout {
 /**
  * Lays out every attractor group's member forces onto one shared global
  * triangular lattice: each group becomes a shape (or set of edge-adjacent
- * sub-shapes for 8+ forces) anchored near its current force centroid,
+ * sub-shapes for 5+ forces) anchored near its current force centroid,
  * ring-searched outward only far enough to avoid colliding with an
  * already-placed group. Groups are processed in attractorGroupPickOrder so
  * placement alternates large/small rather than packing biggest-first.
@@ -513,7 +600,7 @@ export function layoutAttractorForceShapes(groups: readonly ForceShapeGroup[]): 
       subShapesByAttractor.set(group.attractorId, [[group.forces[0]!.id]]);
       continue;
     }
-    const rawSubShapeSizes = size <= 7 ? [size] : decomposeAttractorSize(size);
+    const rawSubShapeSizes = size <= 4 ? [size] : decomposeAttractorSize(size);
     // placeCompositeShapes places largest-first internally; sort here so our
     // indexing into its result lines up with subShapeSizes/binIds by index.
     const subShapeSizes = [...rawSubShapeSizes].sort((a, b) => b - a);
