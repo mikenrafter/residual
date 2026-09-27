@@ -342,7 +342,7 @@ describe("miniPyramidCellsForLayers orientation", () => {
     }
   });
 
-  test("uses an even horizontal footprint for every layer", () => {
+  test("uses an even horizontal footprint for every vertical layer", () => {
     const single = dualRing.miniPyramidCellsForLayers?.([1], { apexToward: "outward" }) ?? [];
     expect(single).toEqual([{ q: 1, r: 0 }]);
 
@@ -360,8 +360,8 @@ describe("dualRingSlotsForMiniPyramids (gap 0 + empty placeholders)", () => {
     dualRing = (await import("./landscape-triangular-lattice").catch(() => ({}))) as DualRingLatticeModule;
   });
 
-  test("gap 0: slot count is the sum of bases only", () => {
-    expect(dualRing.dualRingSlotsForMiniPyramids?.([3, 5, 2], { gapNodes: 0 })).toBe(3 + 5 + 2);
+  test("gap 0: slot count uses each base's even horizontal footprint", () => {
+    expect(dualRing.dualRingSlotsForMiniPyramids?.([3, 5, 2], { gapNodes: 0 })).toBe(4 + 6 + 2);
   });
 
   test("empty kind uses a 2-wide placeholder instead of a zero-width hole", () => {

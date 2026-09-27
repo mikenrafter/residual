@@ -4070,15 +4070,20 @@ function miniPyramidLayersForCount(n) {
   }
   return [base];
 }
+function evenHorizontalWidth(width) {
+  const nonNegativeWidth = Math.max(0, width);
+  return nonNegativeWidth + nonNegativeWidth % 2;
+}
 function miniPyramidCellsForLayers(layers, orientation = { apexToward: "outward" }) {
   const cells = [];
   if (layers.length === 0)
     return cells;
   const last = layers.length - 1;
+  const horizontalFootprint = evenHorizontalWidth(layers[0]);
   for (let i = 0;i < layers.length; i += 1) {
     const width = layers[i];
     const r = orientation.apexToward === "outward" ? i : last - i;
-    const qOffset = layers[0] - width;
+    const qOffset = horizontalFootprint - width;
     for (let q = 0;q < width; q += 1) {
       cells.push({ q: qOffset + q, r });
     }
@@ -4091,7 +4096,7 @@ function assignForcesToMiniPyramidLayers(forces, layers) {
 function dualRingSlotsForMiniPyramids(baseWidths, options = {}) {
   const gapNodes = options.gapNodes ?? 0;
   const emptyPlaceholderSlots = options.emptyPlaceholderSlots ?? 0;
-  const bases = baseWidths.reduce((sum, width) => sum + Math.max(0, width), 0);
+  const bases = baseWidths.reduce((sum, width) => sum + evenHorizontalWidth(width), 0);
   return bases + gapNodes * Math.max(0, baseWidths.length) + emptyPlaceholderSlots;
 }
 function layoutAttractorDualRingMiniPyramids(groups, rings) {
@@ -4115,8 +4120,8 @@ function layoutAttractorDualRingMiniPyramids(groups, rings) {
       }
       const layers = miniPyramidLayersForCount(kindForces.length);
       const localCells = miniPyramidCellsForLayers(layers, { apexToward });
-      const rowWidths = [...layers];
-      const baseWidth = rowWidths[0] ?? 1;
+      const layerWidths = [...layers];
+      const baseWidth = evenHorizontalWidth(layerWidths[0] ?? 1);
       const last = Math.max(0, layers.length - 1);
       let cursor = startSlot;
       const absoluteFor = (local, cursorSlot) => {
@@ -4140,7 +4145,7 @@ function layoutAttractorDualRingMiniPyramids(groups, rings) {
       for (const cell of placed)
         occupiedKeys.add(axialKey(cell));
       const bins = assignForcesToMiniPyramidLayers(kindForces, layers);
-      const localsByLayer = rowWidths.map((_, i) => {
+      const localsByLayer = layerWidths.map((_, i) => {
         const expectedR = apexToward === "outward" ? i : last - i;
         return localCells.filter((c) => c.r === expectedR);
       });

@@ -281,19 +281,22 @@ export function miniPyramidLayersForCount(n: number): number[] {
   return [base];
 }
 
+/** The smallest even number of horizontal spaces that can hold `width` cells. */
+export function evenHorizontalWidth(width: number): number {
+  const nonNegativeWidth = Math.max(0, width);
+  return nonNegativeWidth + (nonNegativeWidth % 2);
+}
+
 /**
- * Local cells for a mini-pyramid frustum, in (col, layer) terms — `q` is the
- * column within a layer (a plain left-aligned run: `0..width-1`, never
- * centered) and `r` is the layer index. This is the same shape a caller
- * later re-bases at a placement's own start column and layer/ring offset:
- *   ^ layer (r)
- *   | <---> col (q)
- *   AAAA   (row 0, width 4, cols 0..3)
- *    AAA   (row 1, width 3, cols 1..3)
- *     AA   (row 2, width 2, cols 2..3)
- *      A   (row 3, width 1, col 3)
- * The row order is unchanged; each row is mirrored across the shared wide
- * edge so the opposite column is straight.
+ * Local cells for a mini-pyramid frustum. `q` is the horizontal cell position
+ * within a vertical layer, and `r` is the vertical layer position. A caller
+ * later re-bases these positions at a ring slot and radial layer.
+ *
+ * The horizontal footprint is always even and right-aligned:
+ *   horizontal q →  0 1 2 3
+ *   vertical r = 0  . A A A   (width 3, footprint 4)
+ *   vertical r = 1  . . A A   (width 2, footprint 4)
+ *   vertical r = 2  . . . A   (width 1, footprint 4)
  */
 export function miniPyramidCellsForLayers(
   layers: readonly number[],
@@ -302,10 +305,11 @@ export function miniPyramidCellsForLayers(
   const cells: AxialPoint[] = [];
   if (layers.length === 0) return cells;
   const last = layers.length - 1;
+  const horizontalFootprint = evenHorizontalWidth(layers[0]!);
   for (let i = 0; i < layers.length; i += 1) {
     const width = layers[i]!;
     const r = orientation.apexToward === "outward" ? i : last - i;
-    const qOffset = layers[0]! - width;
+    const qOffset = horizontalFootprint - width;
     for (let q = 0; q < width; q += 1) {
       cells.push({ q: qOffset + q, r });
     }
@@ -353,7 +357,7 @@ export function dualRingSlotsForMiniPyramids(
 ): number {
   const gapNodes = options.gapNodes ?? 0;
   const emptyPlaceholderSlots = options.emptyPlaceholderSlots ?? 0;
-  const bases = baseWidths.reduce((sum, width) => sum + Math.max(0, width), 0);
+  const bases = baseWidths.reduce((sum, width) => sum + evenHorizontalWidth(width), 0);
   return bases + gapNodes * Math.max(0, baseWidths.length) + emptyPlaceholderSlots;
 }
 
@@ -410,8 +414,8 @@ export function layoutAttractorDualRingMiniPyramids(
       }
       const layers = miniPyramidLayersForCount(kindForces.length);
       const localCells = miniPyramidCellsForLayers(layers, { apexToward });
-      const rowWidths = [...layers];
-      const baseWidth = rowWidths[0] ?? 1;
+      const layerWidths = [...layers];
+      const baseWidth = evenHorizontalWidth(layerWidths[0] ?? 1);
       const last = Math.max(0, layers.length - 1);
       let cursor = startSlot;
 
@@ -443,7 +447,7 @@ export function layoutAttractorDualRingMiniPyramids(
       // Keep the stable base-to-apex bin order for grouping/dragging; map
       // those bins onto the corresponding wide-to-short row positions below.
       const bins = assignForcesToMiniPyramidLayers(kindForces, layers);
-      const localsByLayer = rowWidths.map((_, i) => {
+      const localsByLayer = layerWidths.map((_, i) => {
         const expectedR = apexToward === "outward" ? i : last - i;
         return localCells.filter((c) => c.r === expectedR);
       });
