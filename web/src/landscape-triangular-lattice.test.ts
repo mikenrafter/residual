@@ -341,6 +341,18 @@ describe("miniPyramidCellsForLayers orientation", () => {
       expect(Math.max(...cols)).toBe(3);
     }
   });
+
+  test("uses an even horizontal footprint for every layer", () => {
+    const single = dualRing.miniPyramidCellsForLayers?.([1], { apexToward: "outward" }) ?? [];
+    expect(single).toEqual([{ q: 1, r: 0 }]);
+
+    const cells = dualRing.miniPyramidCellsForLayers?.([3, 2, 1], { apexToward: "outward" }) ?? [];
+    const byLayer = new Map<number, number[]>();
+    for (const cell of cells) byLayer.set(cell.r, [...(byLayer.get(cell.r) ?? []), cell.q]);
+    expect(byLayer.get(0)?.sort((a, b) => a - b)).toEqual([1, 2, 3]);
+    expect(byLayer.get(1)?.sort((a, b) => a - b)).toEqual([2, 3]);
+    expect(byLayer.get(2)?.sort((a, b) => a - b)).toEqual([3]);
+  });
 });
 
 describe("dualRingSlotsForMiniPyramids (gap 0 + empty placeholders)", () => {
