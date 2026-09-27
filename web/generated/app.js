@@ -4842,6 +4842,72 @@ function createRegionsView(ctx) {
   function translationClear(subShape, translation, occupied) {
     return [...subShape.offsets.values()].every((offset) => !occupied.has(axialKey({ q: offset.q + translation.q, r: offset.r + translation.r })));
   }
+  function moveRigidSubShapeToPoint(node, point) {
+    let found;
+    for (const shape of rigidAttractors.values()) {
+      const index = shape.subShapes.findIndex((subShape) => subShape.forceIds.includes(node.id));
+      if (index >= 0) {
+        found = { subShape: shape.subShapes[index], index };
+        break;
+      }
+    }
+    if (!found)
+      return false;
+    const primaryOffset = found.subShape.offsets.get(node.id);
+    if (!primaryOffset)
+      return false;
+    const stack = currentDualRingStack();
+    const projection = currentDualRingProjection();
+    const ringBounds = node.kind === "purpose" ? { min: 1, max: stack.purposeRingAxial } : { min: stack.stressorRingAxial, max: stack.stressorRingOuterAxial };
+    const radialDeltas = [...found.subShape.offsets.values()].map((offset) => offset.r - primaryOffset.r);
+    const targetBounds = {
+      min: Math.max(ringBounds.min, ringBounds.min - Math.min(...radialDeltas)),
+      max: Math.min(ringBounds.max, ringBounds.max - Math.max(...radialDeltas))
+    };
+    const occupied = occupiedKeysExcluding({
+      attractorId: node.attractorId,
+      subShapeIndex: found.index
+    });
+    const targetCell = nearestFreeDualRingCell(point, occupied, projection, targetBounds);
+    const translation = {
+      q: targetCell.q - primaryOffset.q,
+      r: targetCell.r - primaryOffset.r
+    };
+    const cells = absoluteCellsForSubShape(found.subShape, translation);
+    if (cells.some((cell) => occupied.has(axialKey(cell))))
+      return false;
+    found.subShape.translation = translation;
+    found.subShape.forceIds.forEach((id, index) => {
+      const peer = byId.get(id);
+      const cell = cells[index];
+      if (!peer || peer.type !== "force" || !cell)
+        return;
+      const home = axialToDualRingPixel(cell, projection);
+      peer.x = home.x;
+      peer.y = home.y;
+      peer.fx = home.x;
+      peer.fy = home.y;
+      latticeTargets.set(id, home);
+    });
+    return true;
+  }
+  function moveAttractorGroupBy(attractorId, dx, dy) {
+    const shape = rigidAttractors.get(attractorId);
+    if (!shape) {
+      translateGroup(nodes, attractorId, dx, dy);
+      return;
+    }
+    for (const subShape of shape.subShapes) {
+      const primaryId = subShape.forceIds[0];
+      const primary = primaryId ? byId.get(primaryId) : undefined;
+      if (!primary || primary.type !== "force")
+        continue;
+      moveRigidSubShapeToPoint(primary, {
+        x: (primary.x ?? 0) + dx,
+        y: (primary.y ?? 0) + dy
+      });
+    }
+  }
   function currentForceCounts() {
     return [...nodes.reduce((map, node) => {
       if (node.type !== "force")
@@ -5601,15 +5667,17 @@ function createRegionsView(ctx) {
       const primary = clampForce(point, node.kind);
       const dx = primary.x - from.x;
       const dy = primary.y - from.y;
-      for (const peerId of peerIds) {
-        const peer = byId.get(peerId);
-        if (!peer || peer.type !== "force")
-          continue;
-        const next = peerId === node.id ? primary : { x: (peer.x ?? 0) + dx, y: (peer.y ?? 0) + dy };
-        peer.fx = next.x;
-        peer.fy = next.y;
-        peer.x = next.x;
-        peer.y = next.y;
+      if (!moveRigidSubShapeToPoint(node, primary)) {
+        for (const peerId of peerIds) {
+          const peer = byId.get(peerId);
+          if (!peer || peer.type !== "force")
+            continue;
+          const next = peerId === node.id ? primary : { x: (peer.x ?? 0) + dx, y: (peer.y ?? 0) + dy };
+          peer.fx = next.x;
+          peer.fy = next.y;
+          peer.x = next.x;
+          peer.y = next.y;
+        }
       }
     } else {
       let clamped = point;
@@ -5668,6 +5736,10 @@ function createRegionsView(ctx) {
     }
     dragComponentOccupied = undefined;
     dragComponentOrigin = undefined;
+  }
+  function dragRegionBy(attractorId, dx, dy) {
+    moveAttractorGroupBy(attractorId, dx, dy);
+    tick();
   }
   function applySelectionClasses() {
     if (!built)
@@ -5879,24 +5951,11 @@ function createRegionsView(ctx) {
           y: lock.anchor.y + event.dy
         });
         lockState.locks.set(group.attractorId, moved);
-        pinLockedMembers(moved);
-        refreshLatticeTargets();
+        moveAttractorGroupBy(group.attractorId, event.dx, event.dy);
         tick();
         return;
       }
-      translateGroup(nodes, group.attractorId, event.dx, event.dy);
-      {
-        const { outerRadius: radius } = currentZoneRadii();
-        for (const node of nodes) {
-          if (node.type !== "force" || node.attractorId !== group.attractorId)
-            continue;
-          const clamped = clampOutsideCore({ x: node.x ?? 0, y: node.y ?? 0 }, coreCenter, radius);
-          node.x = clamped.x;
-          node.y = clamped.y;
-          node.fx = clamped.x;
-          node.fy = clamped.y;
-        }
-      }
+      moveAttractorGroupBy(group.attractorId, event.dx, event.dy);
       tick();
     }).on("end", (event, group) => {
       if (!event.active)
@@ -6241,6 +6300,7 @@ function createRegionsView(ctx) {
     resetView,
     destroy,
     dragNodeTo,
+    dragRegionBy,
     get simulation() {
       return built?.sim;
     }

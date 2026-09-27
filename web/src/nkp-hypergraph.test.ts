@@ -10,6 +10,7 @@ import {
   partitionMembershipBundles,
   regionCorePath,
 } from "./nkp-hypergraph";
+import { axialToDualRingPixel, pixelToDualRingAxial } from "./landscape-triangular-lattice";
 
 /**
  * createRegionsView, FORCE_NODE_SCALE, forceNodeOpacity, forceInteractionDelta
@@ -68,6 +69,7 @@ interface ViewHandle {
    * instead of through real pointer events, running the same clamp-to-core-
    * boundary logic the real "drag" event handler uses. */
   dragNodeTo?: (nodeId: string, point: { x: number; y: number }) => void;
+  dragRegionBy?: (attractorId: string, dx: number, dy: number) => void;
 }
 interface SimNodeLike { id: string; type: string; attractorId?: string; componentIds?: string[]; x?: number; y?: number }
 interface RegionLock {
@@ -1310,17 +1312,54 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     handle?.dragNodeTo?.("force:S-01", { x: primary!.x + dx, y: primary!.y + dy });
     const after = handle?.simulation?.nodes() ?? [];
     const primaryAfter = after.find((n: any) => n.id === "force:S-01");
-    const actualDx = (primaryAfter?.x ?? 0) - primary!.x;
-    const actualDy = (primaryAfter?.y ?? 0) - primary!.y;
-    // Peers share the primary's (possibly ring-clamped) translation exactly.
-    for (const [id, start] of before) {
+    expect(primaryAfter).toBeDefined();
+    // Every peer lands on the curved lattice after the subgroup moves.
+    const stack = dualStackFor(handle);
+    expect(stack).toBeDefined();
+    const projection = { origin: { x: 400, y: 300 }, spacing: 60, stack: stack! };
+    for (const [id] of before) {
       const node = after.find((n: any) => n.id === id);
-      expect(node?.x).toBeCloseTo(start.x + actualDx, 5);
-      expect(node?.y).toBeCloseTo(start.y + actualDy, 5);
+      expect(node).toBeDefined();
+      const bounds = id.includes(":P-")
+        ? { min: 1, max: stack!.purposeRingAxial }
+        : { min: stack!.stressorRingAxial, max: stack!.stressorRingOuterAxial };
+      const cell = pixelToDualRingAxial({ x: node?.x ?? 0, y: node?.y ?? 0 }, projection, bounds);
+      const snapped = axialToDualRingPixel(cell, projection);
+      expect(node?.x).toBeCloseTo(snapped.x, 5);
+      expect(node?.y).toBeCloseTo(snapped.y, 5);
     }
     const p01 = after.find((n: any) => n.id === "force:P-01");
     expect(p01?.x).toBeCloseTo(p01Start!.x ?? 0, 5);
     expect(p01?.y).toBeCloseTo(p01Start!.y ?? 0, 5);
+  });
+
+  test("dragging an attractor group keeps every sub-shape on the curved lattice", () => {
+    const { ctx } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const before = new Map(
+      (handle?.simulation?.nodes() ?? [])
+        .filter((n: any) => n.type === "force" && n.attractorId === "A-01")
+        .map((n: any) => [n.id as string, { x: n.x ?? 0, y: n.y ?? 0 }]),
+    );
+    handle?.dragRegionBy?.("A-01", 90, -30);
+    const after = handle?.simulation?.nodes() ?? [];
+    const stack = dualStackFor(handle);
+    expect(stack).toBeDefined();
+    const projection = { origin: { x: 400, y: 300 }, spacing: 60, stack: stack! };
+    for (const [id, start] of before) {
+      const node = after.find((n: any) => n.id === id);
+      expect(node).toBeDefined();
+      expect(Math.hypot((node?.x ?? 0) - start.x, (node?.y ?? 0) - start.y)).toBeGreaterThan(0);
+      const cell = pixelToDualRingAxial(
+        { x: node?.x ?? 0, y: node?.y ?? 0 },
+        projection,
+        { min: stack!.stressorRingAxial, max: stack!.stressorRingOuterAxial },
+      );
+      const snapped = axialToDualRingPixel(cell, projection);
+      expect(node?.x).toBeCloseTo(snapped.x, 5);
+      expect(node?.y).toBeCloseTo(snapped.y, 5);
+    }
   });
 
   test("dragging a force in one composite sub-shape does not move the other sub-shape", () => {
@@ -1351,12 +1390,20 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     expect(moved.length).toBeGreaterThanOrEqual(3);
     expect(moved.length).toBeLessThan(9);
     expect(moved.some((n: any) => n.id === primary!.id)).toBe(true);
-    // Relative offsets inside the moved sub-shape stay fixed.
+    // Relative lattice offsets inside the moved sub-shape stay projected onto
+    // real curved-lattice cells.
+    const stack = dualStackFor(handle);
+    expect(stack).toBeDefined();
+    const projection = { origin: { x: 400, y: 300 }, spacing: 60, stack: stack! };
     const movedIds = new Set(moved.map((n: any) => n.id));
     for (const n of moved) {
-      const start = before.get(n.id)!;
-      expect(n.x).toBeCloseTo(start.x + dx, 5);
-      expect(n.y).toBeCloseTo(start.y, 5);
+      const bounds = n.id.includes(":P-")
+        ? { min: 1, max: stack!.purposeRingAxial }
+        : { min: stack!.stressorRingAxial, max: stack!.stressorRingOuterAxial };
+      const cell = pixelToDualRingAxial({ x: n.x ?? 0, y: n.y ?? 0 }, projection, bounds);
+      const snapped = axialToDualRingPixel(cell, projection);
+      expect(n.x).toBeCloseTo(snapped.x, 5);
+      expect(n.y).toBeCloseTo(snapped.y, 5);
     }
     for (const [id, start] of before) {
       if (movedIds.has(id)) continue;
