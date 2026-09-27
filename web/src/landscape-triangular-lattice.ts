@@ -292,7 +292,9 @@ export function evenHorizontalWidth(width: number): number {
  * within a vertical layer, and `r` is the vertical layer position. A caller
  * later re-bases these positions at a ring slot and radial layer.
  *
- * The horizontal footprint is always even and right-aligned:
+ * The horizontal footprint is always even. The default fill is right-aligned;
+ * callers can mirror a pyramid into the same even-width footprint with
+ * `horizontalFill: "right-to-left"`.
  *   horizontal q →  0 1 2 3
  *   vertical r = 0  . A A A   (width 3, footprint 4)
  *   vertical r = 1  . . A A   (width 2, footprint 4)
@@ -312,8 +314,8 @@ export function miniPyramidCellsForLayers(
   for (let i = 0; i < layers.length; i += 1) {
     const width = layers[i]!;
     const r = orientation.apexToward === "outward" ? i : last - i;
-    const qOffset = horizontalFootprint - width;
     const fillDirection = orientation.horizontalFill ?? "left-to-right";
+    const qOffset = fillDirection === "right-to-left" ? 0 : horizontalFootprint - width;
     if (fillDirection === "right-to-left") {
       for (let q = width - 1; q >= 0; q -= 1) {
         cells.push({ q: qOffset + q, r });
