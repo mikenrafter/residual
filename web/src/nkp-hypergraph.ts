@@ -12,28 +12,17 @@ import { appendZoomableSvg, createTooltip, placeTooltip, renderEmpty } from "./l
 import { highlightConnectedKeys, highlightSemiConnectedKeys, type EntityKey } from "./landscape-selection";
 import { ensureForwardSplitSeparation, dualRingMembershipGeometry, nestedBranchGeometry, nudgeLabels, projectLabelAnchor, rayCircleIntersection } from "./landscape-geometry";
 import {
-  axialFracDistance,
-  axialHopStep,
+  angularStepsForRing,
   axialKey,
-  axialRing,
-  axialRingSlotIndex,
-  axialCellOnRingAtAngle,
   axialToDualRingPixel,
-  canonicalCurvedSprocketLattice,
   dilatedSubshapeApproach,
   dualRingRadialStack,
-  LATTICE_HOP_THRESHOLD,
+  dualRingZoneMeshPaths,
   layoutAttractorDualRingMiniPyramids,
   miniPyramidLayersForCount,
-  nearestFreeAxialPoint,
-  nearestFreeCartesianPoint,
-  outerRingAxialRadiusForSlots,
+  nearestFreeDualRingCell,
   pixelToDualRingAxial,
-  pixelToFractionalAxial,
-  radiusForDualRingAxial,
-  TRI_LATTICE_SPACING,
   type AxialPoint,
-  type CanonicalCurvedSprocketLattice,
   type DualRingProjection,
   type DualRingRadialStack,
   type ForceShapeGroup,
@@ -1028,8 +1017,6 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   let labelShiftByKey = new Map<string, number>();
   let groupColorById = new Map<string, string>();
   let latticeTargets = new Map<string, Point>();
-  let canonicalLatticeKey = "";
-  let canonicalLattice: CanonicalCurvedSprocketLattice | undefined;
   /** Component nodes' current lattice cells (hop-to-hop). */
   let componentCells = new Map<string, AxialPoint>();
   /**
@@ -1069,10 +1056,13 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     subShape: { offsets: Map<string, AxialPoint>; translation: AxialPoint },
     translation: AxialPoint = subShape.translation,
   ): AxialPoint[] {
-    return [...subShape.offsets.values()].map((offset) => ({
-      q: offset.q + translation.q,
-      r: offset.r + translation.r,
-    }));
+    const stack = currentDualRingStack();
+    return [...subShape.offsets.values()].map((offset) => {
+      const r = offset.r + translation.r;
+      const cellCount = angularStepsForRing(stack, r);
+      const q = ((offset.q + translation.q) % cellCount + cellCount) % cellCount;
+      return { q, r };
+    });
   }
 
   function occupiedKeysExcluding(opts: {
@@ -1129,32 +1119,10 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   }
 
   function currentDualRingProjection(): DualRingProjection {
-    const stack = currentDualRingStack();
-    const key = [
-      coreCenter.x,
-      coreCenter.y,
-      stack.stressorRingOuterAxial,
-      stack.componentInnerAxial,
-      stack.componentOuterAxial,
-      stack.stressorRingOuterRadius,
-    ].join(":");
-    if (key !== canonicalLatticeKey) {
-      canonicalLatticeKey = key;
-      canonicalLattice = canonicalCurvedSprocketLattice({
-        origin: coreCenter,
-        innerRadius: 0,
-        outerRadius: stack.stressorRingOuterRadius,
-        cellCount: Math.max(6, 6 * (stack.stressorRingOuterAxial + 12)),
-        boundaryHeight: Math.max(1, stack.stressorRingOuterAxial + 12),
-        radiusForRing: (ring) => radiusForDualRingAxial(ring, stack, REGIONS_TRI_LATTICE_SPACING),
-        slotCountForRing: (ring) => Math.max(1, 6 * ring),
-      });
-    }
     return {
       origin: coreCenter,
       spacing: REGIONS_TRI_LATTICE_SPACING,
-      stack,
-      canonical: canonicalLattice,
+      stack: currentDualRingStack(),
     };
   }
 
@@ -1295,12 +1263,10 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       }
     }
 
-    const inComponentBand = (cell: AxialPoint): boolean => {
-      const ring = Math.max(Math.abs(cell.q), Math.abs(cell.r), Math.abs(cell.q + cell.r));
-      return ring >= stack.componentInnerAxial && ring <= stack.componentOuterAxial;
-    };
+    const inComponentBand = (cell: AxialPoint): boolean =>
+      cell.r >= stack.componentInnerAxial && cell.r <= stack.componentOuterAxial;
 
-    // --- components: pack onto component-band axial rings, seeded on the dominant ray. ---
+    // --- components: pack onto the component band's rings, seeded on the dominant ray. ---
     const componentOccupied = new Set<string>();
     const componentAxialById = new Map<string, AxialPoint>();
     const orderedComponents = nodes
@@ -1313,22 +1279,26 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     for (const node of orderedComponents) {
       const dominantId = node.type === "component" ? node.dominantAttractorId : undefined;
       const angle = (dominantId ? attractorAngle.get(dominantId) : undefined) ?? 0;
-      const count = Math.max(1, 6 * seedRing);
+      const count = angularStepsForRing(stack, seedRing);
       let normalized = angle + Math.PI / 2;
       while (normalized < 0) normalized += 2 * Math.PI;
       while (normalized >= 2 * Math.PI) normalized -= 2 * Math.PI;
       const seedSlot = ((Math.round((normalized / (2 * Math.PI)) * count) % count) + count) % count;
-      const seedCell = axialRing({ q: 0, r: 0 }, seedRing)[seedSlot]!;
+      const seedCell: AxialPoint = { q: seedSlot, r: seedRing };
       let axial = snapIds.has(node.id)
         ? seedCell
-        : pixelToDualRingAxial({ x: node.x ?? 0, y: node.y ?? 0 }, proj);
+        : pixelToDualRingAxial(
+          { x: node.x ?? 0, y: node.y ?? 0 },
+          proj,
+          { min: stack.componentInnerAxial, max: stack.componentOuterAxial },
+        );
       if (!inComponentBand(axial) || componentOccupied.has(axialKey(axial))) {
         let found: AxialPoint | undefined;
         for (let ring = stack.componentInnerAxial; !found && ring <= stack.componentOuterAxial; ring += 1) {
-          const cells = axialRing({ q: 0, r: 0 }, ring);
-          const start = axialRingSlotIndex(seedCell) % Math.max(1, cells.length);
-          for (let i = 0; i < cells.length; i += 1) {
-            const candidate = cells[(start + i) % cells.length]!;
+          const ringSlots = angularStepsForRing(stack, ring);
+          const start = seedCell.q % ringSlots;
+          for (let i = 0; i < ringSlots; i += 1) {
+            const candidate: AxialPoint = { q: (start + i) % ringSlots, r: ring };
             if (!componentOccupied.has(axialKey(candidate))) {
               found = candidate;
               break;
@@ -1361,39 +1331,10 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     const layout = layoutAttractorDualRingMiniPyramids(shapeGroups, {
       purposeRing: stack.purposeRingAxial,
       stressorRing: stack.stressorRingAxial,
+      purposeCellCount: stack.purposeAngularSteps,
+      stressorCellCount: stack.stressorAngularSteps,
     });
     const forceAxialById = new Map(layout.targets);
-    // The square lattice has corner cells farther from the origin than a
-    // radial/axial ring. Move each rendered force cell to the nearest cell in
-    // its actual Cartesian zone so the snap target cannot land in an annulus.
-    for (const force of forceNodesByAttractor.values()) {
-      for (const node of force) {
-        const original = forceAxialById.get(node.id);
-        if (!original) continue;
-        const valid = (cell: AxialPoint): boolean => {
-          const point = axialToDualRingPixel(cell, proj);
-          const radius = Math.hypot(point.x - coreCenter.x, point.y - coreCenter.y);
-          return node.kind === "purpose"
-            ? radius <= stack.innerAnnulus.inner + 1e-6
-            : radius >= stack.outerAnnulus.outer - 1e-6;
-        };
-        if (valid(original)) continue;
-        let best: AxialPoint | undefined;
-        let bestDistance = Infinity;
-        for (let q = original.q - 3; q <= original.q + 3; q += 1) {
-          for (let r = original.r - 3; r <= original.r + 3; r += 1) {
-            const candidate = { q, r };
-            if (!valid(candidate)) continue;
-            const distance = Math.hypot(q - original.q, r - original.r);
-            if (distance < bestDistance) {
-              best = candidate;
-              bestDistance = distance;
-            }
-          }
-        }
-        if (best) forceAxialById.set(node.id, best);
-      }
-    }
     const nextSubShapes = new Map<string, string[][]>();
     for (const attractorId of forceNodesByAttractor.keys()) {
       const purposeBins = layout.purposeSubShapesByAttractor.get(attractorId) ?? [];
@@ -1844,44 +1785,22 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       return;
     }
     const stack = currentDualRingStack();
-    const spacing = REGIONS_TRI_LATTICE_SPACING;
+    const proj = currentDualRingProjection();
     const planes = [
-      { id: "purpose", inner: 0, outer: stack.innerAnnulus.inner, hops: stack.purposeRingAxial, angularSteps: stack.purposeAngularSteps },
-      { id: "components", inner: stack.innerAnnulus.outer, outer: stack.outerAnnulus.inner, hops: stack.componentBand.hops, angularSteps: stack.componentAngularSteps },
-      { id: "stressors", inner: stack.outerAnnulus.outer, outer: stack.stressorRingOuterRadius, hops: stack.stressorRingOuterAxial - stack.stressorRingAxial + 1, angularSteps: stack.stressorAngularSteps },
+      { id: "purpose", minRing: 0, maxRing: stack.purposeRingAxial },
+      { id: "components", minRing: stack.componentInnerAxial, maxRing: stack.componentOuterAxial },
+      { id: "stressors", minRing: stack.stressorRingAxial, maxRing: stack.stressorRingOuterAxial },
     ] as const;
     const lines: Array<{ id: string; plane: string; points: Point[] }> = [];
-    const inside = (x: number, y: number, plane: (typeof planes)[number]): boolean => {
-      const radius = Math.hypot(x - coreCenter.x, y - coreCenter.y);
-      return radius >= plane.inner - 1e-6 && radius <= plane.outer + 1e-6;
-    };
-    // Each zone builds its own curved-sprocket band through the same shared
-    // lattice implementation (`canonicalCurvedSprocketLattice`), sized by that
-    // zone's own pyramidal needs (angular steps) and hop count (radial reach) —
-    // never derived from one another. A plane's boundaries clip the rhombi.
+    // Every zone's mesh is built from `axialToDualRingPixel` — the exact same
+    // function node placement and dragging use — so a drawn rhombus vertex
+    // is always a real, snappable lattice cell, never a separate decoration.
     for (const plane of planes) {
-      const inner = Math.max(plane.inner, spacing * 1.5);
-      if (plane.outer <= inner + 1) continue;
-      const lattice = canonicalCurvedSprocketLattice({
-        origin: coreCenter,
-        innerRadius: inner,
-        outerRadius: plane.outer,
-        cellCount: plane.angularSteps,
-        boundaryHeight: Math.max(1, plane.hops),
-      });
-      lattice.meshPaths.forEach((path, index) => {
+      if (plane.maxRing <= plane.minRing) continue;
+      const paths = dualRingZoneMeshPaths(proj, plane);
+      paths.forEach((path, index) => {
         lines.push({ id: `${plane.id}:sprocket:${index}`, plane: plane.id, points: path });
       });
-    }
-    // Retain the zone clipping behavior for future callers that need to
-    // inspect the path samples, without introducing straight segments.
-    for (const line of lines) {
-      line.points = line.points.filter((point) => inside(point.x, point.y, planes.find((plane) => plane.id === line.plane)!));
-    }
-    for (const line of lines) {
-      if (line.points.length < 2) {
-        line.points = [];
-      }
     }
     b.latticeG.selectAll(".nkp-hyper-lattice-edge")
       .data(lines)
@@ -2166,10 +2085,18 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     // frame); components get a fresh nearest-free-cell search against the
     // snapshot of other components' cells captured at drag start.
     if (built) {
+      const stack = currentDualRingStack();
+      const proj = currentDualRingProjection();
       const previewPoint = node.type === "component"
         ? axialToDualRingPixel(
-          nearestFreeCartesianPoint({ x: node.x ?? 0, y: node.y ?? 0 }, dragComponentOccupied ?? new Set(), REGIONS_TRI_LATTICE_SPACING, coreCenter, dragComponentOrigin),
-          currentDualRingProjection(),
+          nearestFreeDualRingCell(
+            { x: node.x ?? 0, y: node.y ?? 0 },
+            dragComponentOccupied ?? new Set(),
+            proj,
+            { min: stack.componentInnerAxial, max: stack.componentOuterAxial },
+            dragComponentOrigin,
+          ),
+          proj,
         )
         : latticeTargets.get(node.id);
       if (previewPoint) {
@@ -2197,33 +2124,13 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       const stack = currentDualRingStack();
       const proj = currentDualRingProjection();
       const occupied = dragComponentOccupied ?? new Set<string>();
-      let cell = nearestFreeCartesianPoint(
+      const cell = nearestFreeDualRingCell(
         { x: node.x ?? 0, y: node.y ?? 0 },
         occupied,
-        REGIONS_TRI_LATTICE_SPACING,
-        coreCenter,
+        proj,
+        { min: stack.componentInnerAxial, max: stack.componentOuterAxial },
         dragComponentOrigin,
       );
-      if (Math.hypot((node.x ?? 0) - coreCenter.x, (node.y ?? 0) - coreCenter.y) >= stack.componentBand.outer - 1e-6) {
-        // The Cartesian outer boundary is itself a lattice coordinate.
-        // The curved projection's outer band ring, rather than raw pixel
-        // distance, is the authoritative boundary cell.
-        cell = { q: stack.componentOuterAxial, r: 0 };
-      }
-      const ring = Math.max(Math.abs(cell.q), Math.abs(cell.r), Math.abs(cell.q + cell.r));
-      if ((ring < stack.componentInnerAxial || ring > stack.componentOuterAxial)
-        && !(cell.q === stack.componentOuterAxial && cell.r === 0)
-        && Math.hypot((node.x ?? 0) - coreCenter.x, (node.y ?? 0) - coreCenter.y) <= stack.componentBand.outer) {
-        const angle = Math.atan2((node.y ?? 0) - coreCenter.y, (node.x ?? 0) - coreCenter.x);
-        const targetRing = Math.max(
-          stack.componentInnerAxial,
-          Math.min(
-            stack.componentOuterAxial,
-            Math.round(Math.hypot((node.x ?? 0) - coreCenter.x, (node.y ?? 0) - coreCenter.y) / REGIONS_TRI_LATTICE_SPACING),
-          ),
-        );
-        cell = axialCellOnRingAtAngle(targetRing, angle);
-      }
       const home = axialToDualRingPixel(cell, proj);
       node.x = home.x;
       node.y = home.y;
@@ -2623,27 +2530,13 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
           const stack = currentDualRingStack();
           const proj = currentDualRingProjection();
           const occupied = occupiedSnapshot ?? new Set<string>();
-          let cell = nearestFreeCartesianPoint(
+          const cell = nearestFreeDualRingCell(
             { x: node.x ?? 0, y: node.y ?? 0 },
             occupied,
-            REGIONS_TRI_LATTICE_SPACING,
-            coreCenter,
+            proj,
+            { min: stack.componentInnerAxial, max: stack.componentOuterAxial },
             dragComponentOrigin,
           );
-          const ring = Math.max(Math.abs(cell.q), Math.abs(cell.r), Math.abs(cell.q + cell.r));
-          if (ring < stack.componentInnerAxial || ring > stack.componentOuterAxial) {
-            cell = pixelToDualRingAxial({ x: node.x ?? 0, y: node.y ?? 0 }, proj);
-            const r2 = Math.max(Math.abs(cell.q), Math.abs(cell.r), Math.abs(cell.q + cell.r));
-            if (r2 < stack.componentInnerAxial || r2 > stack.componentOuterAxial) {
-              // Fall back to nearest band ring along the drag angle.
-              const angle = Math.atan2((node.y ?? 0) - coreCenter.y, (node.x ?? 0) - coreCenter.x);
-              const targetRing = Math.max(
-                stack.componentInnerAxial,
-                Math.min(stack.componentOuterAxial, Math.round(Math.hypot((node.x ?? 0) - coreCenter.x, (node.y ?? 0) - coreCenter.y) / REGIONS_TRI_LATTICE_SPACING)),
-              );
-              cell = axialCellOnRingAtAngle(targetRing, angle);
-            }
-          }
           const home = axialToDualRingPixel(cell, proj);
           node.x = home.x;
           node.y = home.y;
@@ -2673,11 +2566,16 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         }
         if (!regionsLocked && node.type === "force") {
           // Unlocked: commit sticky homes, reversing along the drag arc if occupied.
+          const proj = currentDualRingProjection();
+          const stack = proj.stack;
+          const ringBounds = node.kind === "purpose"
+            ? { min: 1, max: stack.purposeRingAxial }
+            : { min: stack.stressorRingAxial, max: stack.stressorRingOuterAxial };
           const occupied = occupiedKeysExcluding({});
           for (const id of peerIds) occupied.delete(axialKey(pixelToDualRingAxial({
             x: byId.get(id)?.x ?? 0,
             y: byId.get(id)?.y ?? 0,
-          }, currentDualRingProjection())));
+          }, proj, ringBounds)));
           const primary = byId.get(node.id);
           const home = latticeTargets.get(node.id);
           if (primary && home) {
@@ -2689,9 +2587,9 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
             for (let step = 0; step <= 12; step += 1) {
               const t = step / 12;
               const candidate = { x: to.x + dx * t, y: to.y + dy * t };
-              const cell = nearestFreeAxialPoint(candidate, occupied, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+              const cell = nearestFreeDualRingCell(candidate, occupied, proj, ringBounds);
               if (!occupied.has(axialKey(cell))) {
-                accepted = axialToDualRingPixel(cell, currentDualRingProjection());
+                accepted = axialToDualRingPixel(cell, proj);
                 break;
               }
             }

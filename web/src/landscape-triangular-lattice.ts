@@ -285,7 +285,16 @@ export function miniPyramidLayersForCount(n: number): number[] {
 }
 
 /**
- * Local axial cells for a mini-pyramid (+r = toward components / outward in world).
+ * Local cells for a mini-pyramid frustum, in (col, layer) terms — `q` is the
+ * column within a layer (a plain left-aligned run: `0..width-1`, never
+ * centered) and `r` is the layer index. This is the same shape a caller
+ * later re-bases at a placement's own start column and layer/ring offset:
+ *   ^ layer (r)
+ *   | <---> col (q)
+ *   AAAA   (layer 0, width 4, cols 0..3)
+ *   AAA    (layer 1, width 3, cols 0..2)
+ *   AA     (layer 2, width 2, cols 0..1)
+ *   A      (layer 3, width 1, col 0)
  * - apexToward "outward" (stressors): base at r=0, apex at +(h-1)
  * - apexToward "center" (purposes): apex at r=0, base at +(h-1)
  */
@@ -295,13 +304,11 @@ export function miniPyramidCellsForLayers(
 ): AxialPoint[] {
   const cells: AxialPoint[] = [];
   if (layers.length === 0) return cells;
-  const baseWidth = layers[0]!;
   const last = layers.length - 1;
   for (let i = 0; i < layers.length; i += 1) {
     const width = layers[i]!;
-    const qStart = Math.round((baseWidth - width) / 2);
     const r = orientation.apexToward === "outward" ? i : last - i;
-    for (let q = qStart; q < qStart + width; q += 1) {
+    for (let q = 0; q < width; q += 1) {
       cells.push({ q, r });
     }
   }
@@ -367,19 +374,20 @@ export interface DualRingMiniPyramidLayout {
  */
 export function layoutAttractorDualRingMiniPyramids(
   groups: readonly ForceShapeGroup[],
-  rings: { purposeRing: number; stressorRing: number },
+  rings: {
+    purposeRing: number;
+    stressorRing: number;
+    /** Angular slot count for the purpose ring — that zone's own pyramidal needs, not `6 × ring`. */
+    purposeCellCount: number;
+    /** Angular slot count for the stressor ring — that zone's own pyramidal needs, not `6 × ring`. */
+    stressorCellCount: number;
+  },
 ): DualRingMiniPyramidLayout {
   const targets = new Map<string, AxialPoint>();
   const purposeSubShapesByAttractor = new Map<string, string[][]>();
   const stressorSubShapesByAttractor = new Map<string, string[][]>();
-  // The true hex-ring capacity (6 × ring), not the zone's rendered "pyramidal
-  // needs" angular budget: local-cell offsets within a single pyramid must
-  // land on genuinely adjacent hex cells, which only the true azimuthal
-  // resolution guarantees. The rendered angular compression happens later,
-  // in the projection layer (`slotCountForRing`), which is independent of
-  // where these axial cells actually sit topologically.
-  const purposeCount = Math.max(1, 6 * rings.purposeRing);
-  const stressorCount = Math.max(1, 6 * rings.stressorRing);
+  const purposeCount = Math.max(1, rings.purposeCellCount);
+  const stressorCount = Math.max(1, rings.stressorCellCount);
   const purposeOcc = Array.from({ length: purposeCount }, () => false);
   const stressorOcc = Array.from({ length: stressorCount }, () => false);
   const n = Math.max(1, groups.length);
@@ -407,20 +415,17 @@ export function layoutAttractorDualRingMiniPyramids(
       const localCells = miniPyramidCellsForLayers(layers, { apexToward });
       const baseWidth = layers[0] ?? 1;
       const last = Math.max(0, layers.length - 1);
-      const baseR = apexToward === "outward" ? 0 : last;
-      const baseMinQ = Math.min(...localCells.filter((c) => c.r === baseR).map((c) => c.q), 0);
       let cursor = startSlot;
 
+      // Base is anchored at the zone's fixed reference ring; the apex
+      // recedes toward the far side by this pyramid's own height. Column is
+      // a direct slot offset — no angle indirection, no hex ring lookup.
       const absoluteFor = (local: AxialPoint, cursorSlot: number): AxialPoint => {
-        // outward: base at local.r=0 on `ring`, apex at +r → ring+r
-        // center:  base at local.r=last on `ring`, apex at 0 → ring-(last-r)
         const ringIndex = apexToward === "outward"
           ? ring + local.r
           : Math.max(1, ring - (last - local.r));
-        const slotOffset = local.q - baseMinQ;
-        const angle = -Math.PI / 2
-          + ((((cursorSlot + slotOffset) % slotCount) + slotCount) % slotCount / slotCount) * 2 * Math.PI;
-        return axialCellOnRingAtAngle(ringIndex, angle);
+        const slot = ((cursorSlot + local.q) % slotCount + slotCount) % slotCount;
+        return { q: slot, r: ringIndex };
       };
 
       let placed: AxialPoint[] | undefined;
@@ -515,14 +520,13 @@ export function dualRingRadialStack(input: {
   spacing?: number;
 }): DualRingRadialStack {
   const spacing = input.spacing ?? TRI_LATTICE_SPACING;
-  const purposeAngularSteps = Math.max(1, dualRingSlotsForMiniPyramids(input.purposeBaseWidths, { gapNodes: 0 }));
-  const stressorAngularSteps = Math.max(1, dualRingSlotsForMiniPyramids(input.stressorBaseWidths, { gapNodes: 0 }));
+  const purposeSlotsNeeded = Math.max(1, dualRingSlotsForMiniPyramids(input.purposeBaseWidths, { gapNodes: 0 }));
+  const stressorSlotsNeeded = Math.max(1, dualRingSlotsForMiniPyramids(input.stressorBaseWidths, { gapNodes: 0 }));
 
   // The purpose disc reaches out exactly as far as its own pyramidal needs.
   const purposeRingAxial = Math.max(1, ...input.purposeHeights);
   const innerAnnulusHops = 2;
   const componentHops = 3;
-  const componentAngularSteps = purposeAngularSteps + 2;
   const outerAnnulusHops = 2;
   // Tallest stressor pyramid (base to apex) plus 3 more hops of outward reach.
   const stressorHopsTall = Math.max(1, ...input.stressorHeights) + 3;
@@ -543,6 +547,16 @@ export function dualRingRadialStack(input: {
   const stressorRingRadius = outerAnnulusOuter;
   const stressorRingOuterRadius = stressorRingRadius + stressorHopsTall * spacing;
 
+  // A zone's angular count is its own pyramidal need, floored so that
+  // adjacent slots never sit farther apart than one lattice spacing around
+  // that zone's tightest (innermost) edge — otherwise a sparse zone at a
+  // large hop-radius would scatter its own mini-pyramid columns.
+  const minSlotsForCircumference = (radius: number): number =>
+    Math.max(1, Math.ceil((2 * Math.PI * radius) / spacing));
+  const purposeAngularSteps = Math.max(purposeSlotsNeeded, minSlotsForCircumference(purposeRingRadius));
+  const componentAngularSteps = Math.max(purposeAngularSteps + 2, minSlotsForCircumference(componentInner));
+  const stressorAngularSteps = Math.max(stressorSlotsNeeded, minSlotsForCircumference(stressorRingRadius));
+
   return {
     purposeRingRadius,
     purposeRingAxial,
@@ -559,6 +573,19 @@ export function dualRingRadialStack(input: {
     stressorRingOuterRadius,
     stressorAngularSteps,
   };
+}
+
+/**
+ * Angular slot count (cellCount) for a global ring index: fixed per zone,
+ * driven by that zone's own pyramidal needs — never `6 × ring`. Annulus
+ * rings hold no cells; any positive fallback is fine since nothing snaps
+ * there.
+ */
+export function angularStepsForRing(stack: DualRingRadialStack, ring: number): number {
+  if (ring <= stack.purposeRingAxial) return stack.purposeAngularSteps;
+  if (ring >= stack.componentInnerAxial && ring <= stack.componentOuterAxial) return stack.componentAngularSteps;
+  if (ring >= stack.stressorRingAxial) return stack.stressorAngularSteps;
+  return 1;
 }
 
 /** True when an axial ring lies in either empty annulus (no tessellation / no nodes). */
@@ -608,7 +635,6 @@ export interface DualRingProjection {
   origin: Point;
   spacing: number;
   stack: DualRingRadialStack;
-  canonical?: CanonicalCurvedSprocketLattice;
 }
 
 export interface CurvedLatticePathOptions {
@@ -681,285 +707,146 @@ export function curvedLatticePathPoints(
 }
 
 /**
- * Two-directional curved sprocket mesh. Every outer-boundary vertex emits a
- * paired +sweep/-sweep stroke from the exact same point; the opposing angular
- * slopes are what create the repeated rhombi. The boundaries themselves are
- * not mesh lines and may be drawn separately by the caller.
+ * Cell → pixel for the dual-ring lattice. `cell.r` is a *global* ring index
+ * (matching `DualRingRadialStack`'s zone boundaries directly — no hex cube
+ * distance involved) and `cell.q` is a slot index in `[0, angularStepsForRing(ring))`,
+ * wrapping. This is the one function every consumer (node placement, drag
+ * search, and mesh rendering) calls for "where does this cell sit" — so a
+ * rendered vertex and a real snap point are the same computation, not two
+ * that happen to agree on radius.
  */
-export function curvedSprocketPathPoints(
-  origin: Point,
-  innerRadius: number,
-  outerRadius: number,
-  count: number,
-  sweep = 0.6,
-  curvature = 0.12,
-  samples = 12,
+export function axialToDualRingPixel(cell: AxialPoint, proj: DualRingProjection): Point {
+  const ring = cell.r;
+  if (ring <= 0) return { ...proj.origin };
+  const radius = radiusForDualRingAxial(ring, proj.stack, proj.spacing);
+  const cellCount = angularStepsForRing(proj.stack, ring);
+  return curvedSprocketSlotPoint(proj.origin, radius, cellCount, cell.q);
+}
+
+/** Fractional cell → pixel: same as `axialToDualRingPixel` but `ring`/`slot` may be non-integer, for sampling a smooth curve between two real cells. */
+function fractionalDualRingPixel(ring: number, slot: number, proj: DualRingProjection): Point {
+  if (ring <= 0) return { ...proj.origin };
+  const radius = radiusForDualRingAxial(ring, proj.stack, proj.spacing);
+  const cellCount = angularStepsForRing(proj.stack, Math.round(ring));
+  return curvedSprocketSlotPoint(proj.origin, radius, cellCount, slot);
+}
+
+/** Inverse of `axialToDualRingPixel`; picks the nearest lattice cell to a pixel, clamped to a ring range if given. */
+export function pixelToDualRingAxial(
+  point: Point,
+  proj: DualRingProjection,
+  ringBounds?: { min: number; max: number },
+): AxialPoint {
+  const dx = point.x - proj.origin.x;
+  const dy = point.y - proj.origin.y;
+  const minRing = Math.max(1, ringBounds?.min ?? 1);
+  const maxRing = ringBounds?.max ?? proj.stack.stressorRingOuterAxial + 12;
+  if (Math.hypot(dx, dy) < 1e-9) return { q: 0, r: minRing };
+  const targetRadius = Math.hypot(dx, dy);
+  let nearestRing = minRing;
+  let nearestRingDistance = Infinity;
+  // Ring radii are monotone increasing; scan the radial bands directly.
+  for (let ring = minRing; ring <= maxRing; ring += 1) {
+    const distance = Math.abs(radiusForDualRingAxial(ring, proj.stack, proj.spacing) - targetRadius);
+    if (distance < nearestRingDistance) {
+      nearestRingDistance = distance;
+      nearestRing = ring;
+    }
+  }
+  const cellCount = angularStepsForRing(proj.stack, nearestRing);
+  let angle = Math.atan2(dy, dx) + Math.PI / 2;
+  while (angle < 0) angle += 2 * Math.PI;
+  while (angle >= 2 * Math.PI) angle -= 2 * Math.PI;
+  const slot = Math.round((angle / (2 * Math.PI)) * cellCount) % cellCount;
+  return { q: slot, r: nearestRing };
+}
+
+/**
+ * Curved mesh lines for one zone band (`minRing..maxRing`, both inclusive
+ * ring vertices), built from exactly the same `axialToDualRingPixel`
+ * formula used for node placement — every rhombus vertex drawn here is a
+ * real, snappable lattice cell.
+ */
+export function dualRingZoneMeshPaths(
+  proj: DualRingProjection,
+  zone: { minRing: number; maxRing: number },
+  samples = 6,
 ): Point[][] {
-  const safeCount = Math.max(1, Math.round(count));
-  const safeSamples = Math.max(2, Math.round(samples));
   const paths: Point[][] = [];
-  const step = (Math.PI * 2) / safeCount;
-  // The sweep is topological: it must land on another indexed boundary
-  // vertex, never between vertices. This makes the inner endpoints shared by
-  // opposite-direction curves instead of merely visually adjacent.
-  const sweepSteps = Math.max(1, Math.round(sweep / step));
-  const lockedSweep = sweepSteps * step;
-  const start = -Math.PI / 2;
-  const outerPoints = Array.from({ length: safeCount }, (_, index) =>
-    curvedSprocketSlotPoint(origin, outerRadius, safeCount, index));
-  const innerPoints = Array.from({ length: safeCount }, (_, index) =>
-    curvedSprocketSlotPoint(origin, innerRadius, safeCount, index));
-  const path = (outer: Point, inner: Point, angle0: number, angle1: number, bend: number): Point[] => {
+  const curvedSegment = (fromRing: number, fromSlot: number, toRing: number, toSlot: number): Point[] => {
     const points: Point[] = [];
-    for (let i = 0; i <= safeSamples; i += 1) {
-      if (i === 0) {
-        points.push({ ...outer });
-        continue;
-      }
-      if (i === safeSamples) {
-        points.push({ ...inner });
-        continue;
-      }
-      const t = i / safeSamples;
-      const radius = outerRadius + (innerRadius - outerRadius) * t;
-      const angle = angle0 + (angle1 - angle0) * t + bend * Math.sin(Math.PI * t);
-      points.push({ x: origin.x + radius * Math.cos(angle), y: origin.y + radius * Math.sin(angle) });
+    for (let i = 0; i <= samples; i += 1) {
+      const t = i / samples;
+      points.push(fractionalDualRingPixel(
+        fromRing + (toRing - fromRing) * t,
+        fromSlot + (toSlot - fromSlot) * t,
+        proj,
+      ));
     }
     return points;
   };
-  for (let i = 0; i < safeCount; i += 1) {
-    const angle = start + i * step;
-    // Keep these adjacent and sourced from the same `angle`: callers can
-    // rely on path[2*i] and path[2*i+1] being one opposite-direction pair.
-    const plusIndex = (i + sweepSteps) % safeCount;
-    const minusIndex = (i - sweepSteps + safeCount) % safeCount;
-    paths.push(path(outerPoints[i]!, innerPoints[plusIndex]!, angle, angle + lockedSweep, curvature));
-    paths.push(path(outerPoints[i]!, innerPoints[minusIndex]!, angle, angle - lockedSweep, -curvature));
+  for (let ring = zone.minRing; ring < zone.maxRing; ring += 1) {
+    const cellCount = angularStepsForRing(proj.stack, ring);
+    for (let slot = 0; slot < cellCount; slot += 1) {
+      paths.push(curvedSegment(ring, slot, ring + 1, slot));
+      paths.push(curvedSegment(ring, slot, ring + 1, slot + 1));
+    }
   }
   return paths;
 }
 
-export interface CanonicalCurvedSprocketCellDimension {
-  width: number;
-  height: number;
-}
-
-export interface CanonicalCurvedSprocketBoundaryCell extends AxialPoint {
-  halfHeight: boolean;
-}
-
-export interface CanonicalCurvedSprocketBoundaryVertex {
-  direction: "clockwise" | "counterclockwise";
-  fromIndex: number;
-  toIndex: number;
-  points: Point[];
-}
-
-export interface CanonicalCurvedSprocketLattice {
-  origin: Point;
-  innerRadius: number;
-  outerRadius: number;
-  cellCount: number;
-  boundaryHeight: number;
-  cellDimensions: CanonicalCurvedSprocketCellDimension[];
-  boundaryCells: {
-    top: CanonicalCurvedSprocketBoundaryCell[];
-    bottom: CanonicalCurvedSprocketBoundaryCell[];
-  };
-  indexedBoundaryVertices: CanonicalCurvedSprocketBoundaryVertex[];
-  meshPaths: Point[][];
-  projectPyramidCells: (
-    cells: AxialPoint[],
-    options: { orientation: "purpose" | "stressor" | "inner" | "outer" },
-  ) => Array<AxialPoint & Point>;
-  inverseLookup: (point: Point) => { cell: AxialPoint; inspectedCandidates: number };
-}
-
-export interface ProjectedDualRingPyramidCells {
-  backend: "canonical-curved-sprocket";
-  cells: Array<AxialPoint & Point>;
-}
-
 /**
- * The canonical curved mesh. Its cells are rectangular in lattice space:
- * every column has one fixed circumferential width and every row has one
- * fixed radial height. Only the clipped top and bottom boundary cells are
- * half-height; their centre-to-centre spacing remains the same as every
- * other row. All consumers retain the indexed geometry returned here.
+ * Nearest free lattice cell to `point`, searched directly in (ring, slot)
+ * space and clamped to `ringBounds` (a zone's own valid ring range) so a
+ * result can never land in an annulus or a neighboring zone. Candidates are
+ * ranked by real pixel distance to `preferredFrom` (falling back to `point`),
+ * matching the old "prefer the drag direction" behavior. Used for both live
+ * drag preview and commit, and for de-conflicting sub-shape re-homing.
  */
-export function canonicalCurvedSprocketLattice(input: {
-  origin: Point;
-  innerRadius: number;
-  outerRadius: number;
-  cellCount: number;
-  boundaryHeight?: number;
-  radiusForRing?: (ring: number, orientation: "purpose" | "stressor" | "inner" | "outer") => number;
-  slotCountForRing?: (ring: number) => number;
-}): CanonicalCurvedSprocketLattice {
-  const cellCount = Math.max(3, Math.round(input.cellCount));
-  const innerRadius = Math.max(0, input.innerRadius);
-  const outerRadius = Math.max(innerRadius + 1, input.outerRadius);
-  const boundaryHeight = Math.max(1, Math.round(input.boundaryHeight ?? 1));
-  const radialSpan = outerRadius - innerRadius;
-  const width = (2 * Math.PI * outerRadius) / cellCount;
-  // Interior rows are full height; the clipped row touching each end of the
-  // band (r=0 and r=boundaryHeight+1) is half height, since it sits exactly
-  // on the shared boundary with the neighboring annulus / zone.
-  const height = radialSpan / boundaryHeight;
-  const halfRowHeight = height / 2;
-  const totalRows = boundaryHeight + 2;
-  const dimensions: CanonicalCurvedSprocketCellDimension[] = [];
-  for (let row = 0; row < totalRows; row += 1) {
-    const rowHeight = row === 0 || row === totalRows - 1 ? halfRowHeight : height;
-    for (let col = 0; col < cellCount; col += 1) dimensions.push({ width, height: rowHeight });
-  }
-  const top = Array.from({ length: cellCount }, (_, q) => ({ q, r: 0, halfHeight: true }));
-  const bottom = Array.from({ length: cellCount }, (_, q) => ({ q, r: boundaryHeight + 1, halfHeight: true }));
-
-  const directedEdges: CanonicalCurvedSprocketBoundaryVertex[] = [];
-  const boundaryPaths = curvedSprocketPathPoints(
-    input.origin,
-    innerRadius,
-    outerRadius,
-    cellCount,
-    (2 * Math.PI) / cellCount,
-    0.12,
-    12,
+export function nearestFreeDualRingCell(
+  point: Point,
+  occupiedKeys: ReadonlySet<string>,
+  proj: DualRingProjection,
+  ringBounds: { min: number; max: number },
+  preferredFrom?: Point,
+): AxialPoint {
+  const start = pixelToDualRingAxial(point, proj, ringBounds);
+  if (!occupiedKeys.has(axialKey(start))) return start;
+  const preferred = preferredFrom ?? point;
+  const zoneSpan = Math.max(1, ringBounds.max - ringBounds.min + 1);
+  const maxCellCount = Math.max(
+    ...Array.from({ length: zoneSpan }, (_, i) => angularStepsForRing(proj.stack, ringBounds.min + i)),
   );
-  for (let index = 0; index < cellCount; index += 1) {
-    const path = boundaryPaths[index * 2]!;
-    const fromIndex = index;
-    const toIndex = (index + 1) % cellCount;
-    directedEdges.push({ direction: "clockwise", fromIndex, toIndex, points: path.map((point) => ({ ...point })) });
-    directedEdges.push({
-      direction: "counterclockwise",
-      fromIndex: toIndex,
-      toIndex: fromIndex,
-      points: [...path].reverse().map((point) => ({ ...point })),
-    });
-  }
-
-  const project = (cell: AxialPoint, orientation: "purpose" | "stressor" | "inner" | "outer"): AxialPoint & Point => {
-    // Use the same axial ring ordering used by the rest of the lattice
-    // backend. This preserves adjacency for pyramid cells: q/r are not
-    // treated as unrelated Cartesian coordinates and neighboring cells do
-    // not collapse onto the same angular slot.
-    const ring = axialDistance({ q: 0, r: 0 }, cell);
-    const row = Math.max(0, Math.min(boundaryHeight, ring));
-    const ringSlots = Math.max(1, input.slotCountForRing?.(ring) ?? 6 * ring);
-    const ringSlot = ring === 0 ? 0 : axialRingSlotIndex(cell);
-    const slot = ring === 0
-      ? 0
-      : Math.round((ringSlot / ringSlots) * cellCount) % cellCount;
-    const pointsOutward = orientation === "outer" || orientation === "stressor";
-    const radius = input.radiusForRing?.(ring, orientation)
-      ?? (pointsOutward
-        ? innerRadius + (row * radialSpan) / Math.max(1, boundaryHeight)
-        : outerRadius - (row * radialSpan) / Math.max(1, boundaryHeight));
-    const point = curvedSprocketSlotPoint(input.origin, radius, cellCount, slot);
-    return { ...cell, ...point };
-  };
-
-  const lattice: CanonicalCurvedSprocketLattice = {
-    origin: { ...input.origin },
-    innerRadius,
-    outerRadius,
-    cellCount,
-    boundaryHeight,
-    cellDimensions: dimensions,
-    boundaryCells: { top, bottom },
-    indexedBoundaryVertices: directedEdges,
-    meshPaths: boundaryPaths.map((path) => path.map((point) => ({ ...point }))),
-    projectPyramidCells: (cells, options) => cells.map((cell) => project(cell, options.orientation)),
-    inverseLookup: (point) => {
-      const dx = point.x - input.origin.x;
-      const dy = point.y - input.origin.y;
-      const radius = Math.hypot(dx, dy);
-      const radialRatio = (radius - innerRadius) / radialSpan;
-      const row = Math.max(0, Math.min(boundaryHeight, Math.round(radialRatio * boundaryHeight)));
-      const angle = Math.atan2(dy, dx);
-      const normalized = ((angle + Math.PI / 2) / (2 * Math.PI) + 1) % 1;
-      const slot = Math.round(normalized * cellCount) % cellCount;
-      if (row === 0) return { cell: { q: 0, r: 0 }, inspectedCandidates: 3 };
-      const ringSlots = Math.max(1, 6 * row);
-      const ringSlot = Math.round((slot / cellCount) * ringSlots) % ringSlots;
-      const ringCells = axialRing({ q: 0, r: 0 }, row);
-      return { cell: ringCells[ringSlot] ?? { q: 0, r: row }, inspectedCandidates: 3 };
-    },
-  };
-  return lattice;
-}
-
-export function projectDualRingPyramidCells(input: {
-  cells: AxialPoint[];
-  orientation: "purpose" | "stressor";
-  lattice: CanonicalCurvedSprocketLattice;
-}): ProjectedDualRingPyramidCells {
-  return {
-    backend: "canonical-curved-sprocket",
-    cells: input.lattice.projectPyramidCells(input.cells, { orientation: input.orientation }),
-  };
-}
-
-/**
- * Cartesian cell → pixel under the circular warp. q/r remain ordinary x/y
- * coordinates, but each square-grid ring is bent onto a circular ring around
- * the landscape center. The same function is used for node homes and lattice
- * rendering, so the displayed curved grid is the snapping grid.
- */
-export function axialToDualRingPixel(cell: AxialPoint, proj: DualRingProjection): Point {
-  if (proj.canonical) {
-    const projected = proj.canonical.projectPyramidCells([cell], { orientation: "inner" })[0];
-    if (projected) return { x: projected.x, y: projected.y };
-  }
-  const ring = axialDistance({ q: 0, r: 0 }, cell);
-  if (ring === 0) return { ...proj.origin };
-  const radius = radiusForDualRingAxial(ring, proj.stack, proj.spacing);
-  const count = Math.max(1, 6 * ring);
-  return curvedSprocketSlotPoint(proj.origin, radius, count, axialRingSlotIndex(cell));
-}
-
-/** Inverse of the circular Cartesian warp; picks the nearest curved grid cell. */
-export function pixelToDualRingAxial(point: Point, proj: DualRingProjection): AxialPoint {
-  const dx = point.x - proj.origin.x;
-  const dy = point.y - proj.origin.y;
-  if (Math.hypot(dx, dy) < 1e-9) return { q: 0, r: 0 };
-  const maxRing = proj.stack.stressorRingAxial + 12;
-  const targetRadius = Math.hypot(dx, dy);
-  let nearestRing = 0;
-  let nearestRingDistance = Math.abs(targetRadius);
-  // Ring radii are monotone. Scan only the radial bands first; this avoids the
-  // previous O(n²) Cartesian search on every drag/update lookup.
-  for (let ring = 1; ring <= maxRing; ring += 1) {
-    const distance = Math.abs(radiusForDualRingAxial(ring, proj.stack, proj.spacing) - targetRadius);
-    if (distance < nearestRingDistance) {
-      nearestRing = ring;
-      nearestRingDistance = distance;
-    }
-  }
-  if (nearestRing === 0) return { q: 0, r: 0 };
-  const count = 6 * nearestRing;
-  const angle = Math.atan2(dy, dx);
-  const normalized = ((angle + Math.PI / 2) / (Math.PI * 2) + 1) % 1;
-  const slot = Math.round(normalized * count);
-  let best = axialRing({ q: 0, r: 0 }, nearestRing)[slot % count]!;
-  let bestDistance = Infinity;
-  for (const ring of [nearestRing - 1, nearestRing, nearestRing + 1]) {
-    if (ring <= 0 || ring > maxRing) continue;
-    const ringCells = axialRing({ q: 0, r: 0 }, ring);
-    const ringCount = ringCells.length;
-    const ringSlot = Math.round(normalized * ringCount);
-    for (let offset = -1; offset <= 1; offset += 1) {
-      const candidate = ringCells[(ringSlot + offset + ringCount) % ringCount]!;
-      const candidatePixel = axialToDualRingPixel(candidate, proj);
-      const distance = Math.hypot(candidatePixel.x - point.x, candidatePixel.y - point.y);
-      if (distance < bestDistance) {
-        best = candidate;
-        bestDistance = distance;
+  const maxAttempts = zoneSpan * maxCellCount + 8;
+  for (let radius = 1; radius <= maxAttempts; radius += 1) {
+    const candidates: AxialPoint[] = [];
+    for (let dr = -radius; dr <= radius; dr += 1) {
+      const ring = start.r + dr;
+      if (ring < ringBounds.min || ring > ringBounds.max) continue;
+      const cellCount = angularStepsForRing(proj.stack, ring);
+      for (let ds = -radius; ds <= radius; ds += 1) {
+        if (Math.max(Math.abs(dr), Math.abs(ds)) !== radius) continue;
+        const slot = ((start.q + ds) % cellCount + cellCount) % cellCount;
+        candidates.push({ q: slot, r: ring });
       }
     }
+    if (candidates.length === 0) continue;
+    const seen = new Set<string>();
+    const unique = candidates.filter((candidate) => {
+      const key = axialKey(candidate);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    unique.sort((a, b) => {
+      const pa = axialToDualRingPixel(a, proj);
+      const pb = axialToDualRingPixel(b, proj);
+      return Math.hypot(pa.x - preferred.x, pa.y - preferred.y) - Math.hypot(pb.x - preferred.x, pb.y - preferred.y);
+    });
+    const free = unique.find((candidate) => !occupiedKeys.has(axialKey(candidate)));
+    if (free) return free;
   }
-  return best;
+  return start;
 }
 
 /**
@@ -1034,36 +921,6 @@ export function snapPyramidTopsToSharedRay(
 }
 
 /** Index of `cell` along its axial ring around `center` (0 .. 6*ring-1). */
-export function axialRingSlotIndex(cell: AxialPoint, center: AxialPoint = { q: 0, r: 0 }): number {
-  const ring = axialDistance(center, cell);
-  if (ring === 0) return 0;
-  const ringCells = axialRing(center, ring);
-  const key = axialKey(cell);
-  const index = ringCells.findIndex((candidate) => axialKey(candidate) === key);
-  return index < 0 ? 0 : index;
-}
-
-/**
- * Axial ring index of the outer ergodic barrier large enough for `slotCount`
- * equidistant points (hex rings hold 6R slots).
- */
-export function outerRingAxialRadiusForSlots(slotCount: number): number {
-  return Math.max(1, Math.ceil(Math.max(1, slotCount) / 6));
-}
-
-/** Axial cell on `ring` nearest to the given polar angle (atan2 space). */
-export function axialCellOnRingAtAngle(ring: number, angle: number): AxialPoint {
-  if (ring <= 0) return { q: 0, r: 0 };
-  const cells = axialRing({ q: 0, r: 0 }, ring);
-  const count = cells.length;
-  // Match axialToRadialPixel: slot 0 at -π/2.
-  let normalized = angle + Math.PI / 2;
-  while (normalized < 0) normalized += 2 * Math.PI;
-  while (normalized >= 2 * Math.PI) normalized -= 2 * Math.PI;
-  const slot = ((Math.round((normalized / (2 * Math.PI)) * count) % count) + count) % count;
-  return cells[slot]!;
-}
-
 export interface SimilarityForce {
   id: string;
   components: readonly string[];
@@ -1157,50 +1014,6 @@ export function previewNearestFreeAxialPoint(
   origin: Point = { x: 0, y: 0 },
 ): AxialPoint {
   return nearestFreeAxialPoint(point, occupiedKeys, spacing, origin);
-}
-
-/**
- * Cartesian counterpart used by component dragging. When the attempted cell
- * is occupied, candidates on the first free square-grid ring are considered
- * from the attempted cell back toward `dragOrigin` first.
- */
-export function nearestFreeCartesianPoint(
-  point: Point,
-  occupiedKeys: ReadonlySet<string>,
-  spacing = TRI_LATTICE_SPACING,
-  origin: Point = { x: 0, y: 0 },
-  dragOrigin?: Point,
-): AxialPoint {
-  const base = {
-    q: Math.round((point.x - origin.x) / spacing),
-    r: Math.round((point.y - origin.y) / spacing),
-  };
-  if (!occupiedKeys.has(axialKey(base))) return base;
-  const preferred = dragOrigin ?? point;
-  const direction = {
-    x: preferred.x - (origin.x + base.q * spacing),
-    y: preferred.y - (origin.y + base.r * spacing),
-  };
-  for (let radius = 1; ; radius += 1) {
-    const candidates: AxialPoint[] = [];
-    for (let q = base.q - radius; q <= base.q + radius; q += 1) {
-      for (let r = base.r - radius; r <= base.r + radius; r += 1) {
-        if (Math.max(Math.abs(q - base.q), Math.abs(r - base.r)) !== radius) continue;
-        candidates.push({ q, r });
-      }
-    }
-    candidates.sort((left, right) => {
-      const leftDx = left.q - base.q;
-      const leftDy = left.r - base.r;
-      const rightDx = right.q - base.q;
-      const rightDy = right.r - base.r;
-      const leftAlong = leftDx * direction.x + leftDy * direction.y;
-      const rightAlong = rightDx * direction.x + rightDy * direction.y;
-      return rightAlong - leftAlong || left.q - right.q || left.r - right.r;
-    });
-    const free = candidates.find((candidate) => !occupiedKeys.has(axialKey(candidate)));
-    if (free) return free;
-  }
 }
 
 export interface ForceShapeGroup {

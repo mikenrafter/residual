@@ -4041,70 +4041,8 @@ function projectLabelAnchor(point, bounds, preferredRegion = []) {
 
 // src/landscape-triangular-lattice.ts
 var TRI_LATTICE_SPACING = 60;
-var AXIAL_NEIGHBORS = [
-  { q: 1, r: 0 },
-  { q: 1, r: -1 },
-  { q: 0, r: -1 },
-  { q: -1, r: 0 },
-  { q: -1, r: 1 },
-  { q: 0, r: 1 }
-];
-function axialRound(frac) {
-  const x = frac.q;
-  const z = frac.r;
-  const y = -x - z;
-  let rx = Math.round(x);
-  let ry = Math.round(y);
-  let rz = Math.round(z);
-  const xDiff = Math.abs(rx - x);
-  const yDiff = Math.abs(ry - y);
-  const zDiff = Math.abs(rz - z);
-  if (xDiff > yDiff && xDiff > zDiff)
-    rx = -ry - rz;
-  else if (yDiff > zDiff)
-    ry = -rx - rz;
-  else
-    rz = -rx - ry;
-  return { q: rx, r: rz };
-}
-function pixelToAxial(point, spacing = TRI_LATTICE_SPACING, origin = { x: 0, y: 0 }) {
-  return axialRound(pixelToFractionalAxial(point, spacing, origin));
-}
-function pixelToFractionalAxial(point, spacing = TRI_LATTICE_SPACING, origin = { x: 0, y: 0 }) {
-  const x = point.x - origin.x;
-  const y = point.y - origin.y;
-  const r = 2 / Math.sqrt(3) * y / spacing;
-  const q = x / spacing - r / 2;
-  return { q, r };
-}
-function axialDistance(a, b) {
-  const aq = a.q;
-  const ar = a.r;
-  const as = -aq - ar;
-  const bq = b.q;
-  const br = b.r;
-  const bs = -bq - br;
-  return Math.max(Math.abs(aq - bq), Math.abs(ar - br), Math.abs(as - bs));
-}
 function axialKey(point) {
   return `${point.q}:${point.r}`;
-}
-function axialRing(center, radius) {
-  if (radius === 0)
-    return [center];
-  const results = [];
-  let hex = {
-    q: center.q + AXIAL_NEIGHBORS[4].q * radius,
-    r: center.r + AXIAL_NEIGHBORS[4].r * radius
-  };
-  for (let side = 0;side < 6; side += 1) {
-    for (let step = 0;step < radius; step += 1) {
-      results.push(hex);
-      const dir = AXIAL_NEIGHBORS[side];
-      hex = { q: hex.q + dir.q, r: hex.r + dir.r };
-    }
-  }
-  return results;
 }
 function isCompleteMiniPyramidStage(layers) {
   const h = layers[0];
@@ -4149,13 +4087,11 @@ function miniPyramidCellsForLayers(layers, orientation = { apexToward: "outward"
   const cells = [];
   if (layers.length === 0)
     return cells;
-  const baseWidth = layers[0];
   const last = layers.length - 1;
   for (let i = 0;i < layers.length; i += 1) {
     const width = layers[i];
-    const qStart = Math.round((baseWidth - width) / 2);
     const r = orientation.apexToward === "outward" ? i : last - i;
-    for (let q = qStart;q < qStart + width; q += 1) {
+    for (let q = 0;q < width; q += 1) {
       cells.push({ q, r });
     }
   }
@@ -4174,8 +4110,8 @@ function layoutAttractorDualRingMiniPyramids(groups, rings) {
   const targets = new Map;
   const purposeSubShapesByAttractor = new Map;
   const stressorSubShapesByAttractor = new Map;
-  const purposeCount = Math.max(1, 6 * rings.purposeRing);
-  const stressorCount = Math.max(1, 6 * rings.stressorRing);
+  const purposeCount = Math.max(1, rings.purposeCellCount);
+  const stressorCount = Math.max(1, rings.stressorCellCount);
   const purposeOcc = Array.from({ length: purposeCount }, () => false);
   const stressorOcc = Array.from({ length: stressorCount }, () => false);
   const n = Math.max(1, groups.length);
@@ -4193,14 +4129,11 @@ function layoutAttractorDualRingMiniPyramids(groups, rings) {
       const localCells = miniPyramidCellsForLayers(layers, { apexToward });
       const baseWidth = layers[0] ?? 1;
       const last = Math.max(0, layers.length - 1);
-      const baseR = apexToward === "outward" ? 0 : last;
-      const baseMinQ = Math.min(...localCells.filter((c) => c.r === baseR).map((c) => c.q), 0);
       let cursor = startSlot;
       const absoluteFor = (local, cursorSlot) => {
         const ringIndex = apexToward === "outward" ? ring + local.r : Math.max(1, ring - (last - local.r));
-        const slotOffset = local.q - baseMinQ;
-        const angle = -Math.PI / 2 + ((cursorSlot + slotOffset) % slotCount + slotCount) % slotCount / slotCount * 2 * Math.PI;
-        return axialCellOnRingAtAngle(ringIndex, angle);
+        const slot = ((cursorSlot + local.q) % slotCount + slotCount) % slotCount;
+        return { q: slot, r: ringIndex };
       };
       let placed;
       for (let attempt = 0;attempt < slotCount; attempt += 1) {
@@ -4247,12 +4180,11 @@ function layoutAttractorDualRingMiniPyramids(groups, rings) {
 }
 function dualRingRadialStack(input) {
   const spacing = input.spacing ?? TRI_LATTICE_SPACING;
-  const purposeAngularSteps = Math.max(1, dualRingSlotsForMiniPyramids(input.purposeBaseWidths, { gapNodes: 0 }));
-  const stressorAngularSteps = Math.max(1, dualRingSlotsForMiniPyramids(input.stressorBaseWidths, { gapNodes: 0 }));
+  const purposeSlotsNeeded = Math.max(1, dualRingSlotsForMiniPyramids(input.purposeBaseWidths, { gapNodes: 0 }));
+  const stressorSlotsNeeded = Math.max(1, dualRingSlotsForMiniPyramids(input.stressorBaseWidths, { gapNodes: 0 }));
   const purposeRingAxial = Math.max(1, ...input.purposeHeights);
   const innerAnnulusHops = 2;
   const componentHops = 3;
-  const componentAngularSteps = purposeAngularSteps + 2;
   const outerAnnulusHops = 2;
   const stressorHopsTall = Math.max(1, ...input.stressorHeights) + 3;
   const componentInnerAxial = purposeRingAxial + innerAnnulusHops;
@@ -4268,6 +4200,10 @@ function dualRingRadialStack(input) {
   const outerAnnulusOuter = outerAnnulusInner + outerAnnulusHops * spacing;
   const stressorRingRadius = outerAnnulusOuter;
   const stressorRingOuterRadius = stressorRingRadius + stressorHopsTall * spacing;
+  const minSlotsForCircumference = (radius) => Math.max(1, Math.ceil(2 * Math.PI * radius / spacing));
+  const purposeAngularSteps = Math.max(purposeSlotsNeeded, minSlotsForCircumference(purposeRingRadius));
+  const componentAngularSteps = Math.max(purposeAngularSteps + 2, minSlotsForCircumference(componentInner));
+  const stressorAngularSteps = Math.max(stressorSlotsNeeded, minSlotsForCircumference(stressorRingRadius));
   return {
     purposeRingRadius,
     purposeRingAxial,
@@ -4284,6 +4220,15 @@ function dualRingRadialStack(input) {
     stressorRingOuterRadius,
     stressorAngularSteps
   };
+}
+function angularStepsForRing(stack, ring) {
+  if (ring <= stack.purposeRingAxial)
+    return stack.purposeAngularSteps;
+  if (ring >= stack.componentInnerAxial && ring <= stack.componentOuterAxial)
+    return stack.componentAngularSteps;
+  if (ring >= stack.stressorRingAxial)
+    return stack.stressorAngularSteps;
+  return 1;
 }
 function radiusForDualRingAxial(ring, stack, spacing = TRI_LATTICE_SPACING) {
   if (ring <= 0)
@@ -4317,192 +4262,108 @@ function curvedSprocketSlotPoint(origin, radius, count, slot) {
     y: origin.y + radius * Math.sin(angle)
   };
 }
-function curvedSprocketPathPoints(origin, innerRadius, outerRadius, count, sweep = 0.6, curvature = 0.12, samples = 12) {
-  const safeCount = Math.max(1, Math.round(count));
-  const safeSamples = Math.max(2, Math.round(samples));
+function axialToDualRingPixel(cell, proj) {
+  const ring = cell.r;
+  if (ring <= 0)
+    return { ...proj.origin };
+  const radius = radiusForDualRingAxial(ring, proj.stack, proj.spacing);
+  const cellCount = angularStepsForRing(proj.stack, ring);
+  return curvedSprocketSlotPoint(proj.origin, radius, cellCount, cell.q);
+}
+function fractionalDualRingPixel(ring, slot, proj) {
+  if (ring <= 0)
+    return { ...proj.origin };
+  const radius = radiusForDualRingAxial(ring, proj.stack, proj.spacing);
+  const cellCount = angularStepsForRing(proj.stack, Math.round(ring));
+  return curvedSprocketSlotPoint(proj.origin, radius, cellCount, slot);
+}
+function pixelToDualRingAxial(point, proj, ringBounds) {
+  const dx = point.x - proj.origin.x;
+  const dy = point.y - proj.origin.y;
+  const minRing = Math.max(1, ringBounds?.min ?? 1);
+  const maxRing = ringBounds?.max ?? proj.stack.stressorRingOuterAxial + 12;
+  if (Math.hypot(dx, dy) < 0.000000001)
+    return { q: 0, r: minRing };
+  const targetRadius = Math.hypot(dx, dy);
+  let nearestRing = minRing;
+  let nearestRingDistance = Infinity;
+  for (let ring = minRing;ring <= maxRing; ring += 1) {
+    const distance = Math.abs(radiusForDualRingAxial(ring, proj.stack, proj.spacing) - targetRadius);
+    if (distance < nearestRingDistance) {
+      nearestRingDistance = distance;
+      nearestRing = ring;
+    }
+  }
+  const cellCount = angularStepsForRing(proj.stack, nearestRing);
+  let angle = Math.atan2(dy, dx) + Math.PI / 2;
+  while (angle < 0)
+    angle += 2 * Math.PI;
+  while (angle >= 2 * Math.PI)
+    angle -= 2 * Math.PI;
+  const slot = Math.round(angle / (2 * Math.PI) * cellCount) % cellCount;
+  return { q: slot, r: nearestRing };
+}
+function dualRingZoneMeshPaths(proj, zone, samples = 6) {
   const paths = [];
-  const step = Math.PI * 2 / safeCount;
-  const sweepSteps = Math.max(1, Math.round(sweep / step));
-  const lockedSweep = sweepSteps * step;
-  const start = -Math.PI / 2;
-  const outerPoints = Array.from({ length: safeCount }, (_, index) => curvedSprocketSlotPoint(origin, outerRadius, safeCount, index));
-  const innerPoints = Array.from({ length: safeCount }, (_, index) => curvedSprocketSlotPoint(origin, innerRadius, safeCount, index));
-  const path = (outer, inner, angle0, angle1, bend) => {
+  const curvedSegment = (fromRing, fromSlot, toRing, toSlot) => {
     const points = [];
-    for (let i = 0;i <= safeSamples; i += 1) {
-      if (i === 0) {
-        points.push({ ...outer });
-        continue;
-      }
-      if (i === safeSamples) {
-        points.push({ ...inner });
-        continue;
-      }
-      const t = i / safeSamples;
-      const radius = outerRadius + (innerRadius - outerRadius) * t;
-      const angle = angle0 + (angle1 - angle0) * t + bend * Math.sin(Math.PI * t);
-      points.push({ x: origin.x + radius * Math.cos(angle), y: origin.y + radius * Math.sin(angle) });
+    for (let i = 0;i <= samples; i += 1) {
+      const t = i / samples;
+      points.push(fractionalDualRingPixel(fromRing + (toRing - fromRing) * t, fromSlot + (toSlot - fromSlot) * t, proj));
     }
     return points;
   };
-  for (let i = 0;i < safeCount; i += 1) {
-    const angle = start + i * step;
-    const plusIndex = (i + sweepSteps) % safeCount;
-    const minusIndex = (i - sweepSteps + safeCount) % safeCount;
-    paths.push(path(outerPoints[i], innerPoints[plusIndex], angle, angle + lockedSweep, curvature));
-    paths.push(path(outerPoints[i], innerPoints[minusIndex], angle, angle - lockedSweep, -curvature));
+  for (let ring = zone.minRing;ring < zone.maxRing; ring += 1) {
+    const cellCount = angularStepsForRing(proj.stack, ring);
+    for (let slot = 0;slot < cellCount; slot += 1) {
+      paths.push(curvedSegment(ring, slot, ring + 1, slot));
+      paths.push(curvedSegment(ring, slot, ring + 1, slot + 1));
+    }
   }
   return paths;
 }
-function canonicalCurvedSprocketLattice(input) {
-  const cellCount = Math.max(3, Math.round(input.cellCount));
-  const innerRadius = Math.max(0, input.innerRadius);
-  const outerRadius = Math.max(innerRadius + 1, input.outerRadius);
-  const boundaryHeight = Math.max(1, Math.round(input.boundaryHeight ?? 1));
-  const radialSpan = outerRadius - innerRadius;
-  const width = 2 * Math.PI * outerRadius / cellCount;
-  const height = radialSpan / boundaryHeight;
-  const halfRowHeight = height / 2;
-  const totalRows = boundaryHeight + 2;
-  const dimensions = [];
-  for (let row = 0;row < totalRows; row += 1) {
-    const rowHeight = row === 0 || row === totalRows - 1 ? halfRowHeight : height;
-    for (let col = 0;col < cellCount; col += 1)
-      dimensions.push({ width, height: rowHeight });
-  }
-  const top = Array.from({ length: cellCount }, (_, q) => ({ q, r: 0, halfHeight: true }));
-  const bottom = Array.from({ length: cellCount }, (_, q) => ({ q, r: boundaryHeight + 1, halfHeight: true }));
-  const directedEdges = [];
-  const boundaryPaths = curvedSprocketPathPoints(input.origin, innerRadius, outerRadius, cellCount, 2 * Math.PI / cellCount, 0.12, 12);
-  for (let index = 0;index < cellCount; index += 1) {
-    const path = boundaryPaths[index * 2];
-    const fromIndex = index;
-    const toIndex = (index + 1) % cellCount;
-    directedEdges.push({ direction: "clockwise", fromIndex, toIndex, points: path.map((point) => ({ ...point })) });
-    directedEdges.push({
-      direction: "counterclockwise",
-      fromIndex: toIndex,
-      toIndex: fromIndex,
-      points: [...path].reverse().map((point) => ({ ...point }))
-    });
-  }
-  const project = (cell, orientation) => {
-    const ring = axialDistance({ q: 0, r: 0 }, cell);
-    const row = Math.max(0, Math.min(boundaryHeight, ring));
-    const ringSlots = Math.max(1, input.slotCountForRing?.(ring) ?? 6 * ring);
-    const ringSlot = ring === 0 ? 0 : axialRingSlotIndex(cell);
-    const slot = ring === 0 ? 0 : Math.round(ringSlot / ringSlots * cellCount) % cellCount;
-    const pointsOutward = orientation === "outer" || orientation === "stressor";
-    const radius = input.radiusForRing?.(ring, orientation) ?? (pointsOutward ? innerRadius + row * radialSpan / Math.max(1, boundaryHeight) : outerRadius - row * radialSpan / Math.max(1, boundaryHeight));
-    const point = curvedSprocketSlotPoint(input.origin, radius, cellCount, slot);
-    return { ...cell, ...point };
-  };
-  const lattice = {
-    origin: { ...input.origin },
-    innerRadius,
-    outerRadius,
-    cellCount,
-    boundaryHeight,
-    cellDimensions: dimensions,
-    boundaryCells: { top, bottom },
-    indexedBoundaryVertices: directedEdges,
-    meshPaths: boundaryPaths.map((path) => path.map((point) => ({ ...point }))),
-    projectPyramidCells: (cells, options) => cells.map((cell) => project(cell, options.orientation)),
-    inverseLookup: (point) => {
-      const dx = point.x - input.origin.x;
-      const dy = point.y - input.origin.y;
-      const radius = Math.hypot(dx, dy);
-      const radialRatio = (radius - innerRadius) / radialSpan;
-      const row = Math.max(0, Math.min(boundaryHeight, Math.round(radialRatio * boundaryHeight)));
-      const angle = Math.atan2(dy, dx);
-      const normalized = ((angle + Math.PI / 2) / (2 * Math.PI) + 1) % 1;
-      const slot = Math.round(normalized * cellCount) % cellCount;
-      if (row === 0)
-        return { cell: { q: 0, r: 0 }, inspectedCandidates: 3 };
-      const ringSlots = Math.max(1, 6 * row);
-      const ringSlot = Math.round(slot / cellCount * ringSlots) % ringSlots;
-      const ringCells = axialRing({ q: 0, r: 0 }, row);
-      return { cell: ringCells[ringSlot] ?? { q: 0, r: row }, inspectedCandidates: 3 };
-    }
-  };
-  return lattice;
-}
-function axialToDualRingPixel(cell, proj) {
-  if (proj.canonical) {
-    const projected = proj.canonical.projectPyramidCells([cell], { orientation: "inner" })[0];
-    if (projected)
-      return { x: projected.x, y: projected.y };
-  }
-  const ring = axialDistance({ q: 0, r: 0 }, cell);
-  if (ring === 0)
-    return { ...proj.origin };
-  const radius = radiusForDualRingAxial(ring, proj.stack, proj.spacing);
-  const count = Math.max(1, 6 * ring);
-  return curvedSprocketSlotPoint(proj.origin, radius, count, axialRingSlotIndex(cell));
-}
-function pixelToDualRingAxial(point, proj) {
-  const dx = point.x - proj.origin.x;
-  const dy = point.y - proj.origin.y;
-  if (Math.hypot(dx, dy) < 0.000000001)
-    return { q: 0, r: 0 };
-  const maxRing = proj.stack.stressorRingAxial + 12;
-  const targetRadius = Math.hypot(dx, dy);
-  let nearestRing = 0;
-  let nearestRingDistance = Math.abs(targetRadius);
-  for (let ring = 1;ring <= maxRing; ring += 1) {
-    const distance = Math.abs(radiusForDualRingAxial(ring, proj.stack, proj.spacing) - targetRadius);
-    if (distance < nearestRingDistance) {
-      nearestRing = ring;
-      nearestRingDistance = distance;
-    }
-  }
-  if (nearestRing === 0)
-    return { q: 0, r: 0 };
-  const count = 6 * nearestRing;
-  const angle = Math.atan2(dy, dx);
-  const normalized = ((angle + Math.PI / 2) / (Math.PI * 2) + 1) % 1;
-  const slot = Math.round(normalized * count);
-  let best = axialRing({ q: 0, r: 0 }, nearestRing)[slot % count];
-  let bestDistance = Infinity;
-  for (const ring of [nearestRing - 1, nearestRing, nearestRing + 1]) {
-    if (ring <= 0 || ring > maxRing)
-      continue;
-    const ringCells = axialRing({ q: 0, r: 0 }, ring);
-    const ringCount = ringCells.length;
-    const ringSlot = Math.round(normalized * ringCount);
-    for (let offset = -1;offset <= 1; offset += 1) {
-      const candidate = ringCells[(ringSlot + offset + ringCount) % ringCount];
-      const candidatePixel = axialToDualRingPixel(candidate, proj);
-      const distance = Math.hypot(candidatePixel.x - point.x, candidatePixel.y - point.y);
-      if (distance < bestDistance) {
-        best = candidate;
-        bestDistance = distance;
+function nearestFreeDualRingCell(point, occupiedKeys, proj, ringBounds, preferredFrom) {
+  const start = pixelToDualRingAxial(point, proj, ringBounds);
+  if (!occupiedKeys.has(axialKey(start)))
+    return start;
+  const preferred = preferredFrom ?? point;
+  const zoneSpan = Math.max(1, ringBounds.max - ringBounds.min + 1);
+  const maxCellCount = Math.max(...Array.from({ length: zoneSpan }, (_, i) => angularStepsForRing(proj.stack, ringBounds.min + i)));
+  const maxAttempts = zoneSpan * maxCellCount + 8;
+  for (let radius = 1;radius <= maxAttempts; radius += 1) {
+    const candidates = [];
+    for (let dr = -radius;dr <= radius; dr += 1) {
+      const ring = start.r + dr;
+      if (ring < ringBounds.min || ring > ringBounds.max)
+        continue;
+      const cellCount = angularStepsForRing(proj.stack, ring);
+      for (let ds = -radius;ds <= radius; ds += 1) {
+        if (Math.max(Math.abs(dr), Math.abs(ds)) !== radius)
+          continue;
+        const slot = ((start.q + ds) % cellCount + cellCount) % cellCount;
+        candidates.push({ q: slot, r: ring });
       }
     }
+    if (candidates.length === 0)
+      continue;
+    const seen = new Set;
+    const unique = candidates.filter((candidate) => {
+      const key = axialKey(candidate);
+      if (seen.has(key))
+        return false;
+      seen.add(key);
+      return true;
+    });
+    unique.sort((a, b) => {
+      const pa = axialToDualRingPixel(a, proj);
+      const pb = axialToDualRingPixel(b, proj);
+      return Math.hypot(pa.x - preferred.x, pa.y - preferred.y) - Math.hypot(pb.x - preferred.x, pb.y - preferred.y);
+    });
+    const free = unique.find((candidate) => !occupiedKeys.has(axialKey(candidate)));
+    if (free)
+      return free;
   }
-  return best;
-}
-function axialRingSlotIndex(cell, center = { q: 0, r: 0 }) {
-  const ring = axialDistance(center, cell);
-  if (ring === 0)
-    return 0;
-  const ringCells = axialRing(center, ring);
-  const key = axialKey(cell);
-  const index = ringCells.findIndex((candidate) => axialKey(candidate) === key);
-  return index < 0 ? 0 : index;
-}
-function axialCellOnRingAtAngle(ring, angle) {
-  if (ring <= 0)
-    return { q: 0, r: 0 };
-  const cells = axialRing({ q: 0, r: 0 }, ring);
-  const count = cells.length;
-  let normalized = angle + Math.PI / 2;
-  while (normalized < 0)
-    normalized += 2 * Math.PI;
-  while (normalized >= 2 * Math.PI)
-    normalized -= 2 * Math.PI;
-  const slot = (Math.round(normalized / (2 * Math.PI) * count) % count + count) % count;
-  return cells[slot];
+  return start;
 }
 function jaccard(a, b) {
   const setA = new Set(a);
@@ -4556,52 +4417,6 @@ function assignForcesToSubShapes(forces, subShapeSizes) {
     bins[bestIndex].push(force);
   }
   return bins.map((bin) => bin.map((force) => force.id));
-}
-function nearestFreeAxialPoint(point, occupiedKeys, spacing = TRI_LATTICE_SPACING, origin = { x: 0, y: 0 }) {
-  const base = pixelToAxial(point, spacing, origin);
-  if (!occupiedKeys.has(axialKey(base)))
-    return base;
-  for (let radius = 1;; radius += 1) {
-    for (const candidate of axialRing(base, radius)) {
-      if (!occupiedKeys.has(axialKey(candidate)))
-        return candidate;
-    }
-  }
-}
-function nearestFreeCartesianPoint(point, occupiedKeys, spacing = TRI_LATTICE_SPACING, origin = { x: 0, y: 0 }, dragOrigin) {
-  const base = {
-    q: Math.round((point.x - origin.x) / spacing),
-    r: Math.round((point.y - origin.y) / spacing)
-  };
-  if (!occupiedKeys.has(axialKey(base)))
-    return base;
-  const preferred = dragOrigin ?? point;
-  const direction = {
-    x: preferred.x - (origin.x + base.q * spacing),
-    y: preferred.y - (origin.y + base.r * spacing)
-  };
-  for (let radius = 1;; radius += 1) {
-    const candidates = [];
-    for (let q = base.q - radius;q <= base.q + radius; q += 1) {
-      for (let r = base.r - radius;r <= base.r + radius; r += 1) {
-        if (Math.max(Math.abs(q - base.q), Math.abs(r - base.r)) !== radius)
-          continue;
-        candidates.push({ q, r });
-      }
-    }
-    candidates.sort((left, right) => {
-      const leftDx = left.q - base.q;
-      const leftDy = left.r - base.r;
-      const rightDx = right.q - base.q;
-      const rightDy = right.r - base.r;
-      const leftAlong = leftDx * direction.x + leftDy * direction.y;
-      const rightAlong = rightDx * direction.x + rightDy * direction.y;
-      return rightAlong - leftAlong || left.q - right.q || left.r - right.r;
-    });
-    const free = candidates.find((candidate) => !occupiedKeys.has(axialKey(candidate)));
-    if (free)
-      return free;
-  }
 }
 
 // src/nkp-hypergraph.ts
@@ -4968,8 +4783,6 @@ function createRegionsView(ctx) {
   let labelShiftByKey = new Map;
   let groupColorById = new Map;
   let latticeTargets = new Map;
-  let canonicalLatticeKey = "";
-  let canonicalLattice;
   let componentCells = new Map;
   let rigidAttractors = new Map;
   let subShapesByAttractor = new Map;
@@ -4981,10 +4794,13 @@ function createRegionsView(ctx) {
   const latticeForce = (_alpha) => {};
   latticeForce.initialize = () => {};
   function absoluteCellsForSubShape(subShape, translation = subShape.translation) {
-    return [...subShape.offsets.values()].map((offset) => ({
-      q: offset.q + translation.q,
-      r: offset.r + translation.r
-    }));
+    const stack = currentDualRingStack();
+    return [...subShape.offsets.values()].map((offset) => {
+      const r = offset.r + translation.r;
+      const cellCount = angularStepsForRing(stack, r);
+      const q = ((offset.q + translation.q) % cellCount + cellCount) % cellCount;
+      return { q, r };
+    });
   }
   function occupiedKeysExcluding(opts = {}) {
     const keys = new Set;
@@ -5033,32 +4849,10 @@ function createRegionsView(ctx) {
     return regionsDualRingStack(componentCount, currentAttractorKindCounts());
   }
   function currentDualRingProjection() {
-    const stack = currentDualRingStack();
-    const key = [
-      coreCenter.x,
-      coreCenter.y,
-      stack.stressorRingOuterAxial,
-      stack.componentInnerAxial,
-      stack.componentOuterAxial,
-      stack.stressorRingOuterRadius
-    ].join(":");
-    if (key !== canonicalLatticeKey) {
-      canonicalLatticeKey = key;
-      canonicalLattice = canonicalCurvedSprocketLattice({
-        origin: coreCenter,
-        innerRadius: 0,
-        outerRadius: stack.stressorRingOuterRadius,
-        cellCount: Math.max(6, 6 * (stack.stressorRingOuterAxial + 12)),
-        boundaryHeight: Math.max(1, stack.stressorRingOuterAxial + 12),
-        radiusForRing: (ring) => radiusForDualRingAxial(ring, stack, REGIONS_TRI_LATTICE_SPACING),
-        slotCountForRing: (ring) => Math.max(1, 6 * ring)
-      });
-    }
     return {
       origin: coreCenter,
       spacing: REGIONS_TRI_LATTICE_SPACING,
-      stack,
-      canonical: canonicalLattice
+      stack: currentDualRingStack()
     };
   }
   function currentZoneRadii() {
@@ -5183,10 +4977,7 @@ function createRegionsView(ctx) {
         attractorAngle.set(attractorId, Math.atan2(c.y - coreCenter.y, c.x - coreCenter.x));
       }
     }
-    const inComponentBand = (cell) => {
-      const ring = Math.max(Math.abs(cell.q), Math.abs(cell.r), Math.abs(cell.q + cell.r));
-      return ring >= stack.componentInnerAxial && ring <= stack.componentOuterAxial;
-    };
+    const inComponentBand = (cell) => cell.r >= stack.componentInnerAxial && cell.r <= stack.componentOuterAxial;
     const componentOccupied = new Set;
     const componentAxialById = new Map;
     const orderedComponents = nodes.filter((node) => node.type === "component").sort((left, right) => {
@@ -5197,22 +4988,22 @@ function createRegionsView(ctx) {
     for (const node of orderedComponents) {
       const dominantId = node.type === "component" ? node.dominantAttractorId : undefined;
       const angle = (dominantId ? attractorAngle.get(dominantId) : undefined) ?? 0;
-      const count = Math.max(1, 6 * seedRing);
+      const count = angularStepsForRing(stack, seedRing);
       let normalized = angle + Math.PI / 2;
       while (normalized < 0)
         normalized += 2 * Math.PI;
       while (normalized >= 2 * Math.PI)
         normalized -= 2 * Math.PI;
       const seedSlot = (Math.round(normalized / (2 * Math.PI) * count) % count + count) % count;
-      const seedCell = axialRing({ q: 0, r: 0 }, seedRing)[seedSlot];
-      let axial = snapIds.has(node.id) ? seedCell : pixelToDualRingAxial({ x: node.x ?? 0, y: node.y ?? 0 }, proj);
+      const seedCell = { q: seedSlot, r: seedRing };
+      let axial = snapIds.has(node.id) ? seedCell : pixelToDualRingAxial({ x: node.x ?? 0, y: node.y ?? 0 }, proj, { min: stack.componentInnerAxial, max: stack.componentOuterAxial });
       if (!inComponentBand(axial) || componentOccupied.has(axialKey(axial))) {
         let found;
         for (let ring = stack.componentInnerAxial;!found && ring <= stack.componentOuterAxial; ring += 1) {
-          const cells = axialRing({ q: 0, r: 0 }, ring);
-          const start = axialRingSlotIndex(seedCell) % Math.max(1, cells.length);
-          for (let i = 0;i < cells.length; i += 1) {
-            const candidate = cells[(start + i) % cells.length];
+          const ringSlots = angularStepsForRing(stack, ring);
+          const start = seedCell.q % ringSlots;
+          for (let i = 0;i < ringSlots; i += 1) {
+            const candidate = { q: (start + i) % ringSlots, r: ring };
             if (!componentOccupied.has(axialKey(candidate))) {
               found = candidate;
               break;
@@ -5243,39 +5034,11 @@ function createRegionsView(ctx) {
     });
     const layout = layoutAttractorDualRingMiniPyramids(shapeGroups, {
       purposeRing: stack.purposeRingAxial,
-      stressorRing: stack.stressorRingAxial
+      stressorRing: stack.stressorRingAxial,
+      purposeCellCount: stack.purposeAngularSteps,
+      stressorCellCount: stack.stressorAngularSteps
     });
     const forceAxialById = new Map(layout.targets);
-    for (const force of forceNodesByAttractor.values()) {
-      for (const node of force) {
-        const original = forceAxialById.get(node.id);
-        if (!original)
-          continue;
-        const valid = (cell) => {
-          const point = axialToDualRingPixel(cell, proj);
-          const radius = Math.hypot(point.x - coreCenter.x, point.y - coreCenter.y);
-          return node.kind === "purpose" ? radius <= stack.innerAnnulus.inner + 0.000001 : radius >= stack.outerAnnulus.outer - 0.000001;
-        };
-        if (valid(original))
-          continue;
-        let best;
-        let bestDistance = Infinity;
-        for (let q = original.q - 3;q <= original.q + 3; q += 1) {
-          for (let r = original.r - 3;r <= original.r + 3; r += 1) {
-            const candidate = { q, r };
-            if (!valid(candidate))
-              continue;
-            const distance = Math.hypot(q - original.q, r - original.r);
-            if (distance < bestDistance) {
-              best = candidate;
-              bestDistance = distance;
-            }
-          }
-        }
-        if (best)
-          forceAxialById.set(node.id, best);
-      }
-    }
     const nextSubShapes = new Map;
     for (const attractorId of forceNodesByAttractor.keys()) {
       const purposeBins = layout.purposeSubShapesByAttractor.get(attractorId) ?? [];
@@ -5636,39 +5399,20 @@ function createRegionsView(ctx) {
       return;
     }
     const stack = currentDualRingStack();
-    const spacing = REGIONS_TRI_LATTICE_SPACING;
+    const proj = currentDualRingProjection();
     const planes = [
-      { id: "purpose", inner: 0, outer: stack.innerAnnulus.inner, hops: stack.purposeRingAxial, angularSteps: stack.purposeAngularSteps },
-      { id: "components", inner: stack.innerAnnulus.outer, outer: stack.outerAnnulus.inner, hops: stack.componentBand.hops, angularSteps: stack.componentAngularSteps },
-      { id: "stressors", inner: stack.outerAnnulus.outer, outer: stack.stressorRingOuterRadius, hops: stack.stressorRingOuterAxial - stack.stressorRingAxial + 1, angularSteps: stack.stressorAngularSteps }
+      { id: "purpose", minRing: 0, maxRing: stack.purposeRingAxial },
+      { id: "components", minRing: stack.componentInnerAxial, maxRing: stack.componentOuterAxial },
+      { id: "stressors", minRing: stack.stressorRingAxial, maxRing: stack.stressorRingOuterAxial }
     ];
     const lines = [];
-    const inside = (x, y, plane) => {
-      const radius = Math.hypot(x - coreCenter.x, y - coreCenter.y);
-      return radius >= plane.inner - 0.000001 && radius <= plane.outer + 0.000001;
-    };
     for (const plane of planes) {
-      const inner = Math.max(plane.inner, spacing * 1.5);
-      if (plane.outer <= inner + 1)
+      if (plane.maxRing <= plane.minRing)
         continue;
-      const lattice = canonicalCurvedSprocketLattice({
-        origin: coreCenter,
-        innerRadius: inner,
-        outerRadius: plane.outer,
-        cellCount: plane.angularSteps,
-        boundaryHeight: Math.max(1, plane.hops)
-      });
-      lattice.meshPaths.forEach((path, index) => {
+      const paths = dualRingZoneMeshPaths(proj, plane);
+      paths.forEach((path, index) => {
         lines.push({ id: `${plane.id}:sprocket:${index}`, plane: plane.id, points: path });
       });
-    }
-    for (const line of lines) {
-      line.points = line.points.filter((point) => inside(point.x, point.y, planes.find((plane) => plane.id === line.plane)));
-    }
-    for (const line of lines) {
-      if (line.points.length < 2) {
-        line.points = [];
-      }
     }
     b.latticeG.selectAll(".nkp-hyper-lattice-edge").data(lines).join("path").attr("class", "nkp-hyper-lattice-edge").attr("data-lattice-plane", (d) => d.plane).attr("d", (d) => `M ${d.points.map((point, index) => `${index === 0 ? "" : "L "}${point.x},${point.y}`).join(" ")}`);
     b.latticeG.selectAll("circle.nkp-hyper-lattice-point").remove();
@@ -5853,7 +5597,9 @@ function createRegionsView(ctx) {
     }
     tick();
     if (built) {
-      const previewPoint = node.type === "component" ? axialToDualRingPixel(nearestFreeCartesianPoint({ x: node.x ?? 0, y: node.y ?? 0 }, dragComponentOccupied ?? new Set, REGIONS_TRI_LATTICE_SPACING, coreCenter, dragComponentOrigin), currentDualRingProjection()) : latticeTargets.get(node.id);
+      const stack2 = currentDualRingStack();
+      const proj = currentDualRingProjection();
+      const previewPoint = node.type === "component" ? axialToDualRingPixel(nearestFreeDualRingCell({ x: node.x ?? 0, y: node.y ?? 0 }, dragComponentOccupied ?? new Set, proj, { min: stack2.componentInnerAxial, max: stack2.componentOuterAxial }, dragComponentOrigin), proj) : latticeTargets.get(node.id);
       if (previewPoint) {
         built.snapPreview.attr("cx", previewPoint.x).attr("cy", previewPoint.y).style("display", null);
       }
@@ -5877,16 +5623,7 @@ function createRegionsView(ctx) {
       const stack = currentDualRingStack();
       const proj = currentDualRingProjection();
       const occupied = dragComponentOccupied ?? new Set;
-      let cell = nearestFreeCartesianPoint({ x: node.x ?? 0, y: node.y ?? 0 }, occupied, REGIONS_TRI_LATTICE_SPACING, coreCenter, dragComponentOrigin);
-      if (Math.hypot((node.x ?? 0) - coreCenter.x, (node.y ?? 0) - coreCenter.y) >= stack.componentBand.outer - 0.000001) {
-        cell = { q: stack.componentOuterAxial, r: 0 };
-      }
-      const ring = Math.max(Math.abs(cell.q), Math.abs(cell.r), Math.abs(cell.q + cell.r));
-      if ((ring < stack.componentInnerAxial || ring > stack.componentOuterAxial) && !(cell.q === stack.componentOuterAxial && cell.r === 0) && Math.hypot((node.x ?? 0) - coreCenter.x, (node.y ?? 0) - coreCenter.y) <= stack.componentBand.outer) {
-        const angle = Math.atan2((node.y ?? 0) - coreCenter.y, (node.x ?? 0) - coreCenter.x);
-        const targetRing = Math.max(stack.componentInnerAxial, Math.min(stack.componentOuterAxial, Math.round(Math.hypot((node.x ?? 0) - coreCenter.x, (node.y ?? 0) - coreCenter.y) / REGIONS_TRI_LATTICE_SPACING)));
-        cell = axialCellOnRingAtAngle(targetRing, angle);
-      }
+      const cell = nearestFreeDualRingCell({ x: node.x ?? 0, y: node.y ?? 0 }, occupied, proj, { min: stack.componentInnerAxial, max: stack.componentOuterAxial }, dragComponentOrigin);
       const home = axialToDualRingPixel(cell, proj);
       node.x = home.x;
       node.y = home.y;
@@ -6195,17 +5932,7 @@ function createRegionsView(ctx) {
         const stack2 = currentDualRingStack();
         const proj = currentDualRingProjection();
         const occupied = occupiedSnapshot ?? new Set;
-        let cell = nearestFreeCartesianPoint({ x: node.x ?? 0, y: node.y ?? 0 }, occupied, REGIONS_TRI_LATTICE_SPACING, coreCenter, dragComponentOrigin);
-        const ring = Math.max(Math.abs(cell.q), Math.abs(cell.r), Math.abs(cell.q + cell.r));
-        if (ring < stack2.componentInnerAxial || ring > stack2.componentOuterAxial) {
-          cell = pixelToDualRingAxial({ x: node.x ?? 0, y: node.y ?? 0 }, proj);
-          const r2 = Math.max(Math.abs(cell.q), Math.abs(cell.r), Math.abs(cell.q + cell.r));
-          if (r2 < stack2.componentInnerAxial || r2 > stack2.componentOuterAxial) {
-            const angle = Math.atan2((node.y ?? 0) - coreCenter.y, (node.x ?? 0) - coreCenter.x);
-            const targetRing = Math.max(stack2.componentInnerAxial, Math.min(stack2.componentOuterAxial, Math.round(Math.hypot((node.x ?? 0) - coreCenter.x, (node.y ?? 0) - coreCenter.y) / REGIONS_TRI_LATTICE_SPACING)));
-            cell = axialCellOnRingAtAngle(targetRing, angle);
-          }
-        }
+        const cell = nearestFreeDualRingCell({ x: node.x ?? 0, y: node.y ?? 0 }, occupied, proj, { min: stack2.componentInnerAxial, max: stack2.componentOuterAxial }, dragComponentOrigin);
         const home = axialToDualRingPixel(cell, proj);
         node.x = home.x;
         node.y = home.y;
@@ -6234,12 +5961,15 @@ function createRegionsView(ctx) {
         return;
       }
       if (!regionsLocked && node.type === "force") {
+        const proj = currentDualRingProjection();
+        const stack2 = proj.stack;
+        const ringBounds = node.kind === "purpose" ? { min: 1, max: stack2.purposeRingAxial } : { min: stack2.stressorRingAxial, max: stack2.stressorRingOuterAxial };
         const occupied = occupiedKeysExcluding({});
         for (const id of peerIds)
           occupied.delete(axialKey(pixelToDualRingAxial({
             x: byId.get(id)?.x ?? 0,
             y: byId.get(id)?.y ?? 0
-          }, currentDualRingProjection())));
+          }, proj, ringBounds)));
         const primary = byId.get(node.id);
         const home = latticeTargets.get(node.id);
         if (primary && home) {
@@ -6251,9 +5981,9 @@ function createRegionsView(ctx) {
           for (let step = 0;step <= 12; step += 1) {
             const t = step / 12;
             const candidate = { x: to.x + dx * t, y: to.y + dy * t };
-            const cell = nearestFreeAxialPoint(candidate, occupied, REGIONS_TRI_LATTICE_SPACING, coreCenter);
+            const cell = nearestFreeDualRingCell(candidate, occupied, proj, ringBounds);
             if (!occupied.has(axialKey(cell))) {
-              accepted = axialToDualRingPixel(cell, currentDualRingProjection());
+              accepted = axialToDualRingPixel(cell, proj);
               break;
             }
           }

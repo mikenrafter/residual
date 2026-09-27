@@ -153,15 +153,28 @@ type DualRingLatticeModule = {
     origin: { x: number; y: number },
     options?: { curvature?: number; samples?: number },
   ) => Array<{ x: number; y: number }>;
-  curvedSprocketPathPoints?: (
-    origin: { x: number; y: number },
-    innerRadius: number,
-    outerRadius: number,
-    count: number,
-    sweep?: number,
-    curvature?: number,
+  angularStepsForRing?: (stack: unknown, ring: number) => number;
+  axialToDualRingPixel?: (
+    cell: { q: number; r: number },
+    proj: { origin: { x: number; y: number }; spacing: number; stack: unknown },
+  ) => { x: number; y: number };
+  pixelToDualRingAxial?: (
+    point: { x: number; y: number },
+    proj: { origin: { x: number; y: number }; spacing: number; stack: unknown },
+    ringBounds?: { min: number; max: number },
+  ) => { q: number; r: number };
+  dualRingZoneMeshPaths?: (
+    proj: { origin: { x: number; y: number }; spacing: number; stack: unknown },
+    zone: { minRing: number; maxRing: number },
     samples?: number,
   ) => Array<Array<{ x: number; y: number }>>;
+  nearestFreeDualRingCell?: (
+    point: { x: number; y: number },
+    occupiedKeys: ReadonlySet<string>,
+    proj: { origin: { x: number; y: number }; spacing: number; stack: unknown },
+    ringBounds: { min: number; max: number },
+    preferredFrom?: { x: number; y: number },
+  ) => { q: number; r: number };
   miniPyramidLayersForCount?: (n: number) => number[];
   partitionMiniPyramidLayers?: (layers: readonly number[]) => Array<{
     kind: string;
@@ -182,7 +195,7 @@ type DualRingLatticeModule = {
       forces: SimilarityForce[];
       anchor: { q: number; r: number };
     }>,
-    rings: { purposeRing: number; stressorRing: number },
+    rings: { purposeRing: number; stressorRing: number; purposeCellCount: number; stressorCellCount: number },
   ) => {
     targets: Map<string, { q: number; r: number }>;
     purposeSubShapesByAttractor: Map<string, string[][]>;
@@ -320,6 +333,15 @@ describe("miniPyramidCellsForLayers orientation", () => {
     expect(byR.get(rs[0]!)).toBe(3);
     expect(byR.get(rs[rs.length - 1]!)).toBe(2);
   });
+
+  test("every layer is a left-aligned column run starting at 0 (never centered)", () => {
+    const cells = dualRing.miniPyramidCellsForLayers?.([4, 3, 2, 1], { apexToward: "outward" }) ?? [];
+    const byLayer = new Map<number, number[]>();
+    for (const cell of cells) byLayer.set(cell.r, [...(byLayer.get(cell.r) ?? []), cell.q]);
+    for (const [, cols] of byLayer) {
+      expect(Math.min(...cols)).toBe(0);
+    }
+  });
 });
 
 describe("dualRingSlotsForMiniPyramids (gap 0 + empty placeholders)", () => {
@@ -369,15 +391,18 @@ describe("layoutAttractorDualRingMiniPyramids", () => {
     const layout = dualRing.layoutAttractorDualRingMiniPyramids?.(groups, {
       purposeRing: 4,
       stressorRing: 8,
+      purposeCellCount: 24,
+      stressorCellCount: 48,
     });
     expect(layout).toBeDefined();
     expect(layout!.targets.size).toBe(3 + 4 + 2 + 2);
     for (const force of groups.flatMap((g) => g.forces)) {
       const cell = layout!.targets.get(force.id)!;
-      const ring = Math.max(Math.abs(cell.q), Math.abs(cell.r), Math.abs(cell.q + cell.r));
-      // Cube-distance ring from origin; purpose closer than stressor.
-      if (force.kind === "purpose") expect(ring).toBeLessThanOrEqual(5);
-      else expect(ring).toBeGreaterThanOrEqual(6);
+      // `cell.r` is the global ring index directly now (no hex cube distance):
+      // purpose bases sit at ring 4 and recede inward; stressor bases sit at
+      // ring 8 and recede outward.
+      if (force.kind === "purpose") expect(cell.r).toBeLessThanOrEqual(4);
+      else expect(cell.r).toBeGreaterThanOrEqual(8);
     }
   });
 
@@ -389,6 +414,8 @@ describe("layoutAttractorDualRingMiniPyramids", () => {
     const layout = dualRing.layoutAttractorDualRingMiniPyramids?.(groups, {
       purposeRing: 5,
       stressorRing: 9,
+      purposeCellCount: 24,
+      stressorCellCount: 48,
     });
     expect(layout).toBeDefined();
     expect(layout!.purposeSubShapesByAttractor.get("A") ?? []).toEqual([]);
@@ -416,6 +443,8 @@ describe("layoutAttractorDualRingMiniPyramids", () => {
     const layout = dualRing.layoutAttractorDualRingMiniPyramids?.(groups, {
       purposeRing: 5,
       stressorRing: 9,
+      purposeCellCount: 24,
+      stressorCellCount: 48,
     });
     expect(layout!.stressorSubShapesByAttractor.get("A") ?? []).toEqual([]);
     const occupancy = layout!.stressorSlotOccupancy;
@@ -438,6 +467,8 @@ describe("layoutAttractorDualRingMiniPyramids", () => {
     const layout = dualRing.layoutAttractorDualRingMiniPyramids?.(groups, {
       purposeRing: 5,
       stressorRing: 10,
+      purposeCellCount: 30,
+      stressorCellCount: 60,
     });
     const purposeLayers = dualRing.miniPyramidLayersForCount?.(6) ?? [];
     const stressorLayers = dualRing.miniPyramidLayersForCount?.(6) ?? [];
@@ -482,6 +513,90 @@ describe("dualRingRadialStack (center→out)", () => {
   });
 });
 
+describe("polar dual-ring lattice (row=ring, col=slot; no hex axial anywhere)", () => {
+  beforeAll(async () => {
+    dualRing = (await import("./landscape-triangular-lattice").catch(() => ({}))) as DualRingLatticeModule;
+  });
+
+  function makeStack() {
+    return dualRing.dualRingRadialStack?.({
+      purposeBaseWidths: [3],
+      purposeHeights: [2],
+      stressorBaseWidths: [3],
+      stressorHeights: [3],
+      spacing: TRI_LATTICE_SPACING,
+    })!;
+  }
+
+  test("angularStepsForRing returns each zone's own fixed angular count, not 6×ring", () => {
+    const stack = makeStack();
+    expect(dualRing.angularStepsForRing?.(stack, 1)).toBe((stack as any).purposeAngularSteps);
+    expect(dualRing.angularStepsForRing?.(stack, stack.componentBand ? (stack as any).componentInnerAxial : 0))
+      .toBe((stack as any).componentAngularSteps);
+    expect(dualRing.angularStepsForRing?.(stack, (stack as any).stressorRingAxial))
+      .toBe((stack as any).stressorAngularSteps);
+  });
+
+  test("a mesh vertex from dualRingZoneMeshPaths is exactly axialToDualRingPixel for that cell", () => {
+    const stack = makeStack();
+    const proj = { origin: { x: 0, y: 0 }, spacing: TRI_LATTICE_SPACING, stack };
+    const componentInner = (stack as any).componentInnerAxial as number;
+    const componentOuter = (stack as any).componentOuterAxial as number;
+    const paths = dualRing.dualRingZoneMeshPaths?.(proj, { minRing: componentInner, maxRing: componentOuter }) ?? [];
+    expect(paths.length).toBeGreaterThan(0);
+    // Every path's first point is a real vertex: ring=componentInner, some slot.
+    const cellCount = dualRing.angularStepsForRing?.(stack, componentInner) ?? 1;
+    for (const path of paths.slice(0, cellCount)) {
+      const first = path[0]!;
+      // Its radius must match the real cell radius for ring=componentInner exactly.
+      const cell0 = dualRing.axialToDualRingPixel?.({ q: 0, r: componentInner }, proj)!;
+      const radius0 = Math.hypot(cell0.x - proj.origin.x, cell0.y - proj.origin.y);
+      const radiusFirst = Math.hypot(first.x - proj.origin.x, first.y - proj.origin.y);
+      expect(radiusFirst).toBeCloseTo(radius0, 5);
+    }
+  });
+
+  test("pixelToDualRingAxial inverts axialToDualRingPixel for a real cell, clamped to a zone's ring bounds", () => {
+    const stack = makeStack();
+    const proj = { origin: { x: 400, y: 300 }, spacing: TRI_LATTICE_SPACING, stack };
+    const componentInner = (stack as any).componentInnerAxial as number;
+    const componentOuter = (stack as any).componentOuterAxial as number;
+    const cell = { q: 2, r: componentInner + 1 };
+    const point = dualRing.axialToDualRingPixel?.(cell, proj)!;
+    const recovered = dualRing.pixelToDualRingAxial?.(point, proj, { min: componentInner, max: componentOuter });
+    expect(recovered).toEqual(cell);
+  });
+
+  test("nearestFreeDualRingCell never returns a cell outside the given ring bounds", () => {
+    const stack = makeStack();
+    const proj = { origin: { x: 0, y: 0 }, spacing: TRI_LATTICE_SPACING, stack };
+    const componentInner = (stack as any).componentInnerAxial as number;
+    const componentOuter = (stack as any).componentOuterAxial as number;
+    // A point far outside the component band (near the true center).
+    const cell = dualRing.nearestFreeDualRingCell?.(
+      { x: 0.001, y: 0.001 },
+      new Set(),
+      proj,
+      { min: componentInner, max: componentOuter },
+    );
+    expect(cell).toBeDefined();
+    expect(cell!.r).toBeGreaterThanOrEqual(componentInner);
+    expect(cell!.r).toBeLessThanOrEqual(componentOuter);
+  });
+
+  test("nearestFreeDualRingCell finds a different free cell when the nearest one is occupied", () => {
+    const stack = makeStack();
+    const proj = { origin: { x: 0, y: 0 }, spacing: TRI_LATTICE_SPACING, stack };
+    const componentInner = (stack as any).componentInnerAxial as number;
+    const componentOuter = (stack as any).componentOuterAxial as number;
+    const point = dualRing.axialToDualRingPixel?.({ q: 0, r: componentInner }, proj)!;
+    const occupied = new Set([`0:${componentInner}`]);
+    const cell = dualRing.nearestFreeDualRingCell?.(point, occupied, proj, { min: componentInner, max: componentOuter });
+    expect(cell).toBeDefined();
+    expect(occupied.has(`${cell!.q}:${cell!.r}`)).toBe(false);
+  });
+});
+
 describe("snapPyramidTopsToSharedRay", () => {
   beforeAll(async () => {
     dualRing = (await import("./landscape-triangular-lattice").catch(() => ({}))) as DualRingLatticeModule;
@@ -518,164 +633,4 @@ describe("snapPyramidTopsToSharedRay", () => {
     expect(points?.some((point) => point.x < 65 && point.y > 75)).toBe(true);
   });
 
-  test("sprocket strokes leave each outer vertex as an opposite-direction pair", () => {
-    const paths = dualRing.curvedSprocketPathPoints?.({ x: 0, y: 0 }, 150, 310, 18, 0.66, 0.12, 12);
-    expect(paths).toHaveLength(36);
-    for (let i = 0; i < 18; i += 1) {
-      const clockwise = paths?.[i * 2]!;
-      const counterclockwise = paths?.[i * 2 + 1]!;
-      expect(clockwise[0]).toEqual(counterclockwise[0]);
-      const plusInner = clockwise.at(-1)!;
-      const minusInner = counterclockwise.at(-1)!;
-      const plusOwner = paths?.[((i - 4 + 18) % 18) * 2]!.at(-1)!;
-      const minusOwner = paths?.[((i + 4) % 18) * 2 + 1]!.at(-1)!;
-      expect(plusInner).toEqual(minusOwner);
-      expect(minusInner).toEqual(plusOwner);
-    }
-  });
-});
-
-/**
- * Canonical curved-sprocket lattice contract. These tests intentionally use a
- * dynamic module shape while the backend is being introduced: missing exports
- * fail as behavior assertions instead of preventing the focused suite from
- * running.
- */
-type CanonicalCurvedSprocketLattice = {
-  cellDimensions: Array<{ width: number; height: number }>;
-  boundaryCells: {
-    top: Array<{ q: number; r: number; halfHeight: boolean }>;
-    bottom: Array<{ q: number; r: number; halfHeight: boolean }>;
-  };
-  indexedBoundaryVertices: Array<{
-    direction: "clockwise" | "counterclockwise";
-    fromIndex: number;
-    toIndex: number;
-    points: Array<{ x: number; y: number }>;
-  }>;
-  projectPyramidCells: (
-    cells: Array<{ q: number; r: number }>,
-    options: { orientation: "purpose" | "stressor" | "inner" | "outer" },
-  ) => Array<{ q: number; r: number; x: number; y: number }>;
-  inverseLookup: (point: { x: number; y: number }) => {
-    cell: { q: number; r: number };
-    inspectedCandidates: number;
-  };
-};
-
-type CanonicalLatticeModule = {
-  canonicalCurvedSprocketLattice?: (input: {
-    origin: { x: number; y: number };
-    innerRadius: number;
-    outerRadius: number;
-    cellCount: number;
-    boundaryHeight?: number;
-  }) => CanonicalCurvedSprocketLattice;
-  projectDualRingPyramidCells?: (input: {
-    cells: Array<{ q: number; r: number }>;
-    orientation: "purpose" | "stressor";
-    lattice: CanonicalCurvedSprocketLattice;
-  }) => {
-    backend: "canonical-curved-sprocket";
-    cells: Array<{ q: number; r: number; x: number; y: number }>;
-  };
-};
-
-let canonicalLattice: CanonicalLatticeModule = {};
-
-describe("canonicalCurvedSprocketLattice", () => {
-  beforeAll(async () => {
-    canonicalLattice = (await import("./landscape-triangular-lattice")) as CanonicalLatticeModule;
-  });
-
-  function makeLattice(): CanonicalCurvedSprocketLattice | undefined {
-    return canonicalLattice.canonicalCurvedSprocketLattice?.({
-      origin: { x: 0, y: 0 },
-      innerRadius: 120,
-      outerRadius: 300,
-      cellCount: 24,
-      boundaryHeight: 18,
-    });
-  }
-
-  test("every cell has the same width; boundary rows are half the height of interior rows", () => {
-    const lattice = makeLattice();
-    expect(lattice).toBeDefined();
-    expect(lattice!.cellDimensions.length).toBeGreaterThan(0);
-    const widths = lattice!.cellDimensions.map((dimension) => dimension.width);
-    const heights = lattice!.cellDimensions.map((dimension) => dimension.height);
-    expect(new Set(widths).size).toBe(1);
-    expect(widths[0]).toBeGreaterThan(0);
-    const uniqueHeights = [...new Set(heights)].sort((a, b) => a - b);
-    expect(uniqueHeights).toHaveLength(2);
-    expect(uniqueHeights[0]).toBeGreaterThan(0);
-    expect(uniqueHeights[0]).toBeCloseTo(uniqueHeights[1]! / 2, 5);
-  });
-
-  test("reports half-height top and bottom boundary cells", () => {
-    const lattice = makeLattice();
-    expect(lattice).toBeDefined();
-    expect(lattice!.boundaryCells.top.length).toBeGreaterThan(0);
-    expect(lattice!.boundaryCells.bottom.length).toBeGreaterThan(0);
-    expect(lattice!.boundaryCells.top.every((cell) => cell.halfHeight)).toBe(true);
-    expect(lattice!.boundaryCells.bottom.every((cell) => cell.halfHeight)).toBe(true);
-    expect(lattice!.boundaryCells.top.map(({ q, r }) => `${q},${r}`)).not.toEqual(
-      lattice!.boundaryCells.bottom.map(({ q, r }) => `${q},${r}`),
-    );
-  });
-
-  test("preserves shared indexed boundary vertices in both directions", () => {
-    const lattice = makeLattice();
-    expect(lattice).toBeDefined();
-    const byEdge = new Map<string, Array<{ x: number; y: number }>>();
-    for (const edge of lattice!.indexedBoundaryVertices) {
-      expect(edge.toIndex).not.toBe(edge.fromIndex);
-      expect(edge.points.length).toBeGreaterThan(1);
-      byEdge.set(`${edge.fromIndex}->${edge.toIndex}`, edge.points);
-    }
-    for (const edge of lattice!.indexedBoundaryVertices) {
-      const reverse = byEdge.get(`${edge.toIndex}->${edge.fromIndex}`);
-      expect(reverse).toBeDefined();
-      expect(reverse).toEqual([...edge.points].reverse());
-    }
-  });
-
-  test("makes stressor and outer pyramid orientation explicit", () => {
-    const lattice = makeLattice();
-    expect(lattice).toBeDefined();
-    const cells = [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 0, r: -1 }];
-    const stressor = lattice!.projectPyramidCells(cells, { orientation: "stressor" });
-    const outer = lattice!.projectPyramidCells(cells, { orientation: "outer" });
-    expect(stressor).toHaveLength(cells.length);
-    expect(outer).toHaveLength(cells.length);
-    expect(stressor).toEqual(outer);
-  });
-
-  test("projects dual-ring pyramid cells through the canonical backend", () => {
-    const lattice = makeLattice();
-    expect(lattice).toBeDefined();
-    const cells = [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 1, r: -1 }];
-    const projected = canonicalLattice.projectDualRingPyramidCells?.({
-      cells,
-      orientation: "purpose",
-      lattice: lattice!,
-    });
-    expect(projected).toBeDefined();
-    expect(projected!.backend).toBe("canonical-curved-sprocket");
-    expect(projected!.cells.map(({ q, r }) => ({ q, r }))).toEqual(cells);
-    for (const cell of projected!.cells) {
-      expect(Number.isFinite(cell.x)).toBe(true);
-      expect(Number.isFinite(cell.y)).toBe(true);
-    }
-  });
-
-  test("inverse lookup has a bounded candidate contract instead of exhaustive q/r scanning", () => {
-    const lattice = makeLattice();
-    expect(lattice).toBeDefined();
-    const result = lattice!.inverseLookup({ x: 214, y: -97 });
-    expect(result.cell).toEqual(expect.objectContaining({ q: expect.any(Number), r: expect.any(Number) }));
-    // Candidate work should stay local to nearby indexed rings, not scale as
-    // the square of the outer radius or enumerate every q/r pair.
-    expect(result.inspectedCandidates).toBeLessThan(24 * 3);
-  });
 });
