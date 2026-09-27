@@ -571,14 +571,20 @@ describe("polar dual-ring lattice (radial ring, angular slot; no hex axial anywh
       .toBe((stack as any).stressorAngularSteps);
   });
 
-  test("purpose lattice projection has half the current radial height", () => {
+  test("purpose area doubles vertical lattice layers while keeping its radial height", () => {
     const stack = makeStack();
     const proj = { origin: { x: 0, y: 0 }, spacing: TRI_LATTICE_SPACING, stack };
     const purposeProj = dualRing.purposeLatticeProjection?.(proj);
     expect(purposeProj).toBeDefined();
     const full = dualRing.axialToDualRingPixel?.({ q: 0, r: stack.purposeRingAxial }, proj)!;
-    const half = dualRing.axialToDualRingPixel?.({ q: 0, r: stack.purposeRingAxial }, purposeProj!)!;
-    expect(Math.hypot(half.x, half.y)).toBeCloseTo(Math.hypot(full.x, full.y) / 2, 5);
+    expect(stack.purposeRingAxial).toBe(4);
+    expect(Math.hypot(full.x, full.y)).toBeCloseTo(stack.purposeRingRadius, 5);
+    expect(Math.hypot(full.x, full.y)).toBeCloseTo(
+      (stack.purposeRingAxial / 2) * TRI_LATTICE_SPACING,
+      5,
+    );
+    expect(stack.purposeAngularSteps).toBe(13);
+    expect(purposeProj).toBe(proj);
   });
 
   test("a mesh vertex from dualRingZoneMeshPaths is exactly axialToDualRingPixel for that cell", () => {

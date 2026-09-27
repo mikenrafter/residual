@@ -515,10 +515,10 @@ export interface DualRingRadialStack {
 
 /**
  * Pixel radii + axial ring indices for the dual-ring stack. Every zone's
- * radial reach is purely topological: N hops tall always advances N lattice
- * spacings, independent of how many angular slots that zone needs (angular
- * step counts are tracked separately per zone and never grow a zone's
- * radius). Boundaries are shared between adjacent zones (no gaps):
+ * radial reach follows the shared lattice scale, with half-height purpose
+ * layers in the inner area. Angular step counts are tracked separately per
+ * zone and never grow a zone's radius. Boundaries are shared between adjacent
+ * zones (no gaps):
  * purpose | inner annulus (2 hops) | components (3 hops) | outer annulus
  * (≥2 hops) | stressors (tallest stressor pyramid + 3 hops).
  */
@@ -536,7 +536,10 @@ export function dualRingRadialStack(input: {
   const stressorSlotsNeeded = Math.max(1, dualRingSlotsForMiniPyramids(input.stressorBaseWidths, { gapNodes: 0 }));
 
   // The purpose disc reaches out exactly as far as its own pyramidal needs.
-  const purposeRingAxial = Math.max(1, ...input.purposeHeights);
+  // Purpose cells are half-height, so double only the radial layer count.
+  // Pyramid layer generation and angular slot counts remain unchanged.
+  const purposeHeight = Math.max(1, ...input.purposeHeights);
+  const purposeRingAxial = purposeHeight * PURPOSE_VERTICAL_LAYER_SCALE;
   const innerAnnulusHops = 2;
   const componentHops = 3;
   const outerAnnulusHops = 2;
@@ -548,8 +551,9 @@ export function dualRingRadialStack(input: {
   const stressorRingAxial = componentOuterAxial + outerAnnulusHops;
   const stressorRingOuterAxial = stressorRingAxial + stressorHopsTall - 1;
 
-  // Pure hop-count distance: every axial ring step advances by one spacing.
-  const purposeRingRadius = purposeRingAxial * spacing;
+  // Purpose radial layers advance at half spacing. The doubled layer count
+  // keeps the purpose ring at the same physical radius as the other zones.
+  const purposeRingRadius = purposeRingAxial * spacing * PURPOSE_LATTICE_HEIGHT_SCALE;
   const innerAnnulusInner = purposeRingRadius;
   const innerAnnulusOuter = innerAnnulusInner + innerAnnulusHops * spacing;
   const componentInner = innerAnnulusOuter;
@@ -652,15 +656,12 @@ export interface DualRingProjection {
 /** The purpose lattice is drawn at half its normal radial height. */
 export const PURPOSE_LATTICE_HEIGHT_SCALE = 0.5;
 
-/** Returns a projection used only for drawing the shortened purpose lattice. */
+/** Purpose cells are half-height, so the inner area uses twice as many radial layers. */
+export const PURPOSE_VERTICAL_LAYER_SCALE = 1 / PURPOSE_LATTICE_HEIGHT_SCALE;
+
+/** Returns the shared projection used by purpose drawing, snapping, and placement. */
 export function purposeLatticeProjection(proj: DualRingProjection): DualRingProjection {
-  return {
-    ...proj,
-    stack: {
-      ...proj.stack,
-      purposeRingRadius: proj.stack.purposeRingRadius * PURPOSE_LATTICE_HEIGHT_SCALE,
-    },
-  };
+  return proj;
 }
 
 /** Counter-clockwise bow applied to every dual-sprocket column. */

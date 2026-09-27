@@ -4183,7 +4183,8 @@ function dualRingRadialStack(input) {
   const spacing = input.spacing ?? TRI_LATTICE_SPACING;
   const purposeSlotsNeeded = Math.max(1, dualRingSlotsForMiniPyramids(input.purposeBaseWidths, { gapNodes: 0 }));
   const stressorSlotsNeeded = Math.max(1, dualRingSlotsForMiniPyramids(input.stressorBaseWidths, { gapNodes: 0 }));
-  const purposeRingAxial = Math.max(1, ...input.purposeHeights);
+  const purposeHeight = Math.max(1, ...input.purposeHeights);
+  const purposeRingAxial = purposeHeight * PURPOSE_VERTICAL_LAYER_SCALE;
   const innerAnnulusHops = 2;
   const componentHops = 3;
   const outerAnnulusHops = 2;
@@ -4192,7 +4193,7 @@ function dualRingRadialStack(input) {
   const componentOuterAxial = componentInnerAxial + componentHops - 1;
   const stressorRingAxial = componentOuterAxial + outerAnnulusHops;
   const stressorRingOuterAxial = stressorRingAxial + stressorHopsTall - 1;
-  const purposeRingRadius = purposeRingAxial * spacing;
+  const purposeRingRadius = purposeRingAxial * spacing * PURPOSE_LATTICE_HEIGHT_SCALE;
   const innerAnnulusInner = purposeRingRadius;
   const innerAnnulusOuter = innerAnnulusInner + innerAnnulusHops * spacing;
   const componentInner = innerAnnulusOuter;
@@ -4255,14 +4256,9 @@ function radiusForDualRingAxial(ring, stack, spacing = TRI_LATTICE_SPACING) {
   return stack.stressorRingRadius + (ring - s) * spacing;
 }
 var PURPOSE_LATTICE_HEIGHT_SCALE = 0.5;
+var PURPOSE_VERTICAL_LAYER_SCALE = 1 / PURPOSE_LATTICE_HEIGHT_SCALE;
 function purposeLatticeProjection(proj) {
-  return {
-    ...proj,
-    stack: {
-      ...proj.stack,
-      purposeRingRadius: proj.stack.purposeRingRadius * PURPOSE_LATTICE_HEIGHT_SCALE
-    }
-  };
+  return proj;
 }
 var DUAL_RING_COLUMN_CURVATURE = -0.18;
 function dualRingColumnAngleOffset(ring, stack) {
