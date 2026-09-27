@@ -4084,8 +4084,15 @@ function miniPyramidCellsForLayers(layers, orientation = { apexToward: "outward"
     const width = layers[i];
     const r = orientation.apexToward === "outward" ? i : last - i;
     const qOffset = horizontalFootprint - width;
-    for (let q = 0;q < width; q += 1) {
-      cells.push({ q: qOffset + q, r });
+    const fillDirection = orientation.horizontalFill ?? "left-to-right";
+    if (fillDirection === "right-to-left") {
+      for (let q = width - 1;q >= 0; q -= 1) {
+        cells.push({ q: qOffset + q, r });
+      }
+    } else {
+      for (let q = 0;q < width; q += 1) {
+        cells.push({ q: qOffset + q, r });
+      }
     }
   }
   return cells;
@@ -4119,7 +4126,10 @@ function layoutAttractorDualRingMiniPyramids(groups, rings) {
         return [];
       }
       const layers = miniPyramidLayersForCount(kindForces.length);
-      const localCells = miniPyramidCellsForLayers(layers, { apexToward });
+      const localCells = miniPyramidCellsForLayers(layers, {
+        apexToward,
+        horizontalFill: apexToward === "center" ? "right-to-left" : "left-to-right"
+      });
       const layerWidths = [...layers];
       const baseWidth = evenHorizontalWidth(layerWidths[0] ?? 1);
       const last = Math.max(0, layers.length - 1);

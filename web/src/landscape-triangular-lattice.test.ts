@@ -188,7 +188,10 @@ type DualRingLatticeModule = {
   }>;
   miniPyramidCellsForLayers?: (
     layers: readonly number[],
-    orientation?: { apexToward: "center" | "outward" },
+    orientation?: {
+      apexToward: "center" | "outward";
+      horizontalFill?: "left-to-right" | "right-to-left";
+    },
   ) => Array<{ q: number; r: number }>;
   dualRingSlotsForMiniPyramids?: (
     baseWidths: readonly number[],
@@ -357,6 +360,22 @@ describe("miniPyramidCellsForLayers orientation", () => {
     expect(byLayer.get(0)?.sort((a, b) => a - b)).toEqual([1, 2, 3]);
     expect(byLayer.get(1)?.sort((a, b) => a - b)).toEqual([2, 3]);
     expect(byLayer.get(2)?.sort((a, b) => a - b)).toEqual([3]);
+  });
+
+  test("purpose fill runs right-to-left without changing the right-aligned footprint", () => {
+    const cells = dualRing.miniPyramidCellsForLayers?.([3, 2], {
+      apexToward: "center",
+      horizontalFill: "right-to-left",
+    }) ?? [];
+    expect(cells).toEqual([
+      { q: 3, r: 1 },
+      { q: 2, r: 1 },
+      { q: 1, r: 1 },
+      { q: 3, r: 0 },
+      { q: 2, r: 0 },
+    ]);
+    expect(cells.filter((cell) => cell.r === 1).map((cell) => cell.q).sort((a, b) => a - b)).toEqual([1, 2, 3]);
+    expect(cells.filter((cell) => cell.r === 0).map((cell) => cell.q).sort((a, b) => a - b)).toEqual([2, 3]);
   });
 });
 
