@@ -649,6 +649,20 @@ export interface DualRingProjection {
   stack: DualRingRadialStack;
 }
 
+/** The purpose lattice is drawn at half its normal radial height. */
+export const PURPOSE_LATTICE_HEIGHT_SCALE = 0.5;
+
+/** Returns a projection used only for drawing the shortened purpose lattice. */
+export function purposeLatticeProjection(proj: DualRingProjection): DualRingProjection {
+  return {
+    ...proj,
+    stack: {
+      ...proj.stack,
+      purposeRingRadius: proj.stack.purposeRingRadius * PURPOSE_LATTICE_HEIGHT_SCALE,
+    },
+  };
+}
+
 /** Counter-clockwise bow applied to every dual-sprocket column. */
 export const DUAL_RING_COLUMN_CURVATURE = -0.18;
 

@@ -4254,6 +4254,16 @@ function radiusForDualRingAxial(ring, stack, spacing = TRI_LATTICE_SPACING) {
   }
   return stack.stressorRingRadius + (ring - s) * spacing;
 }
+var PURPOSE_LATTICE_HEIGHT_SCALE = 0.5;
+function purposeLatticeProjection(proj) {
+  return {
+    ...proj,
+    stack: {
+      ...proj.stack,
+      purposeRingRadius: proj.stack.purposeRingRadius * PURPOSE_LATTICE_HEIGHT_SCALE
+    }
+  };
+}
 var DUAL_RING_COLUMN_CURVATURE = -0.18;
 function dualRingColumnAngleOffset(ring, stack) {
   let min = 0;
@@ -5497,8 +5507,9 @@ function createRegionsView(ctx) {
     }
     const stack = currentDualRingStack();
     const proj = currentDualRingProjection();
+    const purposeProj = purposeLatticeProjection(proj);
     const planes = [
-      { id: "purpose", minRing: 0, maxRing: stack.purposeRingAxial },
+      { id: "purpose", minRing: 0, maxRing: stack.purposeRingAxial, projection: purposeProj },
       { id: "components", minRing: stack.componentInnerAxial, maxRing: stack.componentOuterAxial },
       { id: "stressors", minRing: stack.stressorRingAxial, maxRing: stack.stressorRingOuterAxial }
     ];
@@ -5506,7 +5517,7 @@ function createRegionsView(ctx) {
     for (const plane of planes) {
       if (plane.maxRing <= plane.minRing)
         continue;
-      const paths = dualRingZoneMeshPaths(proj, plane);
+      const paths = dualRingZoneMeshPaths(plane.projection ?? proj, plane);
       paths.forEach((path, index) => {
         lines.push({ id: `${plane.id}:sprocket:${index}`, plane: plane.id, points: path });
       });

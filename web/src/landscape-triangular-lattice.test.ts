@@ -168,6 +168,11 @@ type DualRingLatticeModule = {
     zone: { minRing: number; maxRing: number },
     samples?: number,
   ) => Array<Array<{ x: number; y: number }>>;
+  purposeLatticeProjection?: (proj: {
+    origin: { x: number; y: number };
+    spacing: number;
+    stack: any;
+  }) => { origin: { x: number; y: number }; spacing: number; stack: any };
   nearestFreeDualRingCell?: (
     point: { x: number; y: number },
     occupiedKeys: ReadonlySet<string>,
@@ -564,6 +569,16 @@ describe("polar dual-ring lattice (radial ring, angular slot; no hex axial anywh
       .toBe((stack as any).componentAngularSteps);
     expect(dualRing.angularStepsForRing?.(stack, (stack as any).stressorRingAxial))
       .toBe((stack as any).stressorAngularSteps);
+  });
+
+  test("purpose lattice projection has half the current radial height", () => {
+    const stack = makeStack();
+    const proj = { origin: { x: 0, y: 0 }, spacing: TRI_LATTICE_SPACING, stack };
+    const purposeProj = dualRing.purposeLatticeProjection?.(proj);
+    expect(purposeProj).toBeDefined();
+    const full = dualRing.axialToDualRingPixel?.({ q: 0, r: stack.purposeRingAxial }, proj)!;
+    const half = dualRing.axialToDualRingPixel?.({ q: 0, r: stack.purposeRingAxial }, purposeProj!)!;
+    expect(Math.hypot(half.x, half.y)).toBeCloseTo(Math.hypot(full.x, full.y) / 2, 5);
   });
 
   test("a mesh vertex from dualRingZoneMeshPaths is exactly axialToDualRingPixel for that cell", () => {

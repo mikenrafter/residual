@@ -22,6 +22,7 @@ import {
   miniPyramidLayersForCount,
   nearestFreeDualRingCell,
   pixelToDualRingAxial,
+  purposeLatticeProjection,
   type AxialPoint,
   type DualRingProjection,
   type DualRingRadialStack,
@@ -1887,8 +1888,9 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     }
     const stack = currentDualRingStack();
     const proj = currentDualRingProjection();
+    const purposeProj = purposeLatticeProjection(proj);
     const planes = [
-      { id: "purpose", minRing: 0, maxRing: stack.purposeRingAxial },
+      { id: "purpose", minRing: 0, maxRing: stack.purposeRingAxial, projection: purposeProj },
       { id: "components", minRing: stack.componentInnerAxial, maxRing: stack.componentOuterAxial },
       { id: "stressors", minRing: stack.stressorRingAxial, maxRing: stack.stressorRingOuterAxial },
     ] as const;
@@ -1898,7 +1900,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     // is always a real, snappable lattice cell, never a separate decoration.
     for (const plane of planes) {
       if (plane.maxRing <= plane.minRing) continue;
-      const paths = dualRingZoneMeshPaths(proj, plane);
+      const paths = dualRingZoneMeshPaths(plane.projection ?? proj, plane);
       paths.forEach((path, index) => {
         lines.push({ id: `${plane.id}:sprocket:${index}`, plane: plane.id, points: path });
       });
