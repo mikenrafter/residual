@@ -819,12 +819,16 @@ export function dualRingZoneMeshPaths(
 ): Point[][] {
   const paths: Point[][] = [];
   const curvedSegment = (fromRing: number, fromSlot: number, toRing: number, toSlot: number): Point[] => {
-    const from = axialToDualRingPixel({ q: fromSlot, r: fromRing }, proj);
-    const to = axialToDualRingPixel({ q: toSlot, r: toRing }, proj);
-    return curvedLatticePathPoints(from, to, proj.origin, {
-      curvature: Math.abs(DUAL_RING_COLUMN_CURVATURE),
-      samples,
-    });
+    const points: Point[] = [];
+    for (let i = 0; i <= samples; i += 1) {
+      const t = i / samples;
+      points.push(fractionalDualRingPixel(
+        fromRing + (toRing - fromRing) * t,
+        fromSlot + (toSlot - fromSlot) * t,
+        proj,
+      ));
+    }
+    return points;
   };
   for (let ring = zone.minRing; ring < zone.maxRing; ring += 1) {
     const cellCount = angularStepsForRing(proj.stack, ring);

@@ -629,43 +629,34 @@ describe("polar dual-ring lattice (radial ring, angular slot; no hex axial anywh
     expect(endAngle).toBeLessThan(startAngle);
   });
 
-  test("the two lattice line families curve equally in opposite directions", () => {
+  test("the two lattice line families use the same shared angular interpolation", () => {
     const stack = makeStack();
     const proj = { origin: { x: 0, y: 0 }, spacing: TRI_LATTICE_SPACING, stack };
     const inner = (stack as any).componentInnerAxial as number;
     const outer = (stack as any).componentOuterAxial as number;
     const paths = dualRing.dualRingZoneMeshPaths?.(proj, { minRing: inner, maxRing: outer }, 6) ?? [];
-    const bend = (path: Array<{ x: number; y: number }>): number => {
+    const expectedPath = (path: Array<{ x: number; y: number }>): Array<{ x: number; y: number }> => {
       const start = Math.atan2(path[0]!.y, path[0]!.x);
       const end = Math.atan2(path[path.length - 1]!.y, path[path.length - 1]!.x);
-      const middle = Math.atan2(path[Math.floor(path.length / 2)]!.y, path[Math.floor(path.length / 2)]!.x);
-      let expected = start + (end - start) / 2;
-      let delta = middle - expected;
+      let delta = end - start;
       while (delta > Math.PI) delta -= Math.PI * 2;
       while (delta < -Math.PI) delta += Math.PI * 2;
-      return delta;
+      const startRadius = Math.hypot(path[0]!.x, path[0]!.y);
+      const endRadius = Math.hypot(path[path.length - 1]!.x, path[path.length - 1]!.y);
+      return path.map((_, index) => {
+        const t = index / (path.length - 1);
+        const angle = start + delta * t;
+        const radius = startRadius + (endRadius - startRadius) * t;
+        return { x: radius * Math.cos(angle), y: radius * Math.sin(angle) };
+      });
     };
-    const clockwise = bend(paths[0]!);
-    const counterClockwise = bend(paths[1]!);
-    expect(clockwise).toBeLessThan(0);
-    expect(counterClockwise).toBeGreaterThan(0);
-    expect(Math.abs(clockwise)).toBeCloseTo(Math.abs(counterClockwise), 5);
-  });
-
-  test("mesh samples use the shared endpoint angular interpolation", () => {
-    const stack = makeStack();
-    const proj = { origin: { x: 0, y: 0 }, spacing: TRI_LATTICE_SPACING, stack };
-    const inner = (stack as any).componentInnerAxial as number;
-    const outer = (stack as any).componentOuterAxial as number;
-    const paths = dualRing.dualRingZoneMeshPaths?.(proj, { minRing: inner, maxRing: outer }, 6) ?? [];
-    const from = dualRing.axialToDualRingPixel?.({ q: 0, r: inner }, proj)!;
-    const to = dualRing.axialToDualRingPixel?.({ q: 0, r: inner + 1 }, proj)!;
-    const expected = dualRing.curvedLatticePathPoints?.(from, to, proj.origin, {
-      curvature: 0.18,
-      samples: 6,
-    });
-    expect(expected).toBeDefined();
-    expect(paths[0]).toEqual(expected);
+    for (const path of paths.slice(0, 2)) {
+      const expected = expectedPath(path);
+      path.forEach((point, index) => {
+        expect(point.x).toBeCloseTo(expected[index]!.x, 5);
+        expect(point.y).toBeCloseTo(expected[index]!.y, 5);
+      });
+    }
   });
 
   test("nearestFreeDualRingCell never returns a cell outside the given ring bounds", () => {
