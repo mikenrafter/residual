@@ -629,6 +629,29 @@ describe("polar dual-ring lattice (radial ring, angular slot; no hex axial anywh
     expect(endAngle).toBeLessThan(startAngle);
   });
 
+  test("the two lattice line families curve equally in opposite directions", () => {
+    const stack = makeStack();
+    const proj = { origin: { x: 0, y: 0 }, spacing: TRI_LATTICE_SPACING, stack };
+    const inner = (stack as any).componentInnerAxial as number;
+    const outer = (stack as any).componentOuterAxial as number;
+    const paths = dualRing.dualRingZoneMeshPaths?.(proj, { minRing: inner, maxRing: outer }, 6) ?? [];
+    const bend = (path: Array<{ x: number; y: number }>): number => {
+      const start = Math.atan2(path[0]!.y, path[0]!.x);
+      const end = Math.atan2(path[path.length - 1]!.y, path[path.length - 1]!.x);
+      const middle = Math.atan2(path[Math.floor(path.length / 2)]!.y, path[Math.floor(path.length / 2)]!.x);
+      let expected = start + (end - start) / 2;
+      let delta = middle - expected;
+      while (delta > Math.PI) delta -= Math.PI * 2;
+      while (delta < -Math.PI) delta += Math.PI * 2;
+      return delta;
+    };
+    const clockwise = bend(paths[0]!);
+    const counterClockwise = bend(paths[1]!);
+    expect(clockwise).toBeLessThan(0);
+    expect(counterClockwise).toBeGreaterThan(0);
+    expect(Math.abs(clockwise)).toBeCloseTo(Math.abs(counterClockwise), 5);
+  });
+
   test("nearestFreeDualRingCell never returns a cell outside the given ring bounds", () => {
     const stack = makeStack();
     const proj = { origin: { x: 0, y: 0 }, spacing: TRI_LATTICE_SPACING, stack };

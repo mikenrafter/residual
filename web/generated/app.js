@@ -4326,19 +4326,26 @@ function pixelToDualRingAxial(point, proj, ringBounds) {
 }
 function dualRingZoneMeshPaths(proj, zone, samples = 6) {
   const paths = [];
-  const curvedSegment = (fromRing, fromSlot, toRing, toSlot) => {
+  const curvedSegment = (fromRing, fromSlot, toRing, toSlot, bendDirection) => {
     const points = [];
     for (let i = 0;i <= samples; i += 1) {
       const t = i / samples;
-      points.push(fractionalDualRingPixel(fromRing + (toRing - fromRing) * t, fromSlot + (toSlot - fromSlot) * t, proj));
+      const point = fractionalDualRingPixel(fromRing + (toRing - fromRing) * t, fromSlot + (toSlot - fromSlot) * t, proj);
+      const bend = Math.abs(DUAL_RING_COLUMN_CURVATURE) * bendDirection * Math.sin(Math.PI * t);
+      const dx = point.x - proj.origin.x;
+      const dy = point.y - proj.origin.y;
+      points.push({
+        x: proj.origin.x + dx * Math.cos(bend) - dy * Math.sin(bend),
+        y: proj.origin.y + dx * Math.sin(bend) + dy * Math.cos(bend)
+      });
     }
     return points;
   };
   for (let ring = zone.minRing;ring < zone.maxRing; ring += 1) {
     const cellCount = angularStepsForRing(proj.stack, ring);
     for (let slot = 0;slot < cellCount; slot += 1) {
-      paths.push(curvedSegment(ring, slot, ring + 1, slot));
-      paths.push(curvedSegment(ring, slot, ring + 1, slot + 1));
+      paths.push(curvedSegment(ring, slot, ring + 1, slot, -1));
+      paths.push(curvedSegment(ring, slot, ring + 1, slot + 1, 1));
     }
   }
   return paths;
