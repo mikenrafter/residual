@@ -652,6 +652,22 @@ describe("polar dual-ring lattice (radial ring, angular slot; no hex axial anywh
     expect(Math.abs(clockwise)).toBeCloseTo(Math.abs(counterClockwise), 5);
   });
 
+  test("mesh samples use the shared endpoint angular interpolation", () => {
+    const stack = makeStack();
+    const proj = { origin: { x: 0, y: 0 }, spacing: TRI_LATTICE_SPACING, stack };
+    const inner = (stack as any).componentInnerAxial as number;
+    const outer = (stack as any).componentOuterAxial as number;
+    const paths = dualRing.dualRingZoneMeshPaths?.(proj, { minRing: inner, maxRing: outer }, 6) ?? [];
+    const from = dualRing.axialToDualRingPixel?.({ q: 0, r: inner }, proj)!;
+    const to = dualRing.axialToDualRingPixel?.({ q: 0, r: inner + 1 }, proj)!;
+    const expected = dualRing.curvedLatticePathPoints?.(from, to, proj.origin, {
+      curvature: 0.18,
+      samples: 6,
+    });
+    expect(expected).toBeDefined();
+    expect(paths[0]).toEqual(expected);
+  });
+
   test("nearestFreeDualRingCell never returns a cell outside the given ring bounds", () => {
     const stack = makeStack();
     const proj = { origin: { x: 0, y: 0 }, spacing: TRI_LATTICE_SPACING, stack };

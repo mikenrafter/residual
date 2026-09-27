@@ -818,36 +818,19 @@ export function dualRingZoneMeshPaths(
   samples = 6,
 ): Point[][] {
   const paths: Point[][] = [];
-  const curvedSegment = (
-    fromRing: number,
-    fromSlot: number,
-    toRing: number,
-    toSlot: number,
-    bendDirection: -1 | 1,
-  ): Point[] => {
-    const points: Point[] = [];
-    for (let i = 0; i <= samples; i += 1) {
-      const t = i / samples;
-      const point = fractionalDualRingPixel(
-        fromRing + (toRing - fromRing) * t,
-        fromSlot + (toSlot - fromSlot) * t,
-        proj,
-      );
-      const bend = Math.abs(DUAL_RING_COLUMN_CURVATURE) * bendDirection * Math.sin(Math.PI * t);
-      const dx = point.x - proj.origin.x;
-      const dy = point.y - proj.origin.y;
-      points.push({
-        x: proj.origin.x + dx * Math.cos(bend) - dy * Math.sin(bend),
-        y: proj.origin.y + dx * Math.sin(bend) + dy * Math.cos(bend),
-      });
-    }
-    return points;
+  const curvedSegment = (fromRing: number, fromSlot: number, toRing: number, toSlot: number): Point[] => {
+    const from = axialToDualRingPixel({ q: fromSlot, r: fromRing }, proj);
+    const to = axialToDualRingPixel({ q: toSlot, r: toRing }, proj);
+    return curvedLatticePathPoints(from, to, proj.origin, {
+      curvature: Math.abs(DUAL_RING_COLUMN_CURVATURE),
+      samples,
+    });
   };
   for (let ring = zone.minRing; ring < zone.maxRing; ring += 1) {
     const cellCount = angularStepsForRing(proj.stack, ring);
     for (let slot = 0; slot < cellCount; slot += 1) {
-      paths.push(curvedSegment(ring, slot, ring + 1, slot, -1));
-      paths.push(curvedSegment(ring, slot, ring + 1, slot + 1, 1));
+      paths.push(curvedSegment(ring, slot, ring + 1, slot));
+      paths.push(curvedSegment(ring, slot, ring + 1, slot + 1));
     }
   }
   return paths;

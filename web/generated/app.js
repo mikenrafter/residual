@@ -4283,6 +4283,44 @@ function curvedSprocketSlotPoint(origin, radius, count, slot, angleOffset = 0) {
     y: origin.y + radius * Math.sin(angle)
   };
 }
+function curvedLatticePathPoints(from, to, origin, options = {}) {
+  const samples = Math.max(2, Math.round(options.samples ?? 12));
+  const fromDx = from.x - origin.x;
+  const fromDy = from.y - origin.y;
+  const toDx = to.x - origin.x;
+  const toDy = to.y - origin.y;
+  const fromRadius = Math.hypot(fromDx, fromDy);
+  const toRadius = Math.hypot(toDx, toDy);
+  if (fromRadius < 0.000000001 || toRadius < 0.000000001) {
+    return [from, to];
+  }
+  const fromAngle = Math.atan2(fromDy, fromDx);
+  let angleDelta = Math.atan2(toDy, toDx) - fromAngle;
+  while (angleDelta > Math.PI)
+    angleDelta -= Math.PI * 2;
+  while (angleDelta < -Math.PI)
+    angleDelta += Math.PI * 2;
+  const curvature = options.curvature ?? 0.16;
+  const points = [];
+  for (let i = 0;i <= samples; i += 1) {
+    if (i === 0) {
+      points.push({ ...from });
+      continue;
+    }
+    if (i === samples) {
+      points.push({ ...to });
+      continue;
+    }
+    const t = i / samples;
+    const radius = fromRadius + (toRadius - fromRadius) * t;
+    const angle = fromAngle + angleDelta * t + curvature * Math.sign(angleDelta || 1) * Math.sin(Math.PI * t);
+    points.push({
+      x: origin.x + radius * Math.cos(angle),
+      y: origin.y + radius * Math.sin(angle)
+    });
+  }
+  return points;
+}
 function axialToDualRingPixel(cell, proj) {
   const ring = cell.r;
   if (ring <= 0)
@@ -4290,13 +4328,6 @@ function axialToDualRingPixel(cell, proj) {
   const radius = radiusForDualRingAxial(ring, proj.stack, proj.spacing);
   const cellCount = angularStepsForRing(proj.stack, ring);
   return curvedSprocketSlotPoint(proj.origin, radius, cellCount, cell.q, dualRingColumnAngleOffset(ring, proj.stack));
-}
-function fractionalDualRingPixel(ring, slot, proj) {
-  if (ring <= 0)
-    return { ...proj.origin };
-  const radius = radiusForDualRingAxial(ring, proj.stack, proj.spacing);
-  const cellCount = angularStepsForRing(proj.stack, Math.round(ring));
-  return curvedSprocketSlotPoint(proj.origin, radius, cellCount, slot, dualRingColumnAngleOffset(ring, proj.stack));
 }
 function pixelToDualRingAxial(point, proj, ringBounds) {
   const dx = point.x - proj.origin.x;
@@ -4326,26 +4357,19 @@ function pixelToDualRingAxial(point, proj, ringBounds) {
 }
 function dualRingZoneMeshPaths(proj, zone, samples = 6) {
   const paths = [];
-  const curvedSegment = (fromRing, fromSlot, toRing, toSlot, bendDirection) => {
-    const points = [];
-    for (let i = 0;i <= samples; i += 1) {
-      const t = i / samples;
-      const point = fractionalDualRingPixel(fromRing + (toRing - fromRing) * t, fromSlot + (toSlot - fromSlot) * t, proj);
-      const bend = Math.abs(DUAL_RING_COLUMN_CURVATURE) * bendDirection * Math.sin(Math.PI * t);
-      const dx = point.x - proj.origin.x;
-      const dy = point.y - proj.origin.y;
-      points.push({
-        x: proj.origin.x + dx * Math.cos(bend) - dy * Math.sin(bend),
-        y: proj.origin.y + dx * Math.sin(bend) + dy * Math.cos(bend)
-      });
-    }
-    return points;
+  const curvedSegment = (fromRing, fromSlot, toRing, toSlot) => {
+    const from = axialToDualRingPixel({ q: fromSlot, r: fromRing }, proj);
+    const to = axialToDualRingPixel({ q: toSlot, r: toRing }, proj);
+    return curvedLatticePathPoints(from, to, proj.origin, {
+      curvature: Math.abs(DUAL_RING_COLUMN_CURVATURE),
+      samples
+    });
   };
   for (let ring = zone.minRing;ring < zone.maxRing; ring += 1) {
     const cellCount = angularStepsForRing(proj.stack, ring);
     for (let slot = 0;slot < cellCount; slot += 1) {
-      paths.push(curvedSegment(ring, slot, ring + 1, slot, -1));
-      paths.push(curvedSegment(ring, slot, ring + 1, slot + 1, 1));
+      paths.push(curvedSegment(ring, slot, ring + 1, slot));
+      paths.push(curvedSegment(ring, slot, ring + 1, slot + 1));
     }
   }
   return paths;
