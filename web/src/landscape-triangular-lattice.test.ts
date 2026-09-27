@@ -471,6 +471,24 @@ describe("layoutAttractorDualRingMiniPyramids", () => {
     expect(maxFree).toBeGreaterThanOrEqual(2);
   });
 
+  test("stressor placement reserves the padded slot of a single-cell pyramid", () => {
+    const groups = [
+      { attractorId: "A", forces: makeForces("A", 0, 1), anchor: { q: 0, r: 0 } },
+      { attractorId: "B", forces: makeForces("B", 0, 0), anchor: { q: 0, r: 0 } },
+      { attractorId: "C", forces: makeForces("C", 0, 1), anchor: { q: 0, r: 0 } },
+    ];
+    const layout = dualRing.layoutAttractorDualRingMiniPyramids?.(groups, {
+      purposeRing: 2,
+      stressorRing: 4,
+      purposeCellCount: 4,
+      stressorCellCount: 4,
+    });
+    const first = layout!.targets.get("A-s0")!;
+    const second = layout!.targets.get("C-s0")!;
+    expect(first.q).toBe(1);
+    expect(second.q).toBe(3);
+  });
+
   test("subshapes are layer partitions (one bin per layer), not triangles", () => {
     const groups = [
       { attractorId: "A", forces: makeForces("A", 6, 6), anchor: { q: 0, r: 0 } },
