@@ -542,7 +542,7 @@ describe("dualRingRadialStack (center→out)", () => {
   });
 });
 
-describe("polar dual-ring lattice (row=ring, col=slot; no hex axial anywhere)", () => {
+describe("polar dual-ring lattice (radial ring, angular slot; no hex axial anywhere)", () => {
   beforeAll(async () => {
     dualRing = (await import("./landscape-triangular-lattice").catch(() => ({}))) as DualRingLatticeModule;
   });

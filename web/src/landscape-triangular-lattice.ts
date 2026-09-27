@@ -419,9 +419,9 @@ export function layoutAttractorDualRingMiniPyramids(
       const last = Math.max(0, layers.length - 1);
       let cursor = startSlot;
 
-      // Base is anchored at the zone's fixed reference ring; the apex
-      // recedes toward the far side by this pyramid's own height. Column is
-      // a direct slot offset — no angle indirection, no hex ring lookup.
+      // The base is anchored at the zone's fixed radial ring. The apex
+      // recedes toward the far side by this pyramid's own vertical height.
+      // A local horizontal q position is a direct angular slot offset.
       const absoluteFor = (local: AxialPoint, cursorSlot: number): AxialPoint => {
         const ringIndex = apexToward === "outward"
           ? ring + local.r
@@ -430,10 +430,17 @@ export function layoutAttractorDualRingMiniPyramids(
         return { q: slot, r: ringIndex };
       };
 
+      const baseFootprintFor = (cursorSlot: number): AxialPoint[] =>
+        Array.from({ length: baseWidth }, (_, i) => ({
+          q: ((cursorSlot + i) % slotCount + slotCount) % slotCount,
+          r: ring,
+        }));
+
       let placed: AxialPoint[] | undefined;
       for (let attempt = 0; attempt < slotCount; attempt += 1) {
         const abs = localCells.map((local) => absoluteFor(local, cursor));
-        if (abs.every((cell) => !occupiedKeys.has(axialKey(cell)))) {
+        const footprint = baseFootprintFor(cursor);
+        if ([...abs, ...footprint].every((cell) => !occupiedKeys.has(axialKey(cell)))) {
           placed = abs;
           break;
         }
@@ -443,6 +450,7 @@ export function layoutAttractorDualRingMiniPyramids(
 
       for (let i = 0; i < baseWidth; i += 1) occupancy[(cursor + i) % slotCount] = true;
       for (const cell of placed) occupiedKeys.add(axialKey(cell));
+      for (const cell of baseFootprintFor(cursor)) occupiedKeys.add(axialKey(cell));
 
       // Keep the stable base-to-apex bin order for grouping/dragging; map
       // those bins onto the corresponding wide-to-short row positions below.

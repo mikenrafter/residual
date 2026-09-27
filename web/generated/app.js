@@ -4129,10 +4129,15 @@ function layoutAttractorDualRingMiniPyramids(groups, rings) {
         const slot = ((cursorSlot + local.q) % slotCount + slotCount) % slotCount;
         return { q: slot, r: ringIndex };
       };
+      const baseFootprintFor = (cursorSlot) => Array.from({ length: baseWidth }, (_, i) => ({
+        q: ((cursorSlot + i) % slotCount + slotCount) % slotCount,
+        r: ring
+      }));
       let placed;
       for (let attempt = 0;attempt < slotCount; attempt += 1) {
         const abs = localCells.map((local) => absoluteFor(local, cursor));
-        if (abs.every((cell) => !occupiedKeys.has(axialKey(cell)))) {
+        const footprint = baseFootprintFor(cursor);
+        if ([...abs, ...footprint].every((cell) => !occupiedKeys.has(axialKey(cell)))) {
           placed = abs;
           break;
         }
@@ -4143,6 +4148,8 @@ function layoutAttractorDualRingMiniPyramids(groups, rings) {
       for (let i = 0;i < baseWidth; i += 1)
         occupancy[(cursor + i) % slotCount] = true;
       for (const cell of placed)
+        occupiedKeys.add(axialKey(cell));
+      for (const cell of baseFootprintFor(cursor))
         occupiedKeys.add(axialKey(cell));
       const bins = assignForcesToMiniPyramidLayers(kindForces, layers);
       const localsByLayer = layerWidths.map((_, i) => {
