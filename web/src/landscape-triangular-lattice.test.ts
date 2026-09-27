@@ -249,16 +249,16 @@ describe("miniPyramidLayersForCount (dual-ring redesign)", () => {
     [4, [3, 1]],
     [5, [3, 2]],
     [6, [3, 2, 1]],
-    [7, [4, 2, 1]],
+    [7, [4, 3]],
     [8, [4, 3, 1]],
     [9, [4, 3, 2]],
     [10, [4, 3, 2, 1]],
-    [11, [5, 3, 2, 1]],
-    [12, [5, 4, 2, 1]],
+    [11, [5, 4, 2]],
+    [12, [5, 4, 3]],
     [13, [5, 4, 3, 1]],
     [14, [5, 4, 3, 2]],
     [15, [5, 4, 3, 2, 1]],
-    [16, [6, 4, 3, 2, 1]],
+    [16, [6, 5, 4, 1]],
   ] as const)("n=%i → %j (tall-before-wide)", (n, expected) => {
     expect(dualRing.miniPyramidLayersForCount?.(n)).toEqual([...expected]);
   });
@@ -319,7 +319,6 @@ describe("miniPyramidCellsForLayers orientation", () => {
     const byR = new Map<number, number>();
     for (const cell of cells) byR.set(cell.r, (byR.get(cell.r) ?? 0) + 1);
     const rs = [...byR.keys()].sort((a, b) => a - b);
-    // Base (wider layer) sits on the outer side of the local frustum (higher r when apex→center).
     expect(byR.get(rs[rs.length - 1]!)).toBe(3);
     expect(byR.get(rs[0]!)).toBe(2);
   });
@@ -334,12 +333,12 @@ describe("miniPyramidCellsForLayers orientation", () => {
     expect(byR.get(rs[rs.length - 1]!)).toBe(2);
   });
 
-  test("every layer is a left-aligned column run starting at 0 (never centered)", () => {
+  test("every layer shares the same right-aligned edge", () => {
     const cells = dualRing.miniPyramidCellsForLayers?.([4, 3, 2, 1], { apexToward: "outward" }) ?? [];
     const byLayer = new Map<number, number[]>();
     for (const cell of cells) byLayer.set(cell.r, [...(byLayer.get(cell.r) ?? []), cell.q]);
     for (const [, cols] of byLayer) {
-      expect(Math.min(...cols)).toBe(0);
+      expect(Math.max(...cols)).toBe(3);
     }
   });
 });
@@ -565,6 +564,18 @@ describe("polar dual-ring lattice (row=ring, col=slot; no hex axial anywhere)", 
     const point = dualRing.axialToDualRingPixel?.(cell, proj)!;
     const recovered = dualRing.pixelToDualRingAxial?.(point, proj, { min: componentInner, max: componentOuter });
     expect(recovered).toEqual(cell);
+  });
+
+  test("dual-sprocket columns bow counter-clockwise as they move through a zone", () => {
+    const stack = makeStack();
+    const proj = { origin: { x: 0, y: 0 }, spacing: TRI_LATTICE_SPACING, stack };
+    const inner = (stack as any).componentInnerAxial as number;
+    const outer = (stack as any).componentOuterAxial as number;
+    const start = dualRing.axialToDualRingPixel?.({ q: 0, r: inner }, proj)!;
+    const end = dualRing.axialToDualRingPixel?.({ q: 0, r: outer }, proj)!;
+    const startAngle = Math.atan2(start.y, start.x);
+    const endAngle = Math.atan2(end.y, end.x);
+    expect(endAngle).toBeLessThan(startAngle);
   });
 
   test("nearestFreeDualRingCell never returns a cell outside the given ring bounds", () => {

@@ -674,6 +674,9 @@ export const FORCE_NODE_SCALE = 1.3;
 const FORCE_DIAMOND_HALF_DIAGONAL = 5 * FORCE_NODE_SCALE;
 const FORCE_CIRCLE_RADIUS = 4 * FORCE_NODE_SCALE;
 
+/** Shared translucent zone shading used by the dual-ring landscape. */
+export const DUAL_RING_ZONE_SHADE_OPACITY = 0.12;
+
 /** Fill-opacity of a force glyph: stressors are solid, purposes read a touch lighter. */
 export function forceNodeOpacity(kind: "stressor" | "purpose"): number {
   return kind === "purpose" ? 0.75 : 1;
@@ -687,6 +690,12 @@ function forceGlyphPath(kind: "stressor" | "purpose"): string {
   }
   const r = FORCE_CIRCLE_RADIUS;
   return `M-${r},0a${r},${r} 0 1,0 ${r * 2},0a${r},${r} 0 1,0 -${r * 2},0`;
+}
+
+function annularZonePath(center: Point, inner: number, outer: number): string {
+  const circle = (radius: number, clockwise: number): string =>
+    `M ${center.x + radius},${center.y} A ${radius},${radius} 0 1 ${clockwise} ${center.x - radius},${center.y} A ${radius},${radius} 0 1 ${clockwise} ${center.x + radius},${center.y}`;
+  return `${circle(outer, 0)} ${circle(inner, 1)}`;
 }
 
 type SimForceNode = HyperForceNode & { x?: number; y?: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null };
@@ -960,6 +969,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         content: any;
         zoom: any;
         latticeG: any;
+        zoneShadingG: any;
         regionsG: any;
         fusionG: any;
         edgesG: any;
@@ -970,6 +980,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         componentBoundary: any;
         innerAnnulusInnerBoundary: any;
         innerAnnulusOuterBoundary: any;
+        outerAnnulusBoundary: any;
         coreBoundaryDivider: any;
         snapPreview: any;
         sim: any;
@@ -1577,6 +1588,26 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     return `url(#${maskId})`;
   }
 
+  function paintZoneShading(stack: DualRingRadialStack): void {
+    if (!built) return;
+    const center = coreCenter;
+    const shades = [
+      { id: "inner-annulus", path: annularZonePath(center, stack.innerAnnulus.inner, stack.innerAnnulus.outer), fill: "black" },
+      { id: "component-band", path: annularZonePath(center, stack.componentBand.inner, stack.componentBand.outer), fill: "white" },
+      { id: "outer-annulus", path: annularZonePath(center, stack.outerAnnulus.inner, stack.outerAnnulus.outer), fill: "black" },
+    ];
+    built.zoneShadingG.selectAll("path.nkp-hyper-zone-shade")
+      .data(shades, (shade: { id: string }) => shade.id)
+      .join("path")
+      .attr("class", "nkp-hyper-zone-shade")
+      .attr("data-zone-shade", (shade: { id: string }) => shade.id)
+      .attr("d", (shade: { path: string }) => shade.path)
+      .attr("fill", (shade: { fill: string }) => shade.fill)
+      .attr("fill-opacity", DUAL_RING_ZONE_SHADE_OPACITY)
+      .attr("fill-rule", "evenodd")
+      .attr("pointer-events", "none");
+  }
+
   function positionRegions(): void {
     const maskUrl = ensureComponentBandMask();
     regionSel?.each(function (this: SVGGElement, group: AttractorGroup) {
@@ -1876,6 +1907,9 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       .attr("class", "nkp-hyper-lattice")
       .attr("data-regions-lattice", "true")
       .style("display", "none");
+    const zoneShadingG = content.append("g")
+      .attr("class", "nkp-hyper-zone-shading")
+      .attr("data-zone-shading", "true");
     const coreG = content.append("g").attr("class", "nkp-hyper-core");
     const coreBoundary = coreG.append("circle")
       .attr("class", "nkp-hyper-core-boundary")
@@ -1898,6 +1932,12 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     const innerAnnulusOuterBoundary = coreG.append("circle")
       .attr("class", "nkp-hyper-inner-annulus-outer")
       .attr("data-inner-annulus-outer", "true")
+      .attr("fill", "none")
+      .attr("stroke", "var(--muted)")
+      .attr("stroke-dasharray", "4 4");
+    const outerAnnulusBoundary = coreG.append("circle")
+      .attr("class", "nkp-hyper-outer-annulus-boundary")
+      .attr("data-outer-annulus-boundary", "true")
       .attr("fill", "none")
       .attr("stroke", "var(--muted)")
       .attr("stroke-dasharray", "4 4");
@@ -1948,7 +1988,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       })
       .stop();
 
-    built = { svg, content, zoom, latticeG, regionsG, fusionG, edgesG, forceEdgesG, nodesG, labelsGroup, coreBoundary, componentBoundary, innerAnnulusInnerBoundary, innerAnnulusOuterBoundary, coreBoundaryDivider, snapPreview, sim, width, height, didFit: false, tip: createTooltip(host) };
+    built = { svg, content, zoom, latticeG, zoneShadingG, regionsG, fusionG, edgesG, forceEdgesG, nodesG, labelsGroup, coreBoundary, componentBoundary, innerAnnulusInnerBoundary, innerAnnulusOuterBoundary, outerAnnulusBoundary, coreBoundaryDivider, snapPreview, sim, width, height, didFit: false, tip: createTooltip(host) };
     return built;
   }
 
@@ -2250,6 +2290,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         b.componentBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", emptyInner);
         b.innerAnnulusInnerBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", emptyInner);
         b.innerAnnulusOuterBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", emptyInner);
+        b.outerAnnulusBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", emptyOuter);
         b.coreBoundaryDivider
           .attr("x1", coreCenter.x - emptyOuter)
           .attr("x2", coreCenter.x + emptyOuter)
@@ -2300,6 +2341,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     const stack = regionsDualRingStack(componentCount, kindCounts);
     const coreRadius = stack.stressorRingOuterRadius;
     const componentRadius = stack.componentBand.outer;
+    paintZoneShading(stack);
     b.coreBoundary
       .attr("cx", coreCenter.x)
       .attr("cy", coreCenter.y)
@@ -2316,6 +2358,10 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       .attr("cx", coreCenter.x)
       .attr("cy", coreCenter.y)
       .attr("r", stack.innerAnnulus.outer);
+    b.outerAnnulusBoundary
+      .attr("cx", coreCenter.x)
+      .attr("cy", coreCenter.y)
+      .attr("r", stack.outerAnnulus.outer);
     b.coreBoundaryDivider
       .attr("x1", coreCenter.x - coreRadius)
       .attr("x2", coreCenter.x + coreRadius)

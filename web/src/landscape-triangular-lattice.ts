@@ -253,35 +253,32 @@ export function isCompleteMiniPyramidStage(layers: readonly number[]): boolean {
 }
 
 /**
- * Tall-before-wide / minimal-base frustum for dual-ring packing.
- * Sequence: 1 · 2 · 2:1 · 3:1 · 3:2 · 3:2:1 · 4:2:1 · 4:3:1 · 4:3:2 · 4:3:2:1 · …
+ * Shortest strictly-descending frustum for dual-ring packing. The base is
+ * the smallest b with b·(b+1)/2 >= n; within that base, use the fewest
+ * layers whose widths sum to n.
  */
 export function miniPyramidLayersForCount(n: number): number[] {
   if (n <= 0) return [];
-  const layers: number[] = [];
-  for (let placed = 0; placed < n; placed += 1) {
-    if (layers.length === 0) {
-      layers.push(1);
-      continue;
+  const base = Math.ceil((Math.sqrt(8 * n + 1) - 1) / 2);
+
+  const find = (height: number, index: number, previous: number, remaining: number): number[] | undefined => {
+    if (index === height) return remaining === 0 ? [] : undefined;
+    const slotsLeft = height - index - 1;
+    const minimumTail = (slotsLeft * (slotsLeft + 1)) / 2;
+    for (let width = Math.min(previous - 1, remaining); width >= 1; width -= 1) {
+      const after = remaining - width;
+      if (after < minimumTail) continue;
+      const tail = find(height, index + 1, width, after);
+      if (tail) return [width, ...tail];
     }
-    const base = layers[0]!;
-    let filled = false;
-    for (let i = 0; i < layers.length; i += 1) {
-      const max = base - i;
-      if (layers[i]! < max) {
-        layers[i] = layers[i]! + 1;
-        filled = true;
-        break;
-      }
-    }
-    if (filled) continue;
-    if (isCompleteMiniPyramidStage(layers)) {
-      layers[0] = base + 1;
-      continue;
-    }
-    layers.push(1);
+    return undefined;
+  };
+
+  for (let height = 1; height <= base; height += 1) {
+    const tail = find(height, 1, base, n - base);
+    if (tail) return [base, ...tail];
   }
-  return layers;
+  return [base];
 }
 
 /**
@@ -291,12 +288,12 @@ export function miniPyramidLayersForCount(n: number): number[] {
  * later re-bases at a placement's own start column and layer/ring offset:
  *   ^ layer (r)
  *   | <---> col (q)
- *   AAAA   (layer 0, width 4, cols 0..3)
- *   AAA    (layer 1, width 3, cols 0..2)
- *   AA     (layer 2, width 2, cols 0..1)
- *   A      (layer 3, width 1, col 0)
- * - apexToward "outward" (stressors): base at r=0, apex at +(h-1)
- * - apexToward "center" (purposes): apex at r=0, base at +(h-1)
+ *   AAAA   (row 0, width 4, cols 0..3)
+ *    AAA   (row 1, width 3, cols 1..3)
+ *     AA   (row 2, width 2, cols 2..3)
+ *      A   (row 3, width 1, col 3)
+ * The row order is unchanged; each row is mirrored across the shared wide
+ * edge so the opposite column is straight.
  */
 export function miniPyramidCellsForLayers(
   layers: readonly number[],
@@ -308,8 +305,9 @@ export function miniPyramidCellsForLayers(
   for (let i = 0; i < layers.length; i += 1) {
     const width = layers[i]!;
     const r = orientation.apexToward === "outward" ? i : last - i;
+    const qOffset = layers[0]! - width;
     for (let q = 0; q < width; q += 1) {
-      cells.push({ q, r });
+      cells.push({ q: qOffset + q, r });
     }
   }
   return cells;
@@ -330,7 +328,6 @@ export function partitionMiniPyramidLayers(layers: readonly number[]): MiniPyram
     row.push(cell);
     byR.set(cell.r, row);
   }
-  // outward: layers[0] base at r=0, layers[i] at r=+i
   return layers.map((width, layerIndex) => {
     const row = (byR.get(layerIndex) ?? []).sort((a, b) => a.q - b.q);
     return {
@@ -413,7 +410,8 @@ export function layoutAttractorDualRingMiniPyramids(
       }
       const layers = miniPyramidLayersForCount(kindForces.length);
       const localCells = miniPyramidCellsForLayers(layers, { apexToward });
-      const baseWidth = layers[0] ?? 1;
+      const rowWidths = [...layers];
+      const baseWidth = rowWidths[0] ?? 1;
       const last = Math.max(0, layers.length - 1);
       let cursor = startSlot;
 
@@ -442,8 +440,10 @@ export function layoutAttractorDualRingMiniPyramids(
       for (let i = 0; i < baseWidth; i += 1) occupancy[(cursor + i) % slotCount] = true;
       for (const cell of placed) occupiedKeys.add(axialKey(cell));
 
+      // Keep the stable base-to-apex bin order for grouping/dragging; map
+      // those bins onto the corresponding wide-to-short row positions below.
       const bins = assignForcesToMiniPyramidLayers(kindForces, layers);
-      const localsByLayer = layers.map((_, i) => {
+      const localsByLayer = rowWidths.map((_, i) => {
         const expectedR = apexToward === "outward" ? i : last - i;
         return localCells.filter((c) => c.r === expectedR);
       });
@@ -637,6 +637,23 @@ export interface DualRingProjection {
   stack: DualRingRadialStack;
 }
 
+/** Counter-clockwise bow applied to every dual-sprocket column. */
+export const DUAL_RING_COLUMN_CURVATURE = -0.18;
+
+function dualRingColumnAngleOffset(ring: number, stack: DualRingRadialStack): number {
+  let min = 0;
+  let max = Math.max(1, stack.purposeRingAxial);
+  if (ring >= stack.componentInnerAxial && ring <= stack.componentOuterAxial) {
+    min = stack.componentInnerAxial;
+    max = Math.max(min + 1, stack.componentOuterAxial);
+  } else if (ring >= stack.stressorRingAxial) {
+    min = stack.stressorRingAxial;
+    max = Math.max(min + 1, stack.stressorRingOuterAxial);
+  }
+  const progress = Math.max(0, Math.min(1, (ring - min) / (max - min)));
+  return DUAL_RING_COLUMN_CURVATURE * progress;
+}
+
 export interface CurvedLatticePathOptions {
   /** Amount of angular bow, in radians, at the middle of the path. */
   curvature?: number;
@@ -649,10 +666,11 @@ export function curvedSprocketSlotPoint(
   radius: number,
   count: number,
   slot: number,
+  angleOffset = 0,
 ): Point {
   const safeCount = Math.max(1, Math.round(count));
   const normalizedSlot = ((slot % safeCount) + safeCount) % safeCount;
-  const angle = -Math.PI / 2 + (normalizedSlot / safeCount) * Math.PI * 2;
+  const angle = -Math.PI / 2 + (normalizedSlot / safeCount) * Math.PI * 2 + angleOffset;
   return {
     x: origin.x + radius * Math.cos(angle),
     y: origin.y + radius * Math.sin(angle),
@@ -720,7 +738,7 @@ export function axialToDualRingPixel(cell: AxialPoint, proj: DualRingProjection)
   if (ring <= 0) return { ...proj.origin };
   const radius = radiusForDualRingAxial(ring, proj.stack, proj.spacing);
   const cellCount = angularStepsForRing(proj.stack, ring);
-  return curvedSprocketSlotPoint(proj.origin, radius, cellCount, cell.q);
+  return curvedSprocketSlotPoint(proj.origin, radius, cellCount, cell.q, dualRingColumnAngleOffset(ring, proj.stack));
 }
 
 /** Fractional cell → pixel: same as `axialToDualRingPixel` but `ring`/`slot` may be non-integer, for sampling a smooth curve between two real cells. */
@@ -728,7 +746,7 @@ function fractionalDualRingPixel(ring: number, slot: number, proj: DualRingProje
   if (ring <= 0) return { ...proj.origin };
   const radius = radiusForDualRingAxial(ring, proj.stack, proj.spacing);
   const cellCount = angularStepsForRing(proj.stack, Math.round(ring));
-  return curvedSprocketSlotPoint(proj.origin, radius, cellCount, slot);
+  return curvedSprocketSlotPoint(proj.origin, radius, cellCount, slot, dualRingColumnAngleOffset(ring, proj.stack));
 }
 
 /** Inverse of `axialToDualRingPixel`; picks the nearest lattice cell to a pixel, clamped to a ring range if given. */
@@ -754,7 +772,7 @@ export function pixelToDualRingAxial(
     }
   }
   const cellCount = angularStepsForRing(proj.stack, nearestRing);
-  let angle = Math.atan2(dy, dx) + Math.PI / 2;
+  let angle = Math.atan2(dy, dx) + Math.PI / 2 - dualRingColumnAngleOffset(nearestRing, proj.stack);
   while (angle < 0) angle += 2 * Math.PI;
   while (angle >= 2 * Math.PI) angle -= 2 * Math.PI;
   const slot = Math.round((angle / (2 * Math.PI)) * cellCount) % cellCount;

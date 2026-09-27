@@ -1156,6 +1156,17 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     expect(Number(outer?.getAttribute("r"))).toBeCloseTo(stack?.innerAnnulus.outer ?? 0, 5);
   });
 
+  test("draws the outer annulus boundary with the shared dashed-circle mechanism", () => {
+    const { ctx, host } = makeCtx();
+    const handle = regionsModule.createRegionsView?.(ctx);
+    handle?.update(state(), options);
+    const stack = dualStackFor(handle);
+    const boundary = host.querySelector("[data-outer-annulus-boundary]");
+    expect(boundary).not.toBeNull();
+    expect(boundary?.getAttribute("stroke-dasharray")).toBeTruthy();
+    expect(Number(boundary?.getAttribute("r"))).toBeCloseTo(stack?.outerAnnulus.outer ?? 0, 5);
+  });
+
   test("components are pressure-free (many-body charge is zero)", () => {
     expect(regionsModule.REGIONS_COMPONENT_CHARGE).toBe(0);
   });

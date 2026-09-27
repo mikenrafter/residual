@@ -4044,44 +4044,31 @@ var TRI_LATTICE_SPACING = 60;
 function axialKey(point) {
   return `${point.q}:${point.r}`;
 }
-function isCompleteMiniPyramidStage(layers) {
-  const h = layers[0];
-  if (h === undefined || layers.length !== h)
-    return false;
-  for (let i = 0;i < h; i += 1) {
-    if (layers[i] !== h - i)
-      return false;
-  }
-  return true;
-}
 function miniPyramidLayersForCount(n) {
   if (n <= 0)
     return [];
-  const layers = [];
-  for (let placed = 0;placed < n; placed += 1) {
-    if (layers.length === 0) {
-      layers.push(1);
-      continue;
+  const base = Math.ceil((Math.sqrt(8 * n + 1) - 1) / 2);
+  const find = (height, index, previous, remaining) => {
+    if (index === height)
+      return remaining === 0 ? [] : undefined;
+    const slotsLeft = height - index - 1;
+    const minimumTail = slotsLeft * (slotsLeft + 1) / 2;
+    for (let width = Math.min(previous - 1, remaining);width >= 1; width -= 1) {
+      const after = remaining - width;
+      if (after < minimumTail)
+        continue;
+      const tail = find(height, index + 1, width, after);
+      if (tail)
+        return [width, ...tail];
     }
-    const base = layers[0];
-    let filled = false;
-    for (let i = 0;i < layers.length; i += 1) {
-      const max = base - i;
-      if (layers[i] < max) {
-        layers[i] = layers[i] + 1;
-        filled = true;
-        break;
-      }
-    }
-    if (filled)
-      continue;
-    if (isCompleteMiniPyramidStage(layers)) {
-      layers[0] = base + 1;
-      continue;
-    }
-    layers.push(1);
+    return;
+  };
+  for (let height = 1;height <= base; height += 1) {
+    const tail = find(height, 1, base, n - base);
+    if (tail)
+      return [base, ...tail];
   }
-  return layers;
+  return [base];
 }
 function miniPyramidCellsForLayers(layers, orientation = { apexToward: "outward" }) {
   const cells = [];
@@ -4091,8 +4078,9 @@ function miniPyramidCellsForLayers(layers, orientation = { apexToward: "outward"
   for (let i = 0;i < layers.length; i += 1) {
     const width = layers[i];
     const r = orientation.apexToward === "outward" ? i : last - i;
+    const qOffset = layers[0] - width;
     for (let q = 0;q < width; q += 1) {
-      cells.push({ q, r });
+      cells.push({ q: qOffset + q, r });
     }
   }
   return cells;
@@ -4127,7 +4115,8 @@ function layoutAttractorDualRingMiniPyramids(groups, rings) {
       }
       const layers = miniPyramidLayersForCount(kindForces.length);
       const localCells = miniPyramidCellsForLayers(layers, { apexToward });
-      const baseWidth = layers[0] ?? 1;
+      const rowWidths = [...layers];
+      const baseWidth = rowWidths[0] ?? 1;
       const last = Math.max(0, layers.length - 1);
       let cursor = startSlot;
       const absoluteFor = (local, cursorSlot) => {
@@ -4151,7 +4140,7 @@ function layoutAttractorDualRingMiniPyramids(groups, rings) {
       for (const cell of placed)
         occupiedKeys.add(axialKey(cell));
       const bins = assignForcesToMiniPyramidLayers(kindForces, layers);
-      const localsByLayer = layers.map((_, i) => {
+      const localsByLayer = rowWidths.map((_, i) => {
         const expectedR = apexToward === "outward" ? i : last - i;
         return localCells.filter((c) => c.r === expectedR);
       });
@@ -4253,10 +4242,24 @@ function radiusForDualRingAxial(ring, stack, spacing = TRI_LATTICE_SPACING) {
   }
   return stack.stressorRingRadius + (ring - s) * spacing;
 }
-function curvedSprocketSlotPoint(origin, radius, count, slot) {
+var DUAL_RING_COLUMN_CURVATURE = -0.18;
+function dualRingColumnAngleOffset(ring, stack) {
+  let min = 0;
+  let max = Math.max(1, stack.purposeRingAxial);
+  if (ring >= stack.componentInnerAxial && ring <= stack.componentOuterAxial) {
+    min = stack.componentInnerAxial;
+    max = Math.max(min + 1, stack.componentOuterAxial);
+  } else if (ring >= stack.stressorRingAxial) {
+    min = stack.stressorRingAxial;
+    max = Math.max(min + 1, stack.stressorRingOuterAxial);
+  }
+  const progress = Math.max(0, Math.min(1, (ring - min) / (max - min)));
+  return DUAL_RING_COLUMN_CURVATURE * progress;
+}
+function curvedSprocketSlotPoint(origin, radius, count, slot, angleOffset = 0) {
   const safeCount = Math.max(1, Math.round(count));
   const normalizedSlot = (slot % safeCount + safeCount) % safeCount;
-  const angle = -Math.PI / 2 + normalizedSlot / safeCount * Math.PI * 2;
+  const angle = -Math.PI / 2 + normalizedSlot / safeCount * Math.PI * 2 + angleOffset;
   return {
     x: origin.x + radius * Math.cos(angle),
     y: origin.y + radius * Math.sin(angle)
@@ -4268,14 +4271,14 @@ function axialToDualRingPixel(cell, proj) {
     return { ...proj.origin };
   const radius = radiusForDualRingAxial(ring, proj.stack, proj.spacing);
   const cellCount = angularStepsForRing(proj.stack, ring);
-  return curvedSprocketSlotPoint(proj.origin, radius, cellCount, cell.q);
+  return curvedSprocketSlotPoint(proj.origin, radius, cellCount, cell.q, dualRingColumnAngleOffset(ring, proj.stack));
 }
 function fractionalDualRingPixel(ring, slot, proj) {
   if (ring <= 0)
     return { ...proj.origin };
   const radius = radiusForDualRingAxial(ring, proj.stack, proj.spacing);
   const cellCount = angularStepsForRing(proj.stack, Math.round(ring));
-  return curvedSprocketSlotPoint(proj.origin, radius, cellCount, slot);
+  return curvedSprocketSlotPoint(proj.origin, radius, cellCount, slot, dualRingColumnAngleOffset(ring, proj.stack));
 }
 function pixelToDualRingAxial(point, proj, ringBounds) {
   const dx = point.x - proj.origin.x;
@@ -4295,7 +4298,7 @@ function pixelToDualRingAxial(point, proj, ringBounds) {
     }
   }
   const cellCount = angularStepsForRing(proj.stack, nearestRing);
-  let angle = Math.atan2(dy, dx) + Math.PI / 2;
+  let angle = Math.atan2(dy, dx) + Math.PI / 2 - dualRingColumnAngleOffset(nearestRing, proj.stack);
   while (angle < 0)
     angle += 2 * Math.PI;
   while (angle >= 2 * Math.PI)
@@ -4699,6 +4702,7 @@ var REGIONS_COMPONENT_COLLISION_RADIUS = REGIONS_COMPONENT_MIN_DISTANCE / 2;
 var FORCE_NODE_SCALE = 1.3;
 var FORCE_DIAMOND_HALF_DIAGONAL = 5 * FORCE_NODE_SCALE;
 var FORCE_CIRCLE_RADIUS = 4 * FORCE_NODE_SCALE;
+var DUAL_RING_ZONE_SHADE_OPACITY = 0.12;
 function forceNodeOpacity(kind) {
   return kind === "purpose" ? 0.75 : 1;
 }
@@ -4709,6 +4713,10 @@ function forceGlyphPath(kind) {
   }
   const r = FORCE_CIRCLE_RADIUS;
   return `M-${r},0a${r},${r} 0 1,0 ${r * 2},0a${r},${r} 0 1,0 -${r * 2},0`;
+}
+function annularZonePath(center, inner, outer) {
+  const circle = (radius, clockwise) => `M ${center.x + radius},${center.y} A ${radius},${radius} 0 1 ${clockwise} ${center.x - radius},${center.y} A ${radius},${radius} 0 1 ${clockwise} ${center.x + radius},${center.y}`;
+  return `${circle(outer, 0)} ${circle(inner, 1)}`;
 }
 var REGIONS_LINK_STRENGTH = 0.1125;
 var REGIONS_BUNDLE_IDLE_OPACITY = 0.225;
@@ -5229,6 +5237,17 @@ function createRegionsView(ctx) {
     mask.select("path.nkp-hyper-mask-annulus").attr("d", annulus);
     return `url(#${maskId})`;
   }
+  function paintZoneShading(stack) {
+    if (!built)
+      return;
+    const center = coreCenter;
+    const shades = [
+      { id: "inner-annulus", path: annularZonePath(center, stack.innerAnnulus.inner, stack.innerAnnulus.outer), fill: "black" },
+      { id: "component-band", path: annularZonePath(center, stack.componentBand.inner, stack.componentBand.outer), fill: "white" },
+      { id: "outer-annulus", path: annularZonePath(center, stack.outerAnnulus.inner, stack.outerAnnulus.outer), fill: "black" }
+    ];
+    built.zoneShadingG.selectAll("path.nkp-hyper-zone-shade").data(shades, (shade) => shade.id).join("path").attr("class", "nkp-hyper-zone-shade").attr("data-zone-shade", (shade) => shade.id).attr("d", (shade) => shade.path).attr("fill", (shade) => shade.fill).attr("fill-opacity", DUAL_RING_ZONE_SHADE_OPACITY).attr("fill-rule", "evenodd").attr("pointer-events", "none");
+  }
   function positionRegions() {
     const maskUrl = ensureComponentBandMask();
     regionSel?.each(function(group) {
@@ -5471,11 +5490,13 @@ function createRegionsView(ctx) {
     const { width, height } = canvasSize();
     const { svg, content, zoom } = appendZoomableSvg(host, d3, { x: 0, y: 0, width, height }, "nkp-hyper", "Forces linked to the components they touch, grouped into attractor regions");
     const latticeG = content.append("g").attr("class", "nkp-hyper-lattice").attr("data-regions-lattice", "true").style("display", "none");
+    const zoneShadingG = content.append("g").attr("class", "nkp-hyper-zone-shading").attr("data-zone-shading", "true");
     const coreG = content.append("g").attr("class", "nkp-hyper-core");
     const coreBoundary = coreG.append("circle").attr("class", "nkp-hyper-core-boundary").attr("data-core-boundary", "true").attr("fill", "none").attr("stroke", "var(--muted)").attr("stroke-dasharray", "4 4");
     const componentBoundary = coreG.append("circle").attr("class", "nkp-hyper-component-boundary").attr("data-component-boundary", "true").attr("fill", "none").attr("stroke", "var(--muted)").attr("stroke-dasharray", "4 4");
     const innerAnnulusInnerBoundary = coreG.append("circle").attr("class", "nkp-hyper-inner-annulus-inner").attr("data-inner-annulus-inner", "true").attr("fill", "none").attr("stroke", "var(--muted)").attr("stroke-dasharray", "4 4");
     const innerAnnulusOuterBoundary = coreG.append("circle").attr("class", "nkp-hyper-inner-annulus-outer").attr("data-inner-annulus-outer", "true").attr("fill", "none").attr("stroke", "var(--muted)").attr("stroke-dasharray", "4 4");
+    const outerAnnulusBoundary = coreG.append("circle").attr("class", "nkp-hyper-outer-annulus-boundary").attr("data-outer-annulus-boundary", "true").attr("fill", "none").attr("stroke", "var(--muted)").attr("stroke-dasharray", "4 4");
     const coreBoundaryDivider = coreG.append("line").attr("class", "nkp-hyper-core-boundary-divider").attr("data-core-boundary-divider", "true").attr("stroke", "var(--muted)").attr("stroke-dasharray", "4 4");
     const regionsG = content.append("g").attr("class", "nkp-hyper-regions");
     const fusionG = content.append("g").attr("class", "nkp-hyper-fusion");
@@ -5499,7 +5520,7 @@ function createRegionsView(ctx) {
       recomputeLabelNudges(true);
       positionLabels();
     }).stop();
-    built = { svg, content, zoom, latticeG, regionsG, fusionG, edgesG, forceEdgesG, nodesG, labelsGroup, coreBoundary, componentBoundary, innerAnnulusInnerBoundary, innerAnnulusOuterBoundary, coreBoundaryDivider, snapPreview, sim, width, height, didFit: false, tip: createTooltip(host) };
+    built = { svg, content, zoom, latticeG, zoneShadingG, regionsG, fusionG, edgesG, forceEdgesG, nodesG, labelsGroup, coreBoundary, componentBoundary, innerAnnulusInnerBoundary, innerAnnulusOuterBoundary, outerAnnulusBoundary, coreBoundaryDivider, snapPreview, sim, width, height, didFit: false, tip: createTooltip(host) };
     return built;
   }
   function attractorSpawnAngles(attractorIds) {
@@ -5737,6 +5758,7 @@ function createRegionsView(ctx) {
         b2.componentBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", emptyInner2);
         b2.innerAnnulusInnerBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", emptyInner2);
         b2.innerAnnulusOuterBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", emptyInner2);
+        b2.outerAnnulusBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", emptyOuter2);
         b2.coreBoundaryDivider.attr("x1", coreCenter.x - emptyOuter2).attr("x2", coreCenter.x + emptyOuter2).attr("y1", coreCenter.y).attr("y2", coreCenter.y);
       }
       b2.sim.nodes([]);
@@ -5781,10 +5803,12 @@ function createRegionsView(ctx) {
     const stack = regionsDualRingStack(componentCount, kindCounts);
     const coreRadius = stack.stressorRingOuterRadius;
     const componentRadius = stack.componentBand.outer;
+    paintZoneShading(stack);
     b.coreBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", coreRadius);
     b.componentBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", componentRadius);
     b.innerAnnulusInnerBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", stack.innerAnnulus.inner);
     b.innerAnnulusOuterBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", stack.innerAnnulus.outer);
+    b.outerAnnulusBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", stack.outerAnnulus.outer);
     b.coreBoundaryDivider.attr("x1", coreCenter.x - coreRadius).attr("x2", coreCenter.x + coreRadius).attr("y1", coreCenter.y).attr("y2", coreCenter.y);
     paintLattice(stack.componentBand.inner, stack.stressorRingOuterRadius);
     const prevById = byId;
