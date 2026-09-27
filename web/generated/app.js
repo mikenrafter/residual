@@ -4247,43 +4247,42 @@ function layoutAttractorDualRingMiniPyramids(groups, rings) {
 }
 function dualRingRadialStack(input) {
   const spacing = input.spacing ?? TRI_LATTICE_SPACING;
-  const minCompHops = input.minComponentHops ?? 3;
-  const purposeSlots = dualRingSlotsForMiniPyramids(input.purposeBaseWidths, { gapNodes: 0 });
-  const stressorSlots = dualRingSlotsForMiniPyramids(input.stressorBaseWidths, { gapNodes: 0 });
-  const purposeRingAxial = Math.max(1, outerRingAxialRadiusForSlots(Math.max(1, purposeSlots)));
-  const innerAnnulusHops = 1;
-  let componentHops = minCompHops;
+  const purposeAngularSteps = Math.max(1, dualRingSlotsForMiniPyramids(input.purposeBaseWidths, { gapNodes: 0 }));
+  const stressorAngularSteps = Math.max(1, dualRingSlotsForMiniPyramids(input.stressorBaseWidths, { gapNodes: 0 }));
+  const purposeRingAxial = Math.max(1, ...input.purposeHeights);
+  const innerAnnulusHops = 2;
+  const componentHops = 3;
+  const componentAngularSteps = purposeAngularSteps + 2;
+  const outerAnnulusHops = 2;
+  const stressorHopsTall = Math.max(1, ...input.stressorHeights) + 3;
   const componentInnerAxial = purposeRingAxial + innerAnnulusHops;
-  const capacityForHops = (hops) => {
-    let cap = 0;
-    for (let k = 0;k < hops; k += 1)
-      cap += Math.max(1, 6 * (componentInnerAxial + k));
-    return Math.max(1, cap);
-  };
-  while (capacityForHops(componentHops) < Math.max(1, input.componentCount)) {
-    componentHops += 1;
-  }
-  const outerAnnulusHops = 1;
   const componentOuterAxial = componentInnerAxial + componentHops - 1;
-  const stressorRingAxial = Math.max(componentOuterAxial + outerAnnulusHops + 1, outerRingAxialRadiusForSlots(Math.max(1, stressorSlots)));
-  const purposeRingRadius = spacing * 6 * purposeRingAxial / (2 * Math.PI);
-  const componentInner = purposeRingRadius + spacing * 1.75;
-  const componentOuter = Math.ceil((componentInner + spacing * componentHops) / spacing) * spacing;
-  const innerAnnulusInner = purposeRingRadius + spacing * 0.25;
-  const innerAnnulusOuter = componentInner;
+  const stressorRingAxial = componentOuterAxial + outerAnnulusHops;
+  const stressorRingOuterAxial = stressorRingAxial + stressorHopsTall - 1;
+  const purposeRingRadius = purposeRingAxial * spacing;
+  const innerAnnulusInner = purposeRingRadius;
+  const innerAnnulusOuter = innerAnnulusInner + innerAnnulusHops * spacing;
+  const componentInner = innerAnnulusOuter;
+  const componentOuter = componentInner + componentHops * spacing;
   const outerAnnulusInner = componentOuter;
-  const outerAnnulusOuter = componentOuter + spacing * outerAnnulusHops;
-  const stressorRingRadius = Math.max(outerAnnulusOuter + spacing * 0.5, spacing * 6 * stressorRingAxial / (2 * Math.PI));
+  const outerAnnulusOuter = outerAnnulusInner + outerAnnulusHops * spacing;
+  const stressorRingRadius = outerAnnulusOuter;
+  const stressorRingOuterRadius = stressorRingRadius + stressorHopsTall * spacing;
   return {
     purposeRingRadius,
     purposeRingAxial,
-    innerAnnulus: { inner: innerAnnulusInner, outer: innerAnnulusOuter },
+    purposeAngularSteps,
+    innerAnnulus: { inner: innerAnnulusInner, outer: innerAnnulusOuter, hops: innerAnnulusHops },
     componentInnerAxial,
     componentOuterAxial,
     componentBand: { inner: componentInner, outer: componentOuter, hops: componentHops },
-    outerAnnulus: { inner: outerAnnulusInner, outer: Math.min(outerAnnulusOuter, stressorRingRadius) },
+    componentAngularSteps,
+    outerAnnulus: { inner: outerAnnulusInner, outer: outerAnnulusOuter, hops: outerAnnulusHops },
     stressorRingRadius,
-    stressorRingAxial
+    stressorRingAxial,
+    stressorRingOuterAxial,
+    stressorRingOuterRadius,
+    stressorAngularSteps
   };
 }
 function radiusForDualRingAxial(ring, stack, spacing = TRI_LATTICE_SPACING) {
@@ -4363,7 +4362,14 @@ function canonicalCurvedSprocketLattice(input) {
   const radialSpan = outerRadius - innerRadius;
   const width = 2 * Math.PI * outerRadius / cellCount;
   const height = radialSpan / boundaryHeight;
-  const dimensions = Array.from({ length: cellCount * boundaryHeight }, () => ({ width, height }));
+  const halfRowHeight = height / 2;
+  const totalRows = boundaryHeight + 2;
+  const dimensions = [];
+  for (let row = 0;row < totalRows; row += 1) {
+    const rowHeight = row === 0 || row === totalRows - 1 ? halfRowHeight : height;
+    for (let col = 0;col < cellCount; col += 1)
+      dimensions.push({ width, height: rowHeight });
+  }
   const top = Array.from({ length: cellCount }, (_, q) => ({ q, r: 0, halfHeight: true }));
   const bottom = Array.from({ length: cellCount }, (_, q) => ({ q, r: boundaryHeight + 1, halfHeight: true }));
   const directedEdges = [];
@@ -4484,9 +4490,6 @@ function axialRingSlotIndex(cell, center = { q: 0, r: 0 }) {
   const key = axialKey(cell);
   const index = ringCells.findIndex((candidate) => axialKey(candidate) === key);
   return index < 0 ? 0 : index;
-}
-function outerRingAxialRadiusForSlots(slotCount) {
-  return Math.max(1, Math.ceil(Math.max(1, slotCount) / 6));
 }
 function axialCellOnRingAtAngle(ring, angle) {
   if (ring <= 0)
@@ -4832,15 +4835,17 @@ function componentZoneRadius(componentCount) {
   const outer = coreZoneRadius(componentCount);
   return Math.max(CORE_ZONE_BASE_RADIUS * 0.5, outer - COMPONENT_ZONE_INSET);
 }
-function regionsDualRingStack(componentCount, attractorKindCounts, spacing = REGIONS_TRI_LATTICE_SPACING) {
+function regionsDualRingStack(_componentCount, attractorKindCounts, spacing = REGIONS_TRI_LATTICE_SPACING) {
   const purposeBaseWidths = attractorKindCounts.map(({ purposeCount }) => purposeCount <= 0 ? 2 : miniPyramidLayersForCount(purposeCount)[0] ?? 1);
+  const purposeHeights = attractorKindCounts.map(({ purposeCount }) => purposeCount <= 0 ? 1 : miniPyramidLayersForCount(purposeCount).length);
   const stressorBaseWidths = attractorKindCounts.map(({ stressorCount }) => stressorCount <= 0 ? 2 : miniPyramidLayersForCount(stressorCount)[0] ?? 1);
+  const stressorHeights = attractorKindCounts.map(({ stressorCount }) => stressorCount <= 0 ? 1 : miniPyramidLayersForCount(stressorCount).length);
   return dualRingRadialStack({
     purposeBaseWidths: purposeBaseWidths.length > 0 ? purposeBaseWidths : [2],
+    purposeHeights: purposeHeights.length > 0 ? purposeHeights : [1],
     stressorBaseWidths: stressorBaseWidths.length > 0 ? stressorBaseWidths : [2],
-    componentCount,
-    spacing,
-    minComponentHops: 3
+    stressorHeights: stressorHeights.length > 0 ? stressorHeights : [1],
+    spacing
   });
 }
 function clampToCore(point, center, radius) {
@@ -5032,19 +5037,19 @@ function createRegionsView(ctx) {
     const key = [
       coreCenter.x,
       coreCenter.y,
-      stack.stressorRingAxial,
+      stack.stressorRingOuterAxial,
       stack.componentInnerAxial,
       stack.componentOuterAxial,
-      stack.stressorRingRadius
+      stack.stressorRingOuterRadius
     ].join(":");
     if (key !== canonicalLatticeKey) {
       canonicalLatticeKey = key;
       canonicalLattice = canonicalCurvedSprocketLattice({
         origin: coreCenter,
         innerRadius: 0,
-        outerRadius: stack.stressorRingRadius,
-        cellCount: Math.max(6, 6 * (stack.stressorRingAxial + 12)),
-        boundaryHeight: Math.max(1, stack.stressorRingAxial + 12),
+        outerRadius: stack.stressorRingOuterRadius,
+        cellCount: Math.max(6, 6 * (stack.stressorRingOuterAxial + 12)),
+        boundaryHeight: Math.max(1, stack.stressorRingOuterAxial + 12),
         radiusForRing: (ring) => radiusForDualRingAxial(ring, stack, REGIONS_TRI_LATTICE_SPACING),
         slotCountForRing: (ring) => Math.max(1, 6 * ring)
       });
@@ -5059,7 +5064,7 @@ function createRegionsView(ctx) {
   function currentZoneRadii() {
     const stack = currentDualRingStack();
     return {
-      outerRadius: stack.stressorRingRadius,
+      outerRadius: stack.stressorRingOuterRadius,
       innerRadius: stack.componentBand.outer
     };
   }
@@ -5633,9 +5638,9 @@ function createRegionsView(ctx) {
     const stack = currentDualRingStack();
     const spacing = REGIONS_TRI_LATTICE_SPACING;
     const planes = [
-      { id: "purpose", inner: 0, outer: stack.innerAnnulus.inner },
-      { id: "components", inner: stack.innerAnnulus.outer, outer: stack.outerAnnulus.inner },
-      { id: "stressors", inner: stack.outerAnnulus.outer, outer: stack.stressorRingRadius }
+      { id: "purpose", inner: 0, outer: stack.innerAnnulus.inner, hops: stack.purposeRingAxial, angularSteps: stack.purposeAngularSteps },
+      { id: "components", inner: stack.innerAnnulus.outer, outer: stack.outerAnnulus.inner, hops: stack.componentBand.hops, angularSteps: stack.componentAngularSteps },
+      { id: "stressors", inner: stack.outerAnnulus.outer, outer: stack.stressorRingOuterRadius, hops: stack.stressorRingOuterAxial - stack.stressorRingAxial + 1, angularSteps: stack.stressorAngularSteps }
     ];
     const lines = [];
     const inside = (x, y, plane) => {
@@ -5646,13 +5651,12 @@ function createRegionsView(ctx) {
       const inner = Math.max(plane.inner, spacing * 1.5);
       if (plane.outer <= inner + 1)
         continue;
-      const count = plane.id === "purpose" ? 6 * stack.purposeRingAxial : plane.id === "components" ? 6 * stack.componentOuterAxial : 6 * stack.stressorRingAxial;
       const lattice = canonicalCurvedSprocketLattice({
         origin: coreCenter,
         innerRadius: inner,
         outerRadius: plane.outer,
-        cellCount: count,
-        boundaryHeight: Math.max(1, Math.round((plane.outer - inner) / spacing))
+        cellCount: plane.angularSteps,
+        boundaryHeight: Math.max(1, plane.hops)
       });
       lattice.meshPaths.forEach((path, index) => {
         lines.push({ id: `${plane.id}:sprocket:${index}`, plane: plane.id, points: path });
@@ -5774,7 +5778,7 @@ function createRegionsView(ctx) {
         base2 = { x: siblingCenter.x + offset.x, y: siblingCenter.y + offset.y };
       } else {
         const angle = spawnAngles.get(item.attractorId) ?? 0;
-        const spawnR = item.kind === "purpose" ? stack.purposeRingRadius : stack.stressorRingRadius + SPAWN_CORE_CLEARANCE;
+        const spawnR = item.kind === "purpose" ? stack.purposeRingRadius : stack.stressorRingOuterRadius + SPAWN_CORE_CLEARANCE;
         base2 = { x: coreCenter.x + spawnR * Math.cos(angle), y: coreCenter.y + spawnR * Math.sin(angle) };
       }
       return base2;
@@ -6038,14 +6042,14 @@ function createRegionsView(ctx) {
       };
     });
     const stack = regionsDualRingStack(componentCount, kindCounts);
-    const coreRadius = stack.stressorRingRadius;
+    const coreRadius = stack.stressorRingOuterRadius;
     const componentRadius = stack.componentBand.outer;
     b.coreBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", coreRadius);
     b.componentBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", componentRadius);
     b.innerAnnulusInnerBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", stack.innerAnnulus.inner);
     b.innerAnnulusOuterBoundary.attr("cx", coreCenter.x).attr("cy", coreCenter.y).attr("r", stack.innerAnnulus.outer);
     b.coreBoundaryDivider.attr("x1", coreCenter.x - coreRadius).attr("x2", coreCenter.x + coreRadius).attr("y1", coreCenter.y).attr("y2", coreCenter.y);
-    paintLattice(stack.componentBand.inner, stack.stressorRingRadius);
+    paintLattice(stack.componentBand.inner, stack.stressorRingOuterRadius);
     const prevById = byId;
     const nextById = new Map;
     const newcomerIds = new Set;

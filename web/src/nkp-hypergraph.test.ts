@@ -1138,7 +1138,7 @@ describe("createRegionsView (persistent view handle, Phase 4/5)", () => {
     expect(boundary?.getAttribute("cx")).toBe("400");
     expect(boundary?.getAttribute("cy")).toBe("300");
     const stack = dualStackFor(handle);
-    expect(Number(boundary?.getAttribute("r"))).toBeCloseTo(stack?.stressorRingRadius ?? 0, 5);
+    expect(Number(boundary?.getAttribute("r"))).toBeCloseTo(stack?.stressorRingOuterRadius ?? 0, 5);
   });
 
   test("draws dashed borders around the inner annulus (both edges)", () => {

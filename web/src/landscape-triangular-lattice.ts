@@ -241,56 +241,6 @@ export function axialRing(center: AxialPoint, radius: number): AxialPoint[] {
 }
 
 /**
- * True when `layers` is a complete odd-base frustum of height h:
- * `[2h+1, 2h, …, h+1]` (e.g. `[3]`, `[5,4]`, `[7,6,5]`). The next apex
- * layer may only start after one of these stages.
- */
-export function isCompleteOddPyramidStage(layers: readonly number[]): boolean {
-  const h = layers.length;
-  if (h === 0) return false;
-  for (let i = 0; i < h; i += 1) {
-    if (layers[i] !== 2 * h + 1 - i) return false;
-  }
-  return true;
-}
-
-/**
- * Frustum layer widths (base → apex) for an attractor with `n` force nodes.
- * Fills the lowest under-full row (relative to current base) first; when every
- * row is full, either starts a new apex layer after a complete odd stage or
- * expands the base by one.
- *
- * Sequence: 1 · 2 · 3 · 3:1 · 3:2 · 4:2 · 4:3 · 5:3 · 5:4 · 5:4:1 · …
- */
-export function pyramidLayersForCount(n: number): number[] {
-  if (n <= 0) return [];
-  const layers: number[] = [];
-  for (let placed = 0; placed < n; placed += 1) {
-    if (layers.length === 0) {
-      layers.push(1);
-      continue;
-    }
-    const base = layers[0]!;
-    let filled = false;
-    for (let i = 0; i < layers.length; i += 1) {
-      const max = base - i;
-      if (layers[i]! < max) {
-        layers[i] = layers[i]! + 1;
-        filled = true;
-        break;
-      }
-    }
-    if (filled) continue;
-    if (isCompleteOddPyramidStage(layers)) {
-      layers.push(1);
-      continue;
-    }
-    layers[0] = base + 1;
-  }
-  return layers;
-}
-
-/**
  * True when `layers` is a complete mini frustum `[h, h-1, …, 1]`.
  */
 export function isCompleteMiniPyramidStage(layers: readonly number[]): boolean {
@@ -422,6 +372,12 @@ export function layoutAttractorDualRingMiniPyramids(
   const targets = new Map<string, AxialPoint>();
   const purposeSubShapesByAttractor = new Map<string, string[][]>();
   const stressorSubShapesByAttractor = new Map<string, string[][]>();
+  // The true hex-ring capacity (6 × ring), not the zone's rendered "pyramidal
+  // needs" angular budget: local-cell offsets within a single pyramid must
+  // land on genuinely adjacent hex cells, which only the true azimuthal
+  // resolution guarantees. The rendered angular compression happens later,
+  // in the projection layer (`slotCountForRing`), which is independent of
+  // where these axial cells actually sit topologically.
   const purposeCount = Math.max(1, 6 * rings.purposeRing);
   const stressorCount = Math.max(1, 6 * rings.stressorRing);
   const purposeOcc = Array.from({ length: purposeCount }, () => false);
@@ -520,92 +476,88 @@ export function layoutAttractorDualRingMiniPyramids(
 export interface DualRingRadialStack {
   purposeRingRadius: number;
   purposeRingAxial: number;
-  innerAnnulus: { inner: number; outer: number };
+  purposeAngularSteps: number;
+  innerAnnulus: { inner: number; outer: number; hops: number };
   /** First axial ring of the component band (inclusive). */
   componentInnerAxial: number;
   /** Last axial ring of the component band (inclusive). */
   componentOuterAxial: number;
   componentBand: { inner: number; outer: number; hops: number };
-  outerAnnulus: { inner: number; outer: number };
+  componentAngularSteps: number;
+  outerAnnulus: { inner: number; outer: number; hops: number };
+  /** Inner edge of the stressor ring — the shared boundary with the outer annulus. */
   stressorRingRadius: number;
+  /** First (innermost) axial ring of the stressor band. */
   stressorRingAxial: number;
+  /** Last (outermost) axial ring of the stressor band — reaches the tallest stressor pyramid + 3 hops. */
+  stressorRingOuterAxial: number;
+  /** Outer edge of the stressor ring — the outer edge of the whole graph. */
+  stressorRingOuterRadius: number;
+  stressorAngularSteps: number;
 }
 
 /**
- * Pixel radii + axial ring indices for the dual-ring stack.
- * Equilateral axial lattice projected onto circular rings.
- * Axial layout: purpose ≤ P | empty annulus rings | components | empty | stressors ≥ S.
- * With the default 1-hop annulus the empty set is empty (P and P+1 are adjacent);
- * the visual annulus is the half-spacing band between those rings, and tessellation
- * skips edges that cross it.
+ * Pixel radii + axial ring indices for the dual-ring stack. Every zone's
+ * radial reach is purely topological: N hops tall always advances N lattice
+ * spacings, independent of how many angular slots that zone needs (angular
+ * step counts are tracked separately per zone and never grow a zone's
+ * radius). Boundaries are shared between adjacent zones (no gaps):
+ * purpose | inner annulus (2 hops) | components (3 hops) | outer annulus
+ * (≥2 hops) | stressors (tallest stressor pyramid + 3 hops).
  */
 export function dualRingRadialStack(input: {
   purposeBaseWidths: readonly number[];
+  /** Per-attractor purpose frustum heights (`miniPyramidLayersForCount(count).length`). */
+  purposeHeights: readonly number[];
   stressorBaseWidths: readonly number[];
-  componentCount: number;
+  /** Per-attractor stressor frustum heights (`miniPyramidLayersForCount(count).length`). */
+  stressorHeights: readonly number[];
   spacing?: number;
-  minComponentHops?: number;
 }): DualRingRadialStack {
   const spacing = input.spacing ?? TRI_LATTICE_SPACING;
-  const minCompHops = input.minComponentHops ?? 3;
-  const purposeSlots = dualRingSlotsForMiniPyramids(input.purposeBaseWidths, { gapNodes: 0 });
-  const stressorSlots = dualRingSlotsForMiniPyramids(input.stressorBaseWidths, { gapNodes: 0 });
-  // A six-slot first ring still carries a two-slot empty attractor gap. Do not
-  // reserve a second hop unless the purpose bases actually need it.
-  const purposeRingAxial = Math.max(1, outerRingAxialRadiusForSlots(Math.max(1, purposeSlots)));
-  // One hop of radial clearance after the purpose bases (not an extra empty axial ring).
-  const innerAnnulusHops = 1;
-  let componentHops = minCompHops;
-  const componentInnerAxial = purposeRingAxial + innerAnnulusHops;
-  const capacityForHops = (hops: number): number => {
-    let cap = 0;
-    for (let k = 0; k < hops; k += 1) cap += Math.max(1, 6 * (componentInnerAxial + k));
-    return Math.max(1, cap);
-  };
-  while (capacityForHops(componentHops) < Math.max(1, input.componentCount)) {
-    componentHops += 1;
-  }
-  const outerAnnulusHops = 1;
-  const componentOuterAxial = componentInnerAxial + componentHops - 1;
-  const stressorRingAxial = Math.max(
-    componentOuterAxial + outerAnnulusHops + 1,
-    outerRingAxialRadiusForSlots(Math.max(1, stressorSlots)),
-  );
+  const purposeAngularSteps = Math.max(1, dualRingSlotsForMiniPyramids(input.purposeBaseWidths, { gapNodes: 0 }));
+  const stressorAngularSteps = Math.max(1, dualRingSlotsForMiniPyramids(input.stressorBaseWidths, { gapNodes: 0 }));
 
-  // Project every axial ring radially. This keeps the ring slots evenly spaced
-  // around a circle while retaining axial adjacency for the triangular mesh.
-  const purposeRingRadius = (spacing * 6 * purposeRingAxial) / (2 * Math.PI);
-  // Keep the component band's original outer edge. Tightening the inner gap
-  // therefore moves only its inner boundary out, instead of shrinking the
-  // whole center-side layout toward the origin.
-  const componentInner = purposeRingRadius + spacing * 1.75;
-  // Cartesian boundaries land on the same x/y coordinate steps as the grid;
-  // this keeps a component dragged to the outer edge on a real lattice cell.
-  const componentOuter = Math.ceil((componentInner + spacing * componentHops) / spacing) * spacing;
-  // The gap follows the purpose circle. Components begin one complete lattice
-  // row beyond the gap, on the first component ring.
-  const innerAnnulusInner = purposeRingRadius + spacing * 0.25;
-  // Extend the dotted boundary outward to the component boundary.
-  const innerAnnulusOuter = componentInner;
+  // The purpose disc reaches out exactly as far as its own pyramidal needs.
+  const purposeRingAxial = Math.max(1, ...input.purposeHeights);
+  const innerAnnulusHops = 2;
+  const componentHops = 3;
+  const componentAngularSteps = purposeAngularSteps + 2;
+  const outerAnnulusHops = 2;
+  // Tallest stressor pyramid (base to apex) plus 3 more hops of outward reach.
+  const stressorHopsTall = Math.max(1, ...input.stressorHeights) + 3;
+
+  const componentInnerAxial = purposeRingAxial + innerAnnulusHops;
+  const componentOuterAxial = componentInnerAxial + componentHops - 1;
+  const stressorRingAxial = componentOuterAxial + outerAnnulusHops;
+  const stressorRingOuterAxial = stressorRingAxial + stressorHopsTall - 1;
+
+  // Pure hop-count distance: every axial ring step advances by one spacing.
+  const purposeRingRadius = purposeRingAxial * spacing;
+  const innerAnnulusInner = purposeRingRadius;
+  const innerAnnulusOuter = innerAnnulusInner + innerAnnulusHops * spacing;
+  const componentInner = innerAnnulusOuter;
+  const componentOuter = componentInner + componentHops * spacing;
   const outerAnnulusInner = componentOuter;
-  const outerAnnulusOuter = componentOuter + spacing * outerAnnulusHops;
-  const stressorRingRadius = Math.max(
-    // Leave a visible separation after the outer annulus. The stressor ring
-    // must not be swallowed by the annulus band.
-    outerAnnulusOuter + spacing * 0.5,
-    (spacing * 6 * stressorRingAxial) / (2 * Math.PI),
-  );
+  const outerAnnulusOuter = outerAnnulusInner + outerAnnulusHops * spacing;
+  const stressorRingRadius = outerAnnulusOuter;
+  const stressorRingOuterRadius = stressorRingRadius + stressorHopsTall * spacing;
 
   return {
     purposeRingRadius,
     purposeRingAxial,
-    innerAnnulus: { inner: innerAnnulusInner, outer: innerAnnulusOuter },
+    purposeAngularSteps,
+    innerAnnulus: { inner: innerAnnulusInner, outer: innerAnnulusOuter, hops: innerAnnulusHops },
     componentInnerAxial,
     componentOuterAxial,
     componentBand: { inner: componentInner, outer: componentOuter, hops: componentHops },
-    outerAnnulus: { inner: outerAnnulusInner, outer: Math.min(outerAnnulusOuter, stressorRingRadius) },
+    componentAngularSteps,
+    outerAnnulus: { inner: outerAnnulusInner, outer: outerAnnulusOuter, hops: outerAnnulusHops },
     stressorRingRadius,
     stressorRingAxial,
+    stressorRingOuterAxial,
+    stressorRingOuterRadius,
+    stressorAngularSteps,
   };
 }
 
@@ -850,8 +802,17 @@ export function canonicalCurvedSprocketLattice(input: {
   const boundaryHeight = Math.max(1, Math.round(input.boundaryHeight ?? 1));
   const radialSpan = outerRadius - innerRadius;
   const width = (2 * Math.PI * outerRadius) / cellCount;
+  // Interior rows are full height; the clipped row touching each end of the
+  // band (r=0 and r=boundaryHeight+1) is half height, since it sits exactly
+  // on the shared boundary with the neighboring annulus / zone.
   const height = radialSpan / boundaryHeight;
-  const dimensions = Array.from({ length: cellCount * boundaryHeight }, () => ({ width, height }));
+  const halfRowHeight = height / 2;
+  const totalRows = boundaryHeight + 2;
+  const dimensions: CanonicalCurvedSprocketCellDimension[] = [];
+  for (let row = 0; row < totalRows; row += 1) {
+    const rowHeight = row === 0 || row === totalRows - 1 ? halfRowHeight : height;
+    for (let col = 0; col < cellCount; col += 1) dimensions.push({ width, height: rowHeight });
+  }
   const top = Array.from({ length: cellCount }, (_, q) => ({ q, r: 0, halfHeight: true }));
   const bottom = Array.from({ length: cellCount }, (_, q) => ({ q, r: boundaryHeight + 1, halfHeight: true }));
 
@@ -1072,156 +1033,6 @@ export function snapPyramidTopsToSharedRay(
   };
 }
 
-/**
- * Local axial cells for a pyramid frustum: base along +q at r=0 (ergodic
- * boundary), successive layers at r=-1,-2,… (facing away). Upper layers are
- * centred on the base so unit triangles tessellate; the topmost layer may be
- * underfilled.
- */
-export function pyramidCellsForLayers(layers: readonly number[]): AxialPoint[] {
-  const cells: AxialPoint[] = [];
-  if (layers.length === 0) return cells;
-  const baseWidth = layers[0]!;
-  for (let i = 0; i < layers.length; i += 1) {
-    const width = layers[i]!;
-    const qStart = Math.round((baseWidth - width) / 2);
-    const r = 0 - i; // avoid -0
-    for (let q = qStart; q < qStart + width; q += 1) {
-      cells.push({ q, r });
-    }
-  }
-  return cells;
-}
-
-export type PyramidSubshapeKind = "triangle" | "pill";
-
-export interface PyramidSubshape {
-  kind: PyramidSubshapeKind;
-  cells: AxialPoint[];
-}
-
-function cellsKeySet(cells: readonly AxialPoint[]): Set<string> {
-  return new Set(cells.map(axialKey));
-}
-
-/** Unit triangles whose three cells are all present in `available`. */
-function candidateUnitTriangles(available: ReadonlySet<string>): AxialPoint[][] {
-  const cells: AxialPoint[] = [];
-  for (const key of available) {
-    const [qStr, rStr] = key.split(":");
-    cells.push({ q: Number(qStr), r: Number(rStr) });
-  }
-  const triangles: AxialPoint[][] = [];
-  const seen = new Set<string>();
-  for (const a of cells) {
-    for (const n1 of AXIAL_NEIGHBORS) {
-      const b = { q: a.q + n1.q, r: a.r + n1.r };
-      if (!available.has(axialKey(b))) continue;
-      for (const n2 of AXIAL_NEIGHBORS) {
-        const c = { q: a.q + n2.q, r: a.r + n2.r };
-        if (!available.has(axialKey(c))) continue;
-        if (axialDistance(b, c) !== 1) continue;
-        const tri = [a, b, c].sort((left, right) => left.q - right.q || left.r - right.r);
-        const key = tri.map(axialKey).join("|");
-        if (seen.has(key)) continue;
-        seen.add(key);
-        triangles.push(tri);
-      }
-    }
-  }
-  return triangles;
-}
-
-/** Prefer base-facing (flat edge toward r=0) over inverted; then lower r-sum. */
-function triangleBaseFacingScore(tri: readonly AxialPoint[]): number {
-  const rs = tri.map((cell) => cell.r);
-  const minR = Math.min(...rs);
-  const maxR = Math.max(...rs);
-  const onMax = tri.filter((cell) => cell.r === maxR).length;
-  // Base-facing: two points on the boundary-ward side (higher r), one toward apex.
-  const baseFacing = onMax === 2 && maxR === minR + 1;
-  return (baseFacing ? 0 : 1) * 1000 + (tri.reduce((sum, cell) => sum + cell.r, 0));
-}
-
-/**
- * Partition pyramid cells into vertex-disjoint sub-shapes: prefer unit
- * triangles (base-facing first, then inverted), leftover runs become n-pills.
- */
-export function partitionPyramidSubshapes(layers: readonly number[]): PyramidSubshape[] {
-  const all = pyramidCellsForLayers(layers);
-  const available = cellsKeySet(all);
-  const subshapes: PyramidSubshape[] = [];
-
-  const takeTriangle = (): boolean => {
-    const candidates = candidateUnitTriangles(available)
-      .map((tri) => ({ tri, score: triangleBaseFacingScore(tri) }))
-      .sort((a, b) => a.score - b.score || axialKey(a.tri[0]!).localeCompare(axialKey(b.tri[0]!)));
-    const best = candidates[0];
-    if (!best) return false;
-    for (const cell of best.tri) available.delete(axialKey(cell));
-    subshapes.push({ kind: "triangle", cells: best.tri });
-    return true;
-  };
-  while (takeTriangle()) { /* pack triangles */ }
-
-  // Remaining cells → connected-component pills (edge-adjacent axial runs).
-  const remaining = all.filter((cell) => available.has(axialKey(cell)));
-  const unused = new Set(remaining.map(axialKey));
-  const cellByKey = new Map(remaining.map((cell) => [axialKey(cell), cell]));
-
-  while (unused.size > 0) {
-    const startKey = [...unused].sort()[0]!;
-    const pill: AxialPoint[] = [];
-    const queue = [startKey];
-    unused.delete(startKey);
-    while (queue.length > 0) {
-      const key = queue.shift()!;
-      const cell = cellByKey.get(key)!;
-      pill.push(cell);
-      for (const neighbor of AXIAL_NEIGHBORS) {
-        const next = { q: cell.q + neighbor.q, r: cell.r + neighbor.r };
-        const nextKey = axialKey(next);
-        if (!unused.has(nextKey)) continue;
-        unused.delete(nextKey);
-        queue.push(nextKey);
-      }
-    }
-    pill.sort((a, b) => a.r - b.r || a.q - b.q);
-    subshapes.push({ kind: "pill", cells: pill });
-    for (const cell of pill) available.delete(axialKey(cell));
-  }
-
-  return subshapes;
-}
-
-/** Circumference slots needed on the outer ring: sum of bases + one gap per attractor. */
-export function outerRingSlotsForPyramids(baseWidths: readonly number[], gapNodes = 1): number {
-  if (baseWidths.length === 0) return 0;
-  return baseWidths.reduce((sum, width) => sum + Math.max(0, width), 0)
-    + gapNodes * baseWidths.length;
-}
-
-/**
- * Outer ergodic radius large enough for `slotCount` equidistant lattice points
- * at `spacing` along the circle (arc length ≈ spacing).
- */
-export function outerRadiusForRingSlots(slotCount: number, spacing = TRI_LATTICE_SPACING): number {
-  const slots = Math.max(1, slotCount);
-  return (slots * spacing) / (2 * Math.PI);
-}
-
-/**
- * Polar projection of the triangular lattice: axial topology unchanged, rings
- * become true circles with equidistant angular spacing. The annulus between
- * `innerRadius` and `outerRadius` is a barrier gap (no snap targets).
- */
-export interface RadialProjection {
-  origin: Point;
-  spacing: number;
-  innerRadius: number;
-  outerRadius: number;
-}
-
 /** Index of `cell` along its axial ring around `center` (0 .. 6*ring-1). */
 export function axialRingSlotIndex(cell: AxialPoint, center: AxialPoint = { q: 0, r: 0 }): number {
   const ring = axialDistance(center, cell);
@@ -1240,90 +1051,6 @@ export function outerRingAxialRadiusForSlots(slotCount: number): number {
   return Math.max(1, Math.ceil(Math.max(1, slotCount) / 6));
 }
 
-/** Pixel radius of axial ring `ring` under a radial projection (annulus compressed). */
-export function radiusForAxialRing(ring: number, proj: RadialProjection): number {
-  if (ring <= 0) return 0;
-  const spacing = proj.spacing;
-  const innerHops = Math.max(1, Math.round(proj.innerRadius / spacing));
-  const annulusHops = Math.max(1, Math.round((proj.outerRadius - proj.innerRadius) / spacing));
-  const outerHops = innerHops + annulusHops;
-  if (ring <= innerHops) {
-    return (ring / innerHops) * proj.innerRadius;
-  }
-  if (ring < outerHops) {
-    // Annulus: geometrically between barriers; callers should not snap here.
-    const t = (ring - innerHops) / (outerHops - innerHops);
-    return proj.innerRadius + t * (proj.outerRadius - proj.innerRadius);
-  }
-  return proj.outerRadius + (ring - outerHops) * spacing;
-}
-
-/** True when a pixel radius falls strictly inside the annulus gap. */
-export function isInAnnulus(radius: number, innerRadius: number, outerRadius: number, epsilon = 1e-6): boolean {
-  return radius > innerRadius + epsilon && radius < outerRadius - epsilon;
-}
-
-/**
- * Warp axial → pixel: ring centres lie on true circles, slots equidistant in angle.
- */
-export function axialToRadialPixel(cell: AxialPoint, proj: RadialProjection): Point {
-  const ring = axialDistance({ q: 0, r: 0 }, cell);
-  if (ring === 0) return { x: proj.origin.x, y: proj.origin.y };
-  const slot = axialRingSlotIndex(cell);
-  const count = 6 * ring;
-  const angle = -Math.PI / 2 + (slot / count) * 2 * Math.PI;
-  const radius = radiusForAxialRing(ring, proj);
-  return {
-    x: proj.origin.x + radius * Math.cos(angle),
-    y: proj.origin.y + radius * Math.sin(angle),
-  };
-}
-
-/**
- * Inverse of axialToRadialPixel (nearest axial cell). Used for hop/drag.
- */
-export function pixelToRadialAxial(point: Point, proj: RadialProjection): AxialPoint {
-  const dx = point.x - proj.origin.x;
-  const dy = point.y - proj.origin.y;
-  const radius = Math.hypot(dx, dy);
-  if (radius < 1e-9) return { q: 0, r: 0 };
-  const spacing = proj.spacing;
-  const innerHops = Math.max(1, Math.round(proj.innerRadius / spacing));
-  const annulusHops = Math.max(1, Math.round((proj.outerRadius - proj.innerRadius) / spacing));
-  const outerHops = innerHops + annulusHops;
-  let ring: number;
-  if (radius <= proj.innerRadius) {
-    ring = Math.max(0, Math.round((radius / proj.innerRadius) * innerHops));
-  } else if (radius < proj.outerRadius) {
-    // Snap to nearer barrier ring — never rest in the annulus.
-    const mid = (proj.innerRadius + proj.outerRadius) / 2;
-    ring = radius < mid ? innerHops : outerHops;
-  } else {
-    ring = outerHops + Math.round((radius - proj.outerRadius) / spacing);
-  }
-  if (ring <= 0) return { q: 0, r: 0 };
-  let angle = Math.atan2(dy, dx) + Math.PI / 2;
-  if (angle < 0) angle += 2 * Math.PI;
-  const count = 6 * ring;
-  const slot = ((Math.round((angle / (2 * Math.PI)) * count) % count) + count) % count;
-  return axialRing({ q: 0, r: 0 }, ring)[slot]!;
-}
-
-/**
- * Outer ergodic pixel radius so a hex ring holds at least the pyramid pack
- * (bases + gap nodes) at ~`spacing` arc separation.
- */
-export function outerRadiusForPyramidPacking(
-  baseWidths: readonly number[],
-  spacing = TRI_LATTICE_SPACING,
-  gapNodes = 1,
-): { outerRadius: number; ringAxialRadius: number; slotCount: number } {
-  const slotCount = outerRingSlotsForPyramids(baseWidths, gapNodes);
-  const ringAxialRadius = outerRingAxialRadiusForSlots(slotCount);
-  const outerRadius = (spacing * 6 * ringAxialRadius) / (2 * Math.PI);
-  return { outerRadius, ringAxialRadius, slotCount };
-}
-
 /** Axial cell on `ring` nearest to the given polar angle (atan2 space). */
 export function axialCellOnRingAtAngle(ring: number, angle: number): AxialPoint {
   if (ring <= 0) return { q: 0, r: 0 };
@@ -1335,201 +1062,6 @@ export function axialCellOnRingAtAngle(ring: number, angle: number): AxialPoint 
   while (normalized >= 2 * Math.PI) normalized -= 2 * Math.PI;
   const slot = ((Math.round((normalized / (2 * Math.PI)) * count) % count) + count) % count;
   return cells[slot]!;
-}
-
-/**
- * Places attractor pyramids around the outer axial ring with one gap slot
- * between bases. Apex layers sit on larger rings (facing away from the core).
- */
-export function layoutAttractorPyramidsOnRing(
-  groups: readonly ForceShapeGroup[],
-  ringAxialRadius: number,
-): AttractorForceShapeLayout {
-  const targets = new Map<string, AxialPoint>();
-  const subShapesByAttractor = new Map<string, string[][]>();
-  const occupied = new Set<string>();
-  const baseCount = Math.max(1, 6 * ringAxialRadius);
-  const ordered = orderGroupsByPickOrder(groups);
-  let slotCursor = 0;
-
-  ordered.forEach((group, groupIndex) => {
-    const size = group.forces.length;
-    if (size === 0) return;
-    const layers = pyramidLayersForCount(size);
-    const localCells = pyramidCellsForLayers(layers);
-    const baseWidth = layers[0] ?? 1;
-    // Evenly space attractors around the ring rather than packing from slot 0.
-    slotCursor = Math.round((groupIndex * baseCount) / Math.max(1, ordered.length)) % baseCount;
-    const minQ = Math.min(...localCells.filter((cell) => cell.r === 0).map((cell) => cell.q), 0);
-
-    const absoluteForLocal = (local: AxialPoint): AxialPoint => {
-      const ring = ringAxialRadius - local.r;
-      const slotOffset = local.q - minQ;
-      const baseSlot = (slotCursor + slotOffset) % baseCount;
-      const angle = -Math.PI / 2 + (baseSlot / baseCount) * 2 * Math.PI;
-      return axialCellOnRingAtAngle(Math.max(1, ring), angle);
-    };
-
-    // If any cell collides, advance the cursor until the whole pyramid clears.
-    let placed: AxialPoint[] | undefined;
-    for (let attempt = 0; attempt < baseCount; attempt += 1) {
-      const absCells = localCells.map(absoluteForLocal);
-      if (absCells.every((cell) => !occupied.has(axialKey(cell)))) {
-        placed = absCells;
-        break;
-      }
-      slotCursor = (slotCursor + 1) % baseCount;
-    }
-    if (!placed) {
-      // Fallback: ring-search from first local mapping.
-      placed = localCells.map((local, index) => {
-        const preferred = absoluteForLocal(local);
-        if (!occupied.has(axialKey(preferred))) return preferred;
-        return nearestFreeAxialPoint(
-          axialToPixel(preferred),
-          occupied,
-        );
-      });
-    }
-
-    const cellAssignment = assignForcesToPyramidCells(group.forces, localCells);
-    const partitions = partitionPyramidSubshapes(layers);
-    const idByLocalKey = new Map<string, string>();
-    for (const [forceId, local] of cellAssignment) {
-      idByLocalKey.set(axialKey(local), forceId);
-    }
-    const bins: string[][] = partitions.map((part) =>
-      part.cells
-        .map((cell) => idByLocalKey.get(axialKey(cell)))
-        .filter((id): id is string => id !== undefined));
-    const covered = new Set(bins.flat());
-    for (const force of group.forces) {
-      if (!covered.has(force.id)) bins.push([force.id]);
-    }
-    subShapesByAttractor.set(group.attractorId, bins.filter((bin) => bin.length > 0));
-
-    localCells.forEach((local, index) => {
-      const forceId = idByLocalKey.get(axialKey(local));
-      if (!forceId) return;
-      const absolute = placed![index]!;
-      targets.set(forceId, absolute);
-      occupied.add(axialKey(absolute));
-    });
-
-    slotCursor = (slotCursor + baseWidth + 1) % baseCount;
-  });
-
-  return { targets, subShapesByAttractor };
-}
-
-/**
- * Fixed point-patterns for atomic sub-shapes (1-4 member forces).
- * Sizes 5+ always decompose; every multi-point pattern has max pairwise
- * axialDistance ≤2 (relied on by composite placement).
- */
-export function shapePatternForSize(size: number): AxialPoint[] {
-  switch (size) {
-    case 1: // singleton
-      return [{ q: 0, r: 0 }];
-    case 2: // pill
-      return [{ q: 0, r: 0 }, { q: 1, r: 0 }];
-    case 3: // triangle
-      return [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 0, r: 1 }];
-    case 4: // parallelogram (two glued unit triangles)
-      return [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 0, r: 1 }, { q: 1, r: 1 }];
-    default:
-      throw new Error(`shapePatternForSize: no fixed pattern for size ${size} (expected 1-4)`);
-  }
-}
-
-/**
- * Unique-size decomposition for remainders of at most 10.
- * Atomic parts are 1/2/3/4 — 5→2+3, 6→4+2, 8→1+3+4, 9→2+3+4, 10→1+2+3+4.
- */
-function uniqueDecomposeAtMost10(n: number): number[] {
-  switch (n) {
-    case 0: return [];
-    case 1: return [1];
-    case 2: return [2];
-    case 3: return [3];
-    case 4: return [4];
-    case 5: return [2, 3];
-    case 6: return [4, 2];
-    case 7: return [4, 3];
-    case 8: return [4, 3, 1];
-    case 9: return [4, 3, 2];
-    case 10: return [4, 3, 2, 1];
-    default:
-      throw new Error(`uniqueDecomposeAtMost10: expected 0..10, got ${n}`);
-  }
-}
-
-/**
- * Decomposes an attractor's force count into atomic sub-shape sizes in [1,4].
- * Counts ≤4 stay whole; 5–10 use the unique-size rule; past 10, peel 3s until
- * the remainder is ≤9, then apply the unique rule.
- */
-export function decomposeAttractorSize(n: number): number[] {
-  if (n <= 0) return [];
-  if (n <= 4) return [n];
-  let remaining = n;
-  const peeled: number[] = [];
-  if (n > 10) {
-    while (remaining > 9) {
-      peeled.push(3);
-      remaining -= 3;
-    }
-  }
-  return [...peeled, ...uniqueDecomposeAtMost10(remaining)].sort((a, b) => b - a);
-}
-
-/** True when `attempt` shares no cells with `occupied` and at least one pair is edge-adjacent. */
-function isTouchingNonOverlappingPlacement(
-  attempt: readonly AxialPoint[],
-  occupied: readonly AxialPoint[],
-): boolean {
-  let touches = false;
-  for (const point of attempt) {
-    for (const other of occupied) {
-      const distance = axialDistance(point, other);
-      if (distance === 0) return false;
-      if (distance === 1) touches = true;
-    }
-  }
-  return touches;
-}
-
-/**
- * Places each sub-shape's pattern on the shared lattice, largest first at the
- * origin, each subsequent shape ring-searched outward until it touches the
- * already-placed set (min cross-shape axial distance exactly 1) without
- * overlapping any cell.
- */
-export function placeCompositeShapes(sizes: readonly number[]): AxialPoint[][] {
-  const order = [...sizes].sort((a, b) => b - a);
-  const shapes: AxialPoint[][] = [];
-  const occupied: AxialPoint[] = [];
-  for (const size of order) {
-    const pattern = shapePatternForSize(size);
-    if (shapes.length === 0) {
-      shapes.push(pattern);
-      occupied.push(...pattern);
-      continue;
-    }
-    let placed: AxialPoint[] | undefined;
-    for (let radius = 1; placed === undefined; radius += 1) {
-      for (const candidate of axialRing({ q: 0, r: 0 }, radius)) {
-        const attempt = pattern.map((point) => ({ q: point.q + candidate.q, r: point.r + candidate.r }));
-        if (isTouchingNonOverlappingPlacement(attempt, occupied)) {
-          placed = attempt;
-          break;
-        }
-      }
-    }
-    shapes.push(placed);
-    occupied.push(...placed);
-  }
-  return shapes;
 }
 
 export interface SimilarityForce {
@@ -1599,97 +1131,6 @@ export function assignForcesToSubShapes(
     bins[bestIndex]!.push(force);
   }
   return bins.map((bin) => bin.map((force) => force.id));
-}
-
-/**
- * Assigns each force in a single (non-composite) shape to one of its axial
- * points: the most mutually-similar force pairs are placed at the
- * geometrically farthest-apart points ("opposing sides").
- */
-export function assignShapePoints(
-  forces: readonly SimilarityForce[],
-  shapeSize: number,
-): Map<string, AxialPoint> {
-  const pattern = shapePatternForSize(shapeSize);
-  const assignment = new Map<string, AxialPoint>();
-  const remainingForces = [...forces];
-  const remainingPoints = [...pattern];
-
-  while (remainingForces.length > 0 && remainingPoints.length > 0) {
-    if (remainingForces.length === 1 || remainingPoints.length === 1) {
-      assignment.set(remainingForces.shift()!.id, remainingPoints.shift()!);
-      continue;
-    }
-    let bestForcePair: [number, number] = [0, 1];
-    let bestSim = -Infinity;
-    for (let i = 0; i < remainingForces.length; i += 1) {
-      for (let j = i + 1; j < remainingForces.length; j += 1) {
-        const sim = jaccard(remainingForces[i]!.components, remainingForces[j]!.components);
-        if (sim > bestSim) {
-          bestSim = sim;
-          bestForcePair = [i, j];
-        }
-      }
-    }
-    let bestPointPair: [number, number] = [0, 1];
-    let bestDist = -Infinity;
-    for (let i = 0; i < remainingPoints.length; i += 1) {
-      for (let j = i + 1; j < remainingPoints.length; j += 1) {
-        const dist = axialDistance(remainingPoints[i]!, remainingPoints[j]!);
-        if (dist > bestDist) {
-          bestDist = dist;
-          bestPointPair = [i, j];
-        }
-      }
-    }
-    const [fi, fj] = bestForcePair;
-    const [pi, pj] = bestPointPair;
-    assignment.set(remainingForces[fi]!.id, remainingPoints[pi]!);
-    assignment.set(remainingForces[fj]!.id, remainingPoints[pj]!);
-    for (const idx of [fi, fj].sort((a, b) => b - a)) remainingForces.splice(idx, 1);
-    for (const idx of [pi, pj].sort((a, b) => b - a)) remainingPoints.splice(idx, 1);
-  }
-  return assignment;
-}
-
-/**
- * Order to place attractor groups so large/small groups alternate.
- *
- * A sliding window relative to the most recent pick over one flat sorted
- * list: pick the max first (direction = down, the only option from the top);
- * each round, the window is every not-yet-picked value strictly on the
- * current-direction side of the last pick; pick that window's median
- * (unambiguous when odd; the candidate further in `direction` of the two
- * middle values when even); flip direction; repeat.
- */
-export function attractorGroupPickOrder(sizes: readonly number[]): number[] {
-  if (sizes.length === 0) return [];
-  const remaining = [...sizes].sort((a, b) => a - b);
-  const result: number[] = [];
-  let last = remaining.pop()!;
-  result.push(last);
-  let direction: "down" | "up" = "down";
-
-  const windowFor = (dir: "down" | "up"): number[] =>
-    dir === "down" ? remaining.filter((v) => v < last) : remaining.filter((v) => v > last);
-
-  while (remaining.length > 0) {
-    let window = windowFor(direction);
-    if (window.length === 0) {
-      direction = direction === "down" ? "up" : "down";
-      window = windowFor(direction);
-    }
-    const sorted = [...window].sort((a, b) => a - b);
-    const n = sorted.length;
-    const pick = n % 2 === 1
-      ? sorted[(n - 1) / 2]!
-      : (direction === "down" ? sorted[n / 2 - 1]! : sorted[n / 2]!);
-    result.push(pick);
-    remaining.splice(remaining.indexOf(pick), 1);
-    last = pick;
-    direction = direction === "down" ? "up" : "down";
-  }
-  return result;
 }
 
 /** Ring-searches outward from `point`'s nearest axial cell for the first unoccupied one. */
@@ -1767,131 +1208,4 @@ export interface ForceShapeGroup {
   forces: readonly SimilarityForce[];
   /** Desired axial anchor for this group's shape (its current force centroid, converted to axial space). */
   anchor: AxialPoint;
-}
-
-function orderGroupsByPickOrder(groups: readonly ForceShapeGroup[]): ForceShapeGroup[] {
-  const order = attractorGroupPickOrder(groups.map((group) => group.forces.length));
-  const pool = [...groups];
-  const result: ForceShapeGroup[] = [];
-  for (const size of order) {
-    const idx = pool.findIndex((group) => group.forces.length === size);
-    if (idx === -1) continue;
-    result.push(pool[idx]!);
-    pool.splice(idx, 1);
-  }
-  return result;
-}
-
-/** First candidate translation of `localPoints` (tried at `anchor` itself, then ring-searched outward) that avoids every cell in `occupied`. */
-function findFreeTranslation(
-  localPoints: readonly AxialPoint[],
-  anchor: AxialPoint,
-  occupied: ReadonlySet<string>,
-): AxialPoint {
-  const clear = (offset: AxialPoint): boolean =>
-    localPoints.every((point) => !occupied.has(axialKey({ q: point.q + offset.q, r: point.r + offset.r })));
-  if (clear(anchor)) return anchor;
-  for (let radius = 1; ; radius += 1) {
-    for (const candidate of axialRing(anchor, radius)) {
-      if (clear(candidate)) return candidate;
-    }
-  }
-}
-
-export interface AttractorForceShapeLayout {
-  targets: Map<string, AxialPoint>;
-  /** Each attractor's member forces, partitioned by which sub-shape they landed in (one entry for non-composite groups). */
-  subShapesByAttractor: Map<string, string[][]>;
-}
-
-/**
- * Assign forces onto pyramid cells: most similar pairs go to geometrically
- * farthest cell pairs (same opposing-sides heuristic as assignShapePoints).
- */
-function assignForcesToPyramidCells(
-  forces: readonly SimilarityForce[],
-  cells: readonly AxialPoint[],
-): Map<string, AxialPoint> {
-  const assignment = new Map<string, AxialPoint>();
-  const remainingForces = [...forces];
-  const remainingCells = [...cells];
-  while (remainingForces.length > 0 && remainingCells.length > 0) {
-    if (remainingForces.length === 1 || remainingCells.length === 1) {
-      assignment.set(remainingForces.shift()!.id, remainingCells.shift()!);
-      continue;
-    }
-    let bestForcePair: [number, number] = [0, 1];
-    let bestSim = -Infinity;
-    for (let i = 0; i < remainingForces.length; i += 1) {
-      for (let j = i + 1; j < remainingForces.length; j += 1) {
-        const sim = jaccard(remainingForces[i]!.components, remainingForces[j]!.components);
-        if (sim > bestSim) {
-          bestSim = sim;
-          bestForcePair = [i, j];
-        }
-      }
-    }
-    let bestCellPair: [number, number] = [0, 1];
-    let bestDist = -Infinity;
-    for (let i = 0; i < remainingCells.length; i += 1) {
-      for (let j = i + 1; j < remainingCells.length; j += 1) {
-        const dist = axialDistance(remainingCells[i]!, remainingCells[j]!);
-        if (dist > bestDist) {
-          bestDist = dist;
-          bestCellPair = [i, j];
-        }
-      }
-    }
-    const [fi, fj] = bestForcePair;
-    const [ci, cj] = bestCellPair;
-    assignment.set(remainingForces[fi]!.id, remainingCells[ci]!);
-    assignment.set(remainingForces[fj]!.id, remainingCells[cj]!);
-    for (const idx of [fi, fj].sort((a, b) => b - a)) remainingForces.splice(idx, 1);
-    for (const idx of [ci, cj].sort((a, b) => b - a)) remainingCells.splice(idx, 1);
-  }
-  return assignment;
-}
-
-/**
- * Lays out every attractor group's forces as a wide-before-tall pyramid
- * frustum on the shared triangular lattice. Sub-shapes are vertex-disjoint
- * triangles (preferred) or pills from `partitionPyramidSubshapes`. Groups
- * are processed in attractorGroupPickOrder and ring-searched to avoid
- * collisions; callers that pack on the outer ring should pass anchors that
- * already include inter-pyramid gap slots.
- */
-export function layoutAttractorForceShapes(groups: readonly ForceShapeGroup[]): AttractorForceShapeLayout {
-  const targets = new Map<string, AxialPoint>();
-  const subShapesByAttractor = new Map<string, string[][]>();
-  const occupied = new Set<string>();
-  for (const group of orderGroupsByPickOrder(groups)) {
-    const size = group.forces.length;
-    if (size === 0) continue;
-    const layers = pyramidLayersForCount(size);
-    const localCells = pyramidCellsForLayers(layers);
-    const offset = findFreeTranslation(localCells, group.anchor, occupied);
-    const cellAssignment = assignForcesToPyramidCells(group.forces, localCells);
-    const partitions = partitionPyramidSubshapes(layers);
-    const idByLocalKey = new Map<string, string>();
-    for (const [forceId, local] of cellAssignment) {
-      idByLocalKey.set(axialKey(local), forceId);
-    }
-    const bins: string[][] = partitions.map((part) =>
-      part.cells
-        .map((cell) => idByLocalKey.get(axialKey(cell)))
-        .filter((id): id is string => id !== undefined));
-    // Drop empty bins (shouldn't happen) and ensure every force appears once.
-    const covered = new Set(bins.flat());
-    for (const force of group.forces) {
-      if (!covered.has(force.id)) bins.push([force.id]);
-    }
-    subShapesByAttractor.set(group.attractorId, bins.filter((bin) => bin.length > 0));
-
-    for (const [forceId, local] of cellAssignment) {
-      const absolute = { q: local.q + offset.q, r: local.r + offset.r };
-      targets.set(forceId, absolute);
-      occupied.add(axialKey(absolute));
-    }
-  }
-  return { targets, subShapesByAttractor };
 }

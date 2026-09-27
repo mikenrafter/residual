@@ -22,19 +22,14 @@ import {
   canonicalCurvedSprocketLattice,
   dilatedSubshapeApproach,
   dualRingRadialStack,
-  isInAnnulus,
   LATTICE_HOP_THRESHOLD,
   layoutAttractorDualRingMiniPyramids,
-  layoutAttractorPyramidsOnRing,
   miniPyramidLayersForCount,
   nearestFreeAxialPoint,
   nearestFreeCartesianPoint,
   outerRingAxialRadiusForSlots,
-  outerRingSlotsForPyramids,
   pixelToDualRingAxial,
   pixelToFractionalAxial,
-  pixelToRadialAxial,
-  pyramidLayersForCount,
   radiusForDualRingAxial,
   TRI_LATTICE_SPACING,
   type AxialPoint,
@@ -42,7 +37,6 @@ import {
   type DualRingProjection,
   type DualRingRadialStack,
   type ForceShapeGroup,
-  type RadialProjection,
 } from "./landscape-triangular-lattice";
 
 export interface HyperComponentNode {
@@ -467,28 +461,33 @@ export function regionsOuterRadius(
     purposeCount: Math.ceil(count / 2),
     stressorCount: Math.floor(count / 2),
   })));
-  return stack.stressorRingRadius;
+  return stack.stressorRingOuterRadius;
 }
 
 /**
  * Dual-ring zone stack (purpose → inner annulus → components → outer annulus → stressors).
- * Missing-kind attractors contribute a 2-wide placeholder base.
+ * Missing-kind attractors contribute a 2-wide placeholder base. `componentCount` no longer
+ * sizes the component band (it is a fixed 3 hops tall); it is retained for API stability.
  */
 export function regionsDualRingStack(
-  componentCount: number,
+  _componentCount: number,
   attractorKindCounts: readonly { purposeCount: number; stressorCount: number }[],
   spacing = REGIONS_TRI_LATTICE_SPACING,
 ): DualRingRadialStack {
   const purposeBaseWidths = attractorKindCounts.map(({ purposeCount }) =>
     purposeCount <= 0 ? 2 : (miniPyramidLayersForCount(purposeCount)[0] ?? 1));
+  const purposeHeights = attractorKindCounts.map(({ purposeCount }) =>
+    purposeCount <= 0 ? 1 : miniPyramidLayersForCount(purposeCount).length);
   const stressorBaseWidths = attractorKindCounts.map(({ stressorCount }) =>
     stressorCount <= 0 ? 2 : (miniPyramidLayersForCount(stressorCount)[0] ?? 1));
+  const stressorHeights = attractorKindCounts.map(({ stressorCount }) =>
+    stressorCount <= 0 ? 1 : miniPyramidLayersForCount(stressorCount).length);
   return dualRingRadialStack({
     purposeBaseWidths: purposeBaseWidths.length > 0 ? purposeBaseWidths : [2],
+    purposeHeights: purposeHeights.length > 0 ? purposeHeights : [1],
     stressorBaseWidths: stressorBaseWidths.length > 0 ? stressorBaseWidths : [2],
-    componentCount,
+    stressorHeights: stressorHeights.length > 0 ? stressorHeights : [1],
     spacing,
-    minComponentHops: 3,
   });
 }
 
@@ -1134,19 +1133,19 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     const key = [
       coreCenter.x,
       coreCenter.y,
-      stack.stressorRingAxial,
+      stack.stressorRingOuterAxial,
       stack.componentInnerAxial,
       stack.componentOuterAxial,
-      stack.stressorRingRadius,
+      stack.stressorRingOuterRadius,
     ].join(":");
     if (key !== canonicalLatticeKey) {
       canonicalLatticeKey = key;
       canonicalLattice = canonicalCurvedSprocketLattice({
         origin: coreCenter,
         innerRadius: 0,
-        outerRadius: stack.stressorRingRadius,
-        cellCount: Math.max(6, 6 * (stack.stressorRingAxial + 12)),
-        boundaryHeight: Math.max(1, stack.stressorRingAxial + 12),
+        outerRadius: stack.stressorRingOuterRadius,
+        cellCount: Math.max(6, 6 * (stack.stressorRingOuterAxial + 12)),
+        boundaryHeight: Math.max(1, stack.stressorRingOuterAxial + 12),
         radiusForRing: (ring) => radiusForDualRingAxial(ring, stack, REGIONS_TRI_LATTICE_SPACING),
         slotCountForRing: (ring) => Math.max(1, 6 * ring),
       });
@@ -1162,7 +1161,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
   function currentZoneRadii(): { outerRadius: number; innerRadius: number } {
     const stack = currentDualRingStack();
     return {
-      outerRadius: stack.stressorRingRadius,
+      outerRadius: stack.stressorRingOuterRadius,
       innerRadius: stack.componentBand.outer,
     };
   }
@@ -1847,31 +1846,28 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
     const stack = currentDualRingStack();
     const spacing = REGIONS_TRI_LATTICE_SPACING;
     const planes = [
-      { id: "purpose", inner: 0, outer: stack.innerAnnulus.inner },
-      { id: "components", inner: stack.innerAnnulus.outer, outer: stack.outerAnnulus.inner },
-      { id: "stressors", inner: stack.outerAnnulus.outer, outer: stack.stressorRingRadius },
+      { id: "purpose", inner: 0, outer: stack.innerAnnulus.inner, hops: stack.purposeRingAxial, angularSteps: stack.purposeAngularSteps },
+      { id: "components", inner: stack.innerAnnulus.outer, outer: stack.outerAnnulus.inner, hops: stack.componentBand.hops, angularSteps: stack.componentAngularSteps },
+      { id: "stressors", inner: stack.outerAnnulus.outer, outer: stack.stressorRingOuterRadius, hops: stack.stressorRingOuterAxial - stack.stressorRingAxial + 1, angularSteps: stack.stressorAngularSteps },
     ] as const;
     const lines: Array<{ id: string; plane: string; points: Point[] }> = [];
     const inside = (x: number, y: number, plane: (typeof planes)[number]): boolean => {
       const radius = Math.hypot(x - coreCenter.x, y - coreCenter.y);
       return radius >= plane.inner - 1e-6 && radius <= plane.outer + 1e-6;
     };
-    // Each zone gets the same two-directional sprocket construction as the
-    // standalone canvas generator. A plane's boundaries clip the rhombi.
+    // Each zone builds its own curved-sprocket band through the same shared
+    // lattice implementation (`canonicalCurvedSprocketLattice`), sized by that
+    // zone's own pyramidal needs (angular steps) and hop count (radial reach) —
+    // never derived from one another. A plane's boundaries clip the rhombi.
     for (const plane of planes) {
       const inner = Math.max(plane.inner, spacing * 1.5);
       if (plane.outer <= inner + 1) continue;
-      const count = plane.id === "purpose"
-        ? 6 * stack.purposeRingAxial
-        : plane.id === "components"
-          ? 6 * stack.componentOuterAxial
-          : 6 * stack.stressorRingAxial;
       const lattice = canonicalCurvedSprocketLattice({
         origin: coreCenter,
         innerRadius: inner,
         outerRadius: plane.outer,
-        cellCount: count,
-        boundaryHeight: Math.max(1, Math.round((plane.outer - inner) / spacing)),
+        cellCount: plane.angularSteps,
+        boundaryHeight: Math.max(1, plane.hops),
       });
       lattice.meshPaths.forEach((path, index) => {
         lines.push({ id: `${plane.id}:sprocket:${index}`, plane: plane.id, points: path });
@@ -2081,7 +2077,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
         const angle = spawnAngles.get(item.attractorId) ?? 0;
         const spawnR = item.kind === "purpose"
           ? stack.purposeRingRadius
-          : stack.stressorRingRadius + SPAWN_CORE_CLEARANCE;
+          : stack.stressorRingOuterRadius + SPAWN_CORE_CLEARANCE;
         base = { x: coreCenter.x + spawnR * Math.cos(angle), y: coreCenter.y + spawnR * Math.sin(angle) };
       }
       return base;
@@ -2395,7 +2391,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       };
     });
     const stack = regionsDualRingStack(componentCount, kindCounts);
-    const coreRadius = stack.stressorRingRadius;
+    const coreRadius = stack.stressorRingOuterRadius;
     const componentRadius = stack.componentBand.outer;
     b.coreBoundary
       .attr("cx", coreCenter.x)
@@ -2418,7 +2414,7 @@ export function createRegionsView(ctx: RegionsViewCtx): RegionsViewHandle {
       .attr("x2", coreCenter.x + coreRadius)
       .attr("y1", coreCenter.y)
       .attr("y2", coreCenter.y);
-    paintLattice(stack.componentBand.inner, stack.stressorRingRadius);
+    paintLattice(stack.componentBand.inner, stack.stressorRingOuterRadius);
 
     // --- merge nodes by id: survivors keep x/y/vx/vy/fx/fy, newcomers seed, exits just don't reappear ---
     const prevById = byId;
