@@ -7,7 +7,9 @@ description: >-
   with prior-phase context, parent verifies between phases and passes pointers, final
   verification before handoff. Use when implementing features, refactors, or bug fixes
   with tests; when the user says r/g-tdd, red/green TDD, rg-implement, or multi-phase
-  implementation with subagents.
+  implementation with subagents. Unless manually invoked by name, reserve this for
+  larger change sets — not simple fixes or one-off adjustments, which don't need the
+  subagent-orchestration overhead.
 ---
 
 # tdd-implement
